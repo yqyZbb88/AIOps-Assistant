@@ -398,7 +398,13 @@ def test_container_wiring_injects_write_addendum(monkeypatch, tmp_path):
         assistant_mod, "get_model", lambda: ScriptedChatModel(responses=[AIMessage(content="x")])
     )
 
-    # 未启用（出厂默认）→ 不带写能力说明
+    # 未启用 → 不带写能力说明。用临时关闭的配置，**不依赖仓库当前开关**
+    # （仓库 2026-09-10 起为 true；若这里读仓库文件，开关一改用例就红）
+    cfg_off = tmp_path / "agent_actions_off.yaml"
+    cfg_off.write_text(
+        AGENT_ACTIONS_YAML.replace("enabled: true", "enabled: false"), encoding="utf-8"
+    )
+    monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(cfg_off))
     plain = Container(settings=Settings())._assistant_factory()
     assert WRITE_TOOLS_ADDENDUM not in plain.system_prompt
     assert plain.checkpointer is None

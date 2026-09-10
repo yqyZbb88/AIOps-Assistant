@@ -124,9 +124,21 @@ def test_empty_host_rejected():
 # ---------------------------------------------------------------------------
 # 加载：关闭 / 缺失 / 非法一律 None
 # ---------------------------------------------------------------------------
-def test_repo_default_config_is_disabled():
-    """出厂必须关闭（enabled: false）——写命令能力不能默认可用。"""
-    assert load_agent_actions_config() is None
+def test_repo_config_is_valid():
+    """仓库自带的 config/agent_actions.yaml 必须能通过校验（**与 enabled 开关无关**）。
+
+    原用例断言「出厂必须 enabled: false」。2026-09-10 用户要求开作示例，仓库改为 true，
+    该断言不再成立；但**更有价值的那条**留下来：文件本身必须可解析。
+
+    这是真实存在的失败模式——模板占位与 params 声明对不齐、key 非法等一个手误，
+    会让整个能力**静默关闭**（只留一行 ERROR 日志）。故这里按「文件可解析」锁住，
+    enabled 改回 false 时本用例仍应通过（关闭是开关的语义，不是校验失败）。
+    """
+    from src.plugins.agent_actions.catalog import DEFAULT_AGENT_ACTIONS_FILE
+
+    cfg = parse_agent_actions(DEFAULT_AGENT_ACTIONS_FILE.read_text(encoding="utf-8"))
+    assert cfg.commands, "仓库写命令目录不应为空"
+    assert all(c.template for c in cfg.commands), "每条命令都应有模板"
 
 
 def test_load_missing_file_returns_none(tmp_path):

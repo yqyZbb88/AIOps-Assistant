@@ -20,6 +20,7 @@
 enabled: true
 
 commands:
+
   restart_service:              # → systemctl restart <service>
     summary: 重启一个 systemd 服务（如 nginx / mysql）
     template: "systemctl restart {service}"
@@ -29,10 +30,12 @@ commands:
         type: str
         pattern: "^[A-Za-z0-9_.:@-]{1,128}$"
         description: 服务名，如 nginx / mysql
+
   stop_loadgen:                 # → 停掉制造负载的压测脚本（无参命令，模板即整条）
     summary: 停掉压测脚本 load_gen.sh（CPU 自愈示例）
     template: "pkill -f 'load_gen.sh'"
     params: {}
+
   cleanup_disk:                 # → 跑磁盘清理脚本（固定脚本，无参）
     summary: 执行磁盘清理脚本 cleanup_disk.sh（需先放到主机上）
     template: "cd /opt/ops && bash cleanup_disk.sh"

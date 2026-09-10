@@ -24,8 +24,8 @@
 #
 # 注意：本文件正文与注释都不要出现 `${` 字面量（插值机制对整个文件文本替换）。
 
-# 出厂默认关闭。启用前请先确认 target 与实际命令模板。
-enabled: false
+# 2026-09-10 用户示例：本机已启用（原出厂默认关闭）。关停改回 false 并重启进程。
+enabled: true
 
 # 目标主机与连接凭据。密码用环境变量占位，真实值只写在 .env（本文件不落任何明文）。
 target:
@@ -47,6 +47,7 @@ approval:
 # 每条命令：summary（给模型看的说明）/ template（管理员可信模板，只放 {name} 占位）/
 #           sudo（是否提权执行）/ params（参数声明：str 必须给 pattern 全匹配，int 用 min-max）。
 # 模板占位集合必须**等于** params 声明集合（多写或漏写都导致校验失败并关闭本能力）。
+
 commands:
 
   restart_service:
@@ -63,4 +64,9 @@ commands:
     summary: 执行磁盘清理脚本（需管理员预先放到目标主机的 /opt/ops 下）
     template: "cd /opt/ops && bash cleanup_disk.sh"
     sudo: false
+    params: {}
+
+  stop_loadgen:                 # → 停掉制造负载的压测脚本（无参命令，模板即整条）
+    summary: 停掉压测脚本 load_gen.sh（CPU 自愈示例）
+    template: "pkill -f 'load_gen.sh'"
     params: {}

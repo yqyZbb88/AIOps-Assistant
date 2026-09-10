@@ -208,8 +208,18 @@ def _write_agent_actions(tmp_path, cmd="restart_service"):
     return f
 
 
-def test_agent_actions_none_by_default():
-    """出厂 config/agent_actions.yaml 为 enabled: false → 能力关闭。"""
+def test_agent_actions_none_when_disabled(monkeypatch, tmp_path):
+    """enabled: false → 能力关闭。
+
+    原用例读仓库文件断言「出厂关」，2026-09-10 仓库改开后不再成立。改为显式喂一份
+    关闭的配置，断言的仍是同一个机制（开关语义），且不随仓库当前状态漂移。
+    """
+    f = tmp_path / "agent_actions_off.yaml"
+    f.write_text(
+        AGENT_ACTIONS_SAMPLE.format(cmd="restart_service").replace("enabled: true", "enabled: false"),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(f))
     assert Container(settings=Settings()).agent_actions() is None
 
 

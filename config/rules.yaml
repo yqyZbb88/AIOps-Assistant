@@ -43,7 +43,7 @@ rules:
       port: 22
       username: root
       password: "${SSH_PASSWORD_192_168_20_128}"
-    auto_execute: true
+    auto_execute: false
     description: "CPU 使用率过高 → 目录命令 stop_loadgen 停掉压测脚本 load_gen.sh（示例）"
 
   # 示例 2：内存使用率过高 → 重启该主机上的 mysql
