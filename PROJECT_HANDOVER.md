@@ -97,7 +97,8 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 - **Agent 写命令 + 强制人工审批**（M3，2026-09-10）：Agent 可申请执行
   `config/agent_actions.yaml` 声明的写命令 → `HumanInTheLoopMiddleware` 在**执行前中断**
   → `/approvals` 人工批准后才真正执行。凭据来自该文件 `target`（模型不可见），
-  sudo 逐条声明；未批准 / 过期 / 重启 / 淘汰 → 命令永不执行。出厂 `enabled: false`。
+  sudo 逐条声明；未批准 / 过期 / 重启 / 淘汰 → 命令永不执行。
+  **本仓库自 2026-09-10 起 `enabled: true`**（用户要求开作示例；原设计出厂关闭）。
   **与规则自动处置完全隔离**（两条白名单各自独立）。
 - **告警自动处置**：Alertmanager webhook 接收（`POST /alert`）+ 最近记录 + active 查询；
   `config/actions.yaml` 写命令目录（模板+参数+sudo）→ 通用执行器按目录 key 执行（带校验 + 审计）；
@@ -152,7 +153,8 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
    - **每次调用强制人工审批**（`HumanInTheLoopMiddleware`），配置层**没有**任何开关能关闭；
      决策只有 approve/reject，**不提供 edit**；
    - 凭据只来自该文件 `target`（模型永不接触 host/密码）；sudo 由管理员逐条声明；
-   - 出厂 `enabled: false`；未批准 / 过期 / 重启 / 队列淘汰 → 命令**永不执行**；
+   - **本仓库自 2026-09-10 起 `enabled: true`（用户要求开作示例；关停改回 `false` 并重启进程）**；
+     未批准 / 过期 / 重启 / 队列淘汰 → 命令**永不执行**；
    - 审批只加在 **Agent 调用路径**，`RuleEngine` 的无头自动处置**不受影响**
      （`agent_actions` 的执行器绝不进 `container.executors()`）。
    原「Agent 动作工具位」注释已由 `build_agent_action_tools` 落地（返回 `WriteToolBundle`，
@@ -199,6 +201,16 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 - **结构化输出**（讲义 7.3）：`src/agent/prompts.py` 已留 ToolStrategy + AlertAnalysis schema
   注释与启用示例，默认关。启用前先确认不会把 `core/analysis.py` 拖进 langchain。
 - **日志落盘**：目前日志走 console / settings 控级别；未加 RotatingFileHandler。
+- **配置热更新（reload 入口）**：`RuleEngine.reload_rules()` 已实现，但**全仓只有 `__init__` 调用它**
+  （[src/core/rule_engine.py:60](src/core/rule_engine.py#L60)）——无路由、无 CLI、无脚本。运行中的 HTTP
+  服务里**没有任何配置是热的**：`main.py` import 即 `create_app()`，容器在装配期快照
+  `settings.yaml` / `actions.yaml`（`executors()` 缓存）/ `diagnostics.yaml` / `agent_actions.yaml`，
+  Agent 工具集还在**首次聊天**时定稿。做的时候的要点：
+  - 端点形如 `POST /rules/reload`，**必须连带失效 `executors()` 缓存**——只热 reload 规则价值有限：
+    引用新命令的规则要先出现在 `actions.yaml`，而规则加载按 `set(self.executors)` 过滤，新动作会被
+    **静默丢弃**（[src/core/rule_engine.py:93-96](src/core/rule_engine.py#L93-L96)，只留一行 warning），
+    看着 `auto_execute: true` 其实根本没启用；
+  - 2026-09-10 用户决定：**先不做，仅登记**。
 
 ### 搁置项（预留未实现）
 

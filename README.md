@@ -133,6 +133,40 @@ pip install -r requirements.txt
 
 ## 配置
 
+### 出厂默认开关一览（先看这里）
+
+各能力的启停散在下面五个配置文件里，这里集中列一份**出厂状态**，一眼看清「现在哪些是开着的」。
+每个文件的格式细节见各自小节。
+
+| 能力 | 配置文件 · 键 | 出厂值 | 说明 |
+|---|---|---|---|
+| 自动处置（写命令目录） | [actions.yaml](config/actions.yaml) · `enabled` | `true` | 目录即执行器集合；`false` → 无任何执行器，所有规则失效 |
+| 单条规则是否自动执行 | [rules.yaml](config/rules.yaml) · `auto_execute` | **逐条**（见下表） | `false` = 命中只记录不执行 |
+| Agent 只读诊断 | [diagnostics.yaml](config/diagnostics.yaml) · `enabled` | `true` | `false` → Agent 不注册诊断工具 |
+| Agent 写命令 | [agent_actions.yaml](config/agent_actions.yaml) · `enabled` | `true`（**已启用**） | 原设计为出厂关闭，**2026-09-10 起本仓库已打开**；每次调用仍需人工审批 |
+| 告警 AI 分析 | [settings.yaml](config/settings.yaml) · `llm.enabled` | `true` | `false` → 跳过 LLM 分析，告警接收不受影响 |
+| 动作审计日志 | settings.yaml · `logging.audit` | `true` | `false` → **只记失败**，成功执行静默（**非完全关闭**） |
+| 对外监听地址 | settings.yaml · `server.host` | `127.0.0.1` | 仅本机可访问；改 `0.0.0.0` 前先读「安全说明」的残余风险 |
+
+**rules.yaml 出厂 4 条规则，全部 `auto_execute: false`**——也就是说**当前没有任何无人值守的写路径**：
+告警只会被记录 + 交给 LLM 分析，不会自己改系统。
+
+| alertname | action | auto_execute |
+|---|---|---|
+| HighCPUUsage | restart_service | `false` |
+| HighCPUUsage | stop_loadgen | `false` |
+| HighMemoryUsage | restart_service | `false` |
+| HighDiskUsage | cleanup_disk | `false` |
+
+要把某条规则变成自动处置，把它改成 `true` 并**重启进程**。注意规则的连接凭据在其 `params` 里
+（密码用 `.env` 占位）——未填时插值为空串，连接阶段失败，**不会误连远端主机**。
+
+于是当前**唯一能改动系统的路径就是 Agent 写命令那条，而它强制人工审批**；
+规则侧的这一条开关是后续放开自动处置时才需要动的。
+
+**不可关闭的**：Agent 写命令的**人工审批**。`agent_actions.yaml` 的 `approval` 段写任何多余键
+（形如 `enabled`）都会导致校验失败、能力整体关闭——配置层不存在「绕过审批」这个选项（见下节）。
+
 ### config/settings.yaml（可变参数，不再硬编码）
 
 | 键 | 说明 |
@@ -178,7 +212,7 @@ commands:
 待审批提示 → 人在 `/approvals` 批准后命令才真正执行。
 
 ```yaml
-enabled: false                # 出厂默认关闭
+enabled: true                 # 本仓库已启用（原设计出厂关闭）；关停改 false 并重启进程
 target:                       # 连接凭据只在这里（密码 .env 占位），模型永远看不到
   host: 192.168.20.128
   port: 22
@@ -225,7 +259,9 @@ rules:
   + 该目录命令声明的语义参数（如 service）；多余/越权参数会被拒；sudo 由目录项声明，规则不可越权提权；
 - 同一 `alertname` 想执行多个动作 → 写多条相同 alertname 的规则，按文件顺序执行；
 - 密码一律用环境变量占位（见安全说明），**本文件不落任何明文**；
-- 改完本文件调用 `reload_rules()` 即可热更新（RuleEngine 支持）。
+- 改完本文件需**重启进程**生效。`RuleEngine.reload_rules()` 虽已实现，但**全仓没有任何调用入口**
+  （无路由、无 CLI），且它不会重建执行器集合，换不掉动作——只热加载规则价值有限。热更新端点已登记
+  为待办，见 [PROJECT_HANDOVER.md](./PROJECT_HANDOVER.md)「路线图 · 配置热更新」。
 
 ### config/diagnostics.yaml（AI 只读诊断命令白名单）
 
@@ -351,9 +387,11 @@ Agent 写命令的审批链路用**真 graph + 脚本化假模型**离线验证
   经 `/approvals` 人工批准后才执行；写工具与审批策略在代码里**成对产出**
   （`WriteToolBundle`），结构上无法只取工具而不启用审批。
 - **⚠️ `/approvals/*` 目前没有鉴权**：任何能访问该端口且知道审批 id 的人都能批准写命令。
-  现有缓解：审批 id 为随机不可枚举值、`server.host` 默认仅 `127.0.0.1`、
-  出厂 `enabled: false`、白名单固定且命令由管理员声明。
-  **若要把服务绑到 `0.0.0.0` 或暴露到局域网，请先自行加一层鉴权（如共享密钥头）。**
+  现有缓解：审批 id 为随机不可枚举值、`server.host` 默认仅 `127.0.0.1`、白名单固定且命令由管理员声明。
+  **注意：原设计里还有一条「出厂 `enabled: false`」的缓解，但 2026-09-10 起本仓库已把该能力打开，
+  这条保护不再成立**——写通道现在是活的，只剩「只监听本机」这一层兜着。
+  **若要把服务绑到 `0.0.0.0` 或暴露到局域网，请先自行加鉴权（如共享密钥头），
+  或把 `agent_actions.yaml` 的 `enabled` 改回 `false`。**
 - **SSH host key**：演示环境使用 `AutoAddPolicy`；生产建议核对 known_hosts 后改用 RejectPolicy。
 - **提交前**：`.env` 与含密钥文件不要进版本库。仓库已于 2026-09-10 完成 `git init`，
   `.gitignore` 已忽略 `.env` / `__pycache__` / `.pytest_cache` / `.venv` / `参考/` /
@@ -371,7 +409,7 @@ Agent 写命令的审批链路用**真 graph + 脚本化假模型**离线验证
 - **新增 LLM 供应商**：在 `plugins/llm_clients/` 写 `LLMClient` 实现 → `__init__.py` 注册。
 - **新增监控能力**：先在 `core/capabilities.py` 加一个 `xxx_text(monitor)` 纯函数（措辞规范唯一出处），
   再到 `agent/tools.py` `build_tools()` 与 `core/chat.py` 关键词规则各转发一行——Agent 工具与无 LLM
-  兜底自动同款文案。高危「执行动作工具」位已预留注释（默认不注册，启用前建议配合 `interrupt_before` 人工审批）。
+  兜底自动同款文案。若加的是**写**能力（会改系统），不在此列——见下面「给 Agent 加写命令」。
 - **给 Agent 加只读诊断命令**：在 `config/diagnostics.yaml` 的 `commands` 加一条（安全模板 +
   参数 `pattern`/`min`/`max`）→ 重启服务生效，工具按白名单自动生成，无需改代码。
 - **给 Agent 加写命令**：在 `config/agent_actions.yaml` 的 `commands` 加一条（安全模板 +
@@ -383,5 +421,5 @@ Agent 写命令的审批链路用**真 graph + 脚本化假模型**离线验证
 ## 搁置项（本期不实现，仅预留）
 
 notifiers（钉钉/企微通知）、storage/db.py 的 SQLite 持久化（仅 TODO）、docker/、
-disk_clean 独立动作、插件目录自动扫描发现、logging.conf（用 settings 控制日志级别）。
+插件目录自动扫描发现、logging.conf（用 settings 控制日志级别）、配置热更新（见「路线图」）。
 对应占位注释与扩展位已留在相关文件中，后续按需实现即可。
