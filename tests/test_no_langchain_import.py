@@ -27,10 +27,16 @@ from src.core.analysis import AlertAnalyzer  # noqa: F401
 from src.core.chat import ChatService        # noqa: F401
 from src.core.rule_engine import RuleEngine  # noqa: F401
 from src.storage.memory import AlertStore    # noqa: F401
+from src.storage.approval import ApprovalStore  # noqa: F401
 from src.storage.models import Alert, AlertmanagerPayload, ActionRule  # noqa: F401
 from src.utils import security, config_loader, logger  # noqa: F401
 from src.plugins.monitors import prometheus_monitor  # noqa: F401
 from src.plugins.actions import catalog, executor  # noqa: F401
+# M3：Agent 写命令族与审批契约也必须能在无 langchain 环境导入
+from src.interfaces.agent_action import AgentActionError, AgentActionSource  # noqa: F401
+from src.interfaces.approval import ApprovalError, PendingApproval  # noqa: F401
+from src.plugins.agent_actions import catalog as agent_actions_catalog  # noqa: F401
+from src.plugins.agent_actions import source as agent_actions_source  # noqa: F401
 
 # 2) FakeMonitor + 聊天回落断言
 class FakeMonitor:

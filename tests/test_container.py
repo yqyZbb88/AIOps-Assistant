@@ -9,6 +9,7 @@ SshDiagnostics 都是「构造即就绪、调用才连网」），不 invoke 任
 """
 from __future__ import annotations
 
+import logging
 import sys
 
 import pytest
@@ -167,6 +168,9 @@ def test_create_app_smoke():
     # 对外 HTTP 契约：这些路径必须存在（契约本身不允许改动）
     for expected in ("/health", "/chat", "/alert", "/alerts/recent", "/alerts/active"):
         assert expected in paths, f"缺少路由 {expected}"
+    # 人工审批（M3 新增，非破坏性扩充）
+    for expected in ("/approvals", "/approvals/{approval_id}"):
+        assert expected in paths, f"缺少路由 {expected}"
 
 
 def test_create_app_health_endpoint_responds():
@@ -179,3 +183,83 @@ def test_create_app_health_endpoint_responds():
         resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# agent_actions：Agent 写命令装配（默认关；冲突检测）
+# ---------------------------------------------------------------------------
+AGENT_ACTIONS_SAMPLE = """
+enabled: true
+target:
+  host: 10.0.0.9
+  username: ops
+commands:
+  {cmd}:
+    summary: 测试命令
+    template: "true"
+    sudo: false
+    params: {{}}
+"""
+
+
+def _write_agent_actions(tmp_path, cmd="restart_service"):
+    f = tmp_path / "agent_actions.yaml"
+    f.write_text(AGENT_ACTIONS_SAMPLE.format(cmd=cmd), encoding="utf-8")
+    return f
+
+
+def test_agent_actions_none_by_default():
+    """出厂 config/agent_actions.yaml 为 enabled: false → 能力关闭。"""
+    assert Container(settings=Settings()).agent_actions() is None
+
+
+def test_agent_actions_none_when_file_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(tmp_path / "not_here.yaml"))
+    assert Container(settings=Settings()).agent_actions() is None
+
+
+def test_agent_actions_built_when_enabled(monkeypatch, tmp_path):
+    """启用 + paramiko 在 → 构造写命令源（离线，不连接）。"""
+    monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(_write_agent_actions(tmp_path)))
+    src = Container(settings=Settings()).agent_actions()
+    assert src is not None and [s.key for s in src.commands()] == ["restart_service"]
+
+
+def test_agent_actions_none_when_paramiko_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(_write_agent_actions(tmp_path)))
+    monkeypatch.setitem(sys.modules, "paramiko", None)
+    assert Container(settings=Settings()).agent_actions() is None
+
+
+def test_agent_actions_collision_with_monitor_tool_disables_family(
+    monkeypatch, tmp_path, caplog
+):
+    """与监控工具名冲突 → 本能力关闭（重名工具会被静默遮蔽），但不影响其它能力。"""
+    monkeypatch.setenv(
+        "OPS_AGENT_ACTIONS_FILE", str(_write_agent_actions(tmp_path, cmd="cpu_usage"))
+    )
+    c = Container(settings=Settings())
+    with caplog.at_level(logging.ERROR):
+        assert c.agent_actions() is None
+    assert "冲突" in caplog.text
+    # 关键：只关这一族，监控与只读诊断照常
+    assert c.monitor() is not None
+    assert c.diagnostics() is not None
+
+
+def test_agent_actions_collision_with_diagnostics_key_disables_family(
+    monkeypatch, tmp_path
+):
+    """与只读诊断命令名冲突同样关闭本族（诊断能力本身不受损）。"""
+    monkeypatch.setenv(
+        "OPS_AGENT_ACTIONS_FILE", str(_write_agent_actions(tmp_path, cmd="service_status"))
+    )
+    c = Container(settings=Settings())
+    assert c.diagnostics() is not None
+    assert c.agent_actions() is None
+
+
+def test_agent_actions_cached(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(_write_agent_actions(tmp_path)))
+    c = Container(settings=Settings())
+    assert c.agent_actions() is c.agent_actions()

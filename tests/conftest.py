@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.interfaces.agent_action import AgentActionError, AgentActionSource  # noqa: E402
 from src.interfaces.diagnostic import (
     CommandSpec,
     DiagnosticError,
@@ -133,6 +134,50 @@ class FakeDiagnostics(DiagnosticSource):
         }
 
 
+class FakeAgentActions(AgentActionSource):
+    """可控的 Agent 写命令源：按命令名记录调用并返回固定结果。
+
+    perform: 一组「执行时抛 AgentActionError」的命令名（模拟远端失败）；
+    真实实现会真的改系统——这里只记录调用，用于断言「批准前是否被调用」。
+    """
+
+    name = "fake_agent_actions"
+    description = "模拟 Agent 写命令源"
+
+    DEFAULT_SPECS: tuple[CommandSpec, ...] = (
+        CommandSpec(
+            key="restart_service",
+            summary="重启服务（模拟）",
+            params=(ParamSpec(name="service", type="str", required=True),),
+        ),
+    )
+
+    def __init__(
+        self,
+        *,
+        specs: tuple[CommandSpec, ...] | None = None,
+        fail: set[str] | None = None,
+    ) -> None:
+        self._specs = specs if specs is not None else self.DEFAULT_SPECS
+        self._fail = set(fail or [])
+        self.calls: list[tuple[str, dict]] = []
+
+    def commands(self) -> tuple[CommandSpec, ...]:
+        return tuple(self._specs)
+
+    def run(self, command: str, *, params: dict | None = None) -> dict:
+        self.calls.append((command, dict(params or {})))
+        if command in self._fail:
+            raise AgentActionError(f"{command} 模拟失败")
+        return {
+            "ok": True,
+            "host": "fake",
+            "command": command,
+            "exit_code": 0,
+            "output": f"{command} 已执行（模拟）",
+        }
+
+
 # ---------------------------------------------------------------------------
 # 工具：构造 Alert / Payload
 # ---------------------------------------------------------------------------
@@ -169,3 +214,8 @@ def fakellm() -> FakeLLM:
 @pytest.fixture
 def fakediag() -> FakeDiagnostics:
     return FakeDiagnostics(records={"memory": "total 1024  used 512  free 512"})
+
+
+@pytest.fixture
+def fake_actions() -> FakeAgentActions:
+    return FakeAgentActions()
