@@ -5,12 +5,17 @@ core / api 只依赖这里的抽象基类与异常，不直接依赖具体插件
 """
 
 from src.interfaces.action import ActionError, ActionExecutor
-from src.interfaces.assistant import Assistant
+from src.interfaces.agent_action import (
+    AgentActionError,
+    AgentActionSource,
+    render_agent_action,
+)
+from src.interfaces.approval import ApprovalError, ApprovalOutcome, PendingApproval
+from src.interfaces.assistant import Assistant, ApprovalCapable
+from src.interfaces.command import CommandSpec, ParamSpec
 from src.interfaces.diagnostic import (
-    CommandSpec,
     DiagnosticError,
     DiagnosticSource,
-    ParamSpec,
     render_diag,
 )
 from src.interfaces.llm_client import LLMClient, LLMError
@@ -22,11 +27,18 @@ __all__ = [
     "ActionExecutor",
     "ActionError",
     "Assistant",
+    "ApprovalCapable",
+    "ApprovalError",
+    "ApprovalOutcome",
+    "PendingApproval",
     "LLMClient",
     "LLMError",
     "DiagnosticSource",
     "DiagnosticError",
+    "AgentActionSource",
+    "AgentActionError",
     "CommandSpec",
     "ParamSpec",
     "render_diag",
+    "render_agent_action",
 ]
