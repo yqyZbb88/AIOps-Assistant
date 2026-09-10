@@ -1,0 +1,24 @@
+# 环境与依赖
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 配置中可能产生的本地覆盖
+*.local.yaml
+
+# 编辑器
+.vscode/
+.idea/
+
+# 本机工具配置（含本机命令白名单，不入库）
+.claude/settings.local.json
+
+# 课程讲义（56 MB，仅本地参考，不入库）
+参考/
+
+# 其它
+logs/
+*.log
