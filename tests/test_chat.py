@@ -1,0 +1,216 @@
+"""ChatService / OpsAgent：Agent-first 回落、关键词兜底、告警编排（离线）。"""
+from __future__ import annotations
+
+from src.core.agent import OpsAgent
+from src.core.analysis import AlertAnalyzer
+from src.core.chat import ChatService, DEFAULT_REPLY
+from src.core.rule_engine import RuleEngine, SKIP_MARK
+from src.interfaces.action import ActionExecutor, ActionError
+from src.interfaces.monitor import MonitorError
+
+from tests.conftest import FakeLLM, make_alert, make_payload
+
+
+def test_chat_fallback_cpu(fakemonitor):
+    # 无 Agent 工厂 → 直接走关键词兜底
+    svc = ChatService(fakemonitor)
+    reply = svc.reply("CPU 高不高？")
+    assert "CPU 使用率" in reply and "45.0%" in reply
+
+
+def test_chat_fallback_no_data(fakemonitor):
+    fakemonitor._memory = None
+    svc = ChatService(fakemonitor)
+    assert "暂无数据" in svc.reply("内存")
+
+
+def test_chat_fallback_monitor_error(fakemonitor):
+    fakemonitor._raise_cpu = True
+    svc = ChatService(fakemonitor)
+    reply = svc.reply("CPU")
+    assert reply.startswith("查询 CPU 使用率失败")
+
+
+def test_chat_fallback_disk_and_alerts_and_status(fakemonitor):
+    fakemonitor._disks = [{"mountpoint": "/", "usage": 88.1}]
+    fakemonitor._alerts = [
+        {"alertname": "HighCPUUsage", "severity": "critical", "instance": "h:9100",
+         "state": "firing", "value": 92.0, "summary": "cpu busy"},
+    ]
+    svc = ChatService(fakemonitor)
+    assert "88.1%" in svc.reply("磁盘空间")
+    assert "HighCPUUsage" in svc.reply("有告警吗")
+    assert "系统运行正常" in svc.reply("系统状态如何")
+    assert "可用能力" in svc.reply("帮助")
+
+
+def test_chat_unmatched_message_returns_default(fakemonitor):
+    svc = ChatService(fakemonitor)
+    assert svc.reply("讲个笑话") == DEFAULT_REPLY
+
+
+def test_chat_agent_first_then_fallback(fakemonitor):
+    """Agent 工厂成功 → 用 Agent 回复；失败 → 关键词/默认回落。"""
+    class FakeAssistant:
+        def reply(self, message: str) -> str:
+            return f"[Agent]{message}"
+
+    def good_factory():
+        return FakeAssistant()
+
+    def broken_factory():
+        raise RuntimeError("langchain 不可用（模拟）")
+
+    good = ChatService(fakemonitor, assistant_factory=good_factory)
+    assert good.reply("你好") == "[Agent]你好"
+
+    broken = ChatService(fakemonitor, assistant_factory=broken_factory)
+    assert broken.reply("你好") == DEFAULT_REPLY   # Agent 不可用→默认
+    assert broken.reply("CPU")                     # 后续关键词仍可用
+    assert "CPU 使用率" in broken.reply("CPU")
+
+
+def test_agent_tools_share_text_with_fallback(fakemonitor):
+    """M2 同源回归：Agent 工具与关键词兜底转发同一批 capabilities 纯函数，产出一致。
+
+    兜底（无 Agent 工厂直接走关键词）与 build_tools 里同名工具，在相同监控数据下
+    必须返回**完全相同**的文本——证明「单一实现」，措辞只在 src/core/capabilities.py 一处改。
+    """
+    from src.agent.tools import build_tools
+
+    def fallback_and_tool(text, name):
+        fb = ChatService(fakemonitor).reply(text)
+        (tool,) = [t for t in build_tools(fakemonitor) if t.name == name]
+        return fb, tool.invoke({})
+
+    # 正常有数据：CPU 工具 == 兜底（同款规范文案 "CPU 使用率：45.0%"）
+    fb, out = fallback_and_tool("CPU 高不高", "cpu_usage")
+    assert fb == out and fb == "CPU 使用率：45.0%"
+
+    # 无数据：内存工具 == 兜底
+    fakemonitor._memory = None
+    fb, out = fallback_and_tool("内存占用如何", "memory_usage")
+    assert fb == out and "暂无数据" in fb
+
+    # 监控失败：CPU 工具 == 兜底，均为规范失败文案前缀
+    fakemonitor._raise_cpu = True
+    fb, out = fallback_and_tool("CPU", "cpu_usage")
+    assert fb == out and fb.startswith("查询 CPU 使用率失败")
+
+    # 磁盘 / 告警：同样同源
+    fakemonitor._raise_cpu = False
+    fakemonitor._disks = [{"mountpoint": "/", "usage": 88.1}]
+    fakemonitor._alerts = [
+        {"alertname": "HighCPUUsage", "severity": "critical", "instance": "h:9100",
+         "state": "firing", "value": 92.0, "summary": "cpu busy"},
+    ]
+    fb, out = fallback_and_tool("磁盘", "disk_usage")
+    assert fb == out and "88.1%" in fb
+    fb, out = fallback_and_tool("有告警吗", "active_alerts")
+    assert fb == out and "HighCPUUsage" in fb
+
+
+# ---------------------------------------------------------------------------
+# OpsAgent
+# ---------------------------------------------------------------------------
+def test_ops_agent_chat_fallback(fakemonitor):
+    agent = OpsAgent(monitor=fakemonitor)
+    assert "CPU 使用率" in agent.chat("帮我看看CPU忙不忙")
+    assert agent.chat("你好") == DEFAULT_REPLY
+
+
+def test_ops_agent_process_alert_record_and_store(fakemonitor, fakellm):
+    """记录 → 规则处置(ok/fail) → 无规则 AI 分析 全链路（假组件，离线）。"""
+    class OkExecutor(ActionExecutor):
+        name = "ok_action"
+        description = "fake"
+        def execute(self, params: dict) -> dict:
+            return {"ok": True, "host": params["host"]}
+
+    rules_yaml = """\
+rules:
+  - alertname: HighCPUUsage
+    action: ok_action
+    params: {host: h1}
+    auto_execute: true
+  - alertname: HighCPUUsage
+    action: ok_action
+    params: {host: h1}
+    auto_execute: false
+"""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        rf = Path(td) / "rules.yaml"
+        rf.write_text(rules_yaml, encoding="utf-8")
+        engine = RuleEngine(executors={"ok_action": OkExecutor()}, rules_file=rf)
+
+        analyzer = AlertAnalyzer(fakemonitor, llm=fakellm)
+        agent = OpsAgent(
+            monitor=fakemonitor,
+            rule_engine=engine,
+            analysis=analyzer,
+            llm=fakellm,
+        )
+
+        # 一条命中规则、一条无规则 → 记录 + 处置 + AI 分析
+        payload = make_payload(
+            make_alert("HighCPUUsage", instance="h:9100"),
+            make_alert("MysteryAlert", instance="h:9100"),
+        )
+        ack = agent.process_alert(payload)
+        assert ack.received == 2
+        assert len(ack.alerts) == 2
+        # 命中两条规则（true 执行 + false skip）
+        assert [r["status"] for r in ack.remediation] == ["ok", SKIP_MARK]
+        # 无规则告警进入 AI 分析
+        assert len(ack.ai_advice) == 1
+        assert ack.ai_advice[0]["alertname"] == "MysteryAlert"
+        assert "模拟分析结论" in ack.ai_advice[0]["advice"]
+
+        # 记录进内存缓冲，可查最近记录
+        assert len(agent.recent(10)) == 2
+
+
+def test_ops_agent_process_alert_llm_unavailable_not_blocking(fakemonitor):
+    """LLM 不可用（未注入）→ AI 分析跳过，告警记录与规则处置照常完成。"""
+    class OkExecutor(ActionExecutor):
+        name = "ok_action"
+        description = "fake"
+        def execute(self, params: dict) -> dict:
+            return {"ok": True, "host": params["host"]}
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        rf = Path(td) / "rules.yaml"
+        rf.write_text(
+            "rules:\n  - alertname: HighCPUUsage\n    action: ok_action\n"
+            "    params: {host: h1}\n    auto_execute: true\n",
+            encoding="utf-8",
+        )
+        engine = RuleEngine(executors={"ok_action": OkExecutor()}, rules_file=rf)
+        agent = OpsAgent(monitor=fakemonitor, rule_engine=engine)  # 无 analysis/llm
+
+        payload = make_payload(
+            make_alert("HighCPUUsage"),
+            make_alert("MysteryAlert"),
+        )
+        ack = agent.process_alert(payload)
+        assert ack.received == 2
+        assert len(ack.remediation) == 1
+        assert ack.ai_advice == []   # LLM 不可用：不阻塞、无 AI 建议
+        assert len(agent.recent()) == 2
+
+
+def test_ops_agent_active_alerts_propagates_monitor_error(fakemonitor):
+    class BoomMonitor:
+        def active_alerts(self):
+            raise MonitorError("down")
+
+    agent = OpsAgent(monitor=BoomMonitor())  # type: ignore[arg-type]
+    import pytest as _pytest
+    with _pytest.raises(MonitorError):
+        agent.active_alerts()

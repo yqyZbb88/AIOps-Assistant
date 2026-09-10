@@ -1,0 +1,11 @@
+"""业务异常基类。
+
+core / 上层自定义业务异常统一继承 OpsAgentError，便于集中捕获；
+基础设施异常（MonitorError / ActionError / LLMError）已在各自接口定义，
+不重复在此定义。
+"""
+from __future__ import annotations
+
+
+class OpsAgentError(Exception):
+    """ops-agent 业务异常基类。"""

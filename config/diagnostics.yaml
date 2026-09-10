@@ -1,0 +1,71 @@
+# 只读诊断命令白名单与目标主机（Agent 排查规则外问题用）
+#
+# 由 src/plugins/diagnostics/commands.py 解析；结构非法 / 文件缺失 → 能力关闭，服务照常启动。
+#
+# 注意：本文件整体会被环境变量插值（含注释），因此注释里不要写 ${...} 字面量。
+# 安全约定（同 config/rules.yaml）：
+#   - target 的连接密码只写 .env 占位符，真实值在根目录 .env，本文件不落明文；
+#   - commands 是「命令 → 安全模板」白名单：命令只由这里声明，模型只能选命令名 +
+#     受控语义参数（服务名 / 行数 / Top N），模型自由文本永不拼进 shell；
+#   - 模板占位符用 {name}，占位名集合必须等于 params 声明的参数名集合；
+#     str 参数必须声明 pattern（re.fullmatch 全匹配），int 用 min/max 收敛；
+#   - 只读诊断恒不 sudo；模板里如需字面花括号（awk 等）暂不支持，需换写法或另配脚本。
+#
+# 生效：改完重启服务重建 Agent（工具集在 Agent 构建时定稿）。
+
+enabled: true
+provider: ssh
+
+# 目标主机：与监控实例一致（同 .env 里 SSH_PASSWORD_192_168_20_128 对应的 root 密码）
+target:
+  host: 192.168.20.128
+  port: 22
+  username: root
+  password: "${SSH_PASSWORD_192_168_20_128}"
+  # key_filename: ""        # 优先私钥认证时填路径；二选一即可
+  connect_timeout: 8        # 连接 + 单命令执行超时（秒）
+
+output_limit: 4000          # 单命令回传 Agent 的最大字符数，超出截断加省略标记
+
+# 命令白名单：key（即 Agent 工具名，小写开头）→ 模板 + 参数声明
+commands:
+  memory:                     # → free -m
+    summary: 查看内存使用明细（free -m），含已用/缓冲/缓存/可用
+    template: "free -m"
+    params: {}
+  disk:                       # → df -hT
+    summary: 查看磁盘占用与文件系统类型（df -hT），含 tmpfs/overlay 等虚拟挂载
+    template: "df -hT"
+    params: {}
+  top_processes:              # → ps 按 CPU 排序取 Top N（排查 CPU/内存元凶）
+    summary: 按 CPU 占用排序列出 Top N 进程（pid/用户/%cpu/%mem/命令）
+    template: "ps -eo pid,ppid,user,%cpu,%mem,etime,cmd --sort=-%cpu | head -n {limit}"
+    params:
+      limit:
+        type: int
+        default: 10
+        min: 1
+        max: 50
+        description: 想看多少行（1-50）
+  service_status:             # → systemctl status <service>
+    summary: 查看某个 systemd 服务的运行状态（active/failed + 最近日志）
+    template: "systemctl status --no-pager -l {service}"
+    params:
+      service:
+        type: str
+        pattern: "^[A-Za-z0-9_.:@-]{1,128}$"
+        description: 服务名，如 nginx / mysql
+  service_logs:               # → journalctl -u <service> -n <lines>
+    summary: 查看某个服务最近的运行日志
+    template: "journalctl -u {service} --no-pager -n {lines}"
+    params:
+      service:
+        type: str
+        pattern: "^[A-Za-z0-9_.:@-]{1,128}$"
+        description: 服务名，如 nginx / mysql
+      lines:
+        type: int
+        default: 50
+        min: 1
+        max: 200
+        description: 取最近多少行日志（1-200）

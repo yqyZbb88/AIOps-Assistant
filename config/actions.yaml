@@ -1,0 +1,39 @@
+# 写命令目录（WRITE 边界）：规则（rules.yaml）允许执行的修复命令白名单
+#
+# 由 src/plugins/actions/catalog.py 解析；文件缺失 / enabled=false / 校验失败
+# → 目录关闭（自动处置不启用），服务照常启动。
+#
+# M1b 语义：动作不再「一个动作一个 Python 类」。这里用「命令 → 安全模板」集中声明
+# 允许执行的命令，rules.yaml 只按 key 引用并提供语义参数，只能从这个列表里选。
+# restart_service 就是目录里的一条普通命令（systemctl restart {service}），无需独立动作类。
+#
+# 用法要点（与 config/diagnostics.yaml 同款机制）：
+#   - 命令只由这里声明；模板静态部分 = 管理员可信文本，参数用 {name} 占位；
+#   - 模板占位名集合必须等于 params 声明集合（多写/漏写 → 校验失败并关闭目录）；
+#   - str 参数必须声明 pattern（re.fullmatch 全匹配）；int 用 min/max 收敛；
+#   - sudo: 每条命令单独声明是否提权执行（管理员决定）；规则不能越权把非 sudo 项提权。
+#   - 连接凭据（host/port/username/password…）不在本文件：由 rules.yaml 每条规则的
+#     params 提供，密码以环境变量占位（真实值只存在 .env），本文件不落任何明文。
+#
+# 生效：改完目录需重启进程（executors 在容器装配/首次使用时按目录构建并缓存）。
+
+enabled: true
+
+commands:
+  restart_service:              # → systemctl restart <service>
+    summary: 重启一个 systemd 服务（如 nginx / mysql）
+    template: "systemctl restart {service}"
+    sudo: false
+    params:
+      service:
+        type: str
+        pattern: "^[A-Za-z0-9_.:@-]{1,128}$"
+        description: 服务名，如 nginx / mysql
+  stop_loadgen:                 # → 停掉制造负载的压测脚本（无参命令，模板即整条）
+    summary: 停掉压测脚本 load_gen.sh（CPU 自愈示例）
+    template: "pkill -f 'load_gen.sh'"
+    params: {}
+  cleanup_disk:                 # → 跑磁盘清理脚本（固定脚本，无参）
+    summary: 执行磁盘清理脚本 cleanup_disk.sh（需先放到主机上）
+    template: "cd /opt/ops && bash cleanup_disk.sh"
+    params: {}

@@ -1,0 +1,39 @@
+# ops-agent 全局配置（重构后统一入口）
+#
+# 取值方式：
+#   - 可变参数集中在这里，代码不硬编码；
+#   - 敏感值一律用环境变量占位并在加载时插值（机制见 utils/config_loader.py），
+#     真实值写入根目录 .env（勿提交版本库），config/ 下不落任何明文密钥。
+
+app:
+  name: ops-agent          # 应用标识（FastAPI title / 日志 logger 前缀）
+  version: 0.2.0           # 语义化版本（本次架构重构后递增）
+
+server:
+  host: 127.0.0.1          # 仅本机可访问；局域网开放请改 0.0.0.0
+  port: 8000
+
+prometheus:
+  # 数据源地址：优先取环境变量 PROMETHEUS_URL，缺省回退 localhost:9090
+  base_url: ${PROMETHEUS_URL:-http://localhost:9090}
+  timeout: 5               # 查询超时（秒），避免 Prometheus 异常时长时间阻塞
+
+monitor:
+  provider: prometheus     # 监控源插件名（registry 中 monitors 已注册的名称）
+
+llm:
+  provider: deepseek       # LLM 插件名（registry 中 llms 已注册的名称）
+  enabled: true            # false 时告警 AI 分析直接跳过，不阻塞告警接收
+
+agent:
+  name: ops_assistant      # Agent trace/日志归因名（预留，聊天 Agent 构建用）
+  debug: false             # create_agent 的 debug 开关（预留）
+
+alert:
+  recent_limit: 100        # 最近告警内存缓冲上限（条）
+  trend_minutes: 60        # 告警 AI 分析时取的实例历史趋势窗口（分钟）
+  trend_step: "5m"         # 趋势采点步长
+
+logging:
+  level: INFO              # 日志级别（DEBUG / INFO / WARNING / ERROR）
+  audit: true              # 是否启用动作审计日志（ops_agent.audit）
