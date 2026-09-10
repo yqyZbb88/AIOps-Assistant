@@ -19,6 +19,7 @@ agent/tools.py 的 build_tools 与 core/chat.py 的规则各转发一行。
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 from src.interfaces.monitor import MonitorError, MonitorSource
 
@@ -35,10 +36,14 @@ def _pct(value: float | None) -> str:
     return f"{value:.1f}%"
 
 
-def _usage_text(monitor: MonitorSource, method: str, name: str) -> str:
-    """单百分比指标的共用实现：取数 → MonitorError 转失败文案 → None 转暂无数据。"""
+def _usage_text(getter: Callable[[], float | None], name: str) -> str:
+    """单百分比指标的共用实现：取数 → MonitorError 转失败文案 → None 转暂无数据。
+
+    getter 传 MonitorSource 的取值方法本身（如 monitor.cpu_usage），
+    不走 getattr 字符串派发——拼错方法名由类型检查/IDE 当场发现，而非运行时才炸。
+    """
     try:
-        value = getattr(monitor, method)()
+        value = getter()
     except MonitorError as exc:
         logger.warning("查询 %s 失败: %s", name, exc)
         return f"查询 {name}失败：{exc}"
@@ -49,12 +54,12 @@ def _usage_text(monitor: MonitorSource, method: str, name: str) -> str:
 
 def cpu_usage_text(monitor: MonitorSource) -> str:
     """查询 + 格式化当前 CPU 使用率（%）。失败返回"查询 CPU 使用率失败：…"。"""
-    return _usage_text(monitor, "cpu_usage", "CPU 使用率")
+    return _usage_text(monitor.cpu_usage, "CPU 使用率")
 
 
 def memory_usage_text(monitor: MonitorSource) -> str:
     """查询 + 格式化当前内存使用率（%）。失败返回"查询 内存使用率失败：…"。"""
-    return _usage_text(monitor, "memory_usage", "内存使用率")
+    return _usage_text(monitor.memory_usage, "内存使用率")
 
 
 def disk_usage_text(monitor: MonitorSource) -> str:
