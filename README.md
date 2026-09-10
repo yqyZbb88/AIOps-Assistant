@@ -14,7 +14,7 @@
 - **告警 AI 分析**：无自动处理规则的告警 → LLM 给出根因假设与处理建议。
 
 代码已按既定目标架构**就地重构**（`ops_bot/` 已删除；该任务的目标文档 `obs-agent.txt` 已不在仓库内，
-决策留痕见 [REFACTOR_PROMPT.md](./REFACTOR_PROMPT.md) 的「既定决策记录」），落实：
+决策留痕见 [PROJECT_HANDOVER.md](./PROJECT_HANDOVER.md) 的「既定决策记录」），落实：
 模块解耦（interfaces/ 抽象 + plugins/ 实现）、可扩展性（各能力预留接口）、配置分离（config/ 不再硬编码）、
 可测试性（core 只依赖抽象接口，单测注入假组件）、安全性（密钥走 .env / 环境变量，动作审计）。
 
@@ -215,7 +215,7 @@ commands:
 - 改完文件需**重启服务**生效（Agent 工具集在首次聊天时构建并缓存）；
 - 目前**单台目标主机**（`target`），多主机未实现。已定扩展方向：命令白名单共享 + `targets`
   命名映射（每台各自 `${VAR}` 密码）+ 每个工具加受限 `host` 枚举参数（详见
-  [REFACTOR_PROMPT.md](./REFACTOR_PROMPT.md)「路线图 · 多主机诊断」）。
+  [PROJECT_HANDOVER.md](./PROJECT_HANDOVER.md)「路线图 · 多主机诊断」）。
 
 ### .env / 环境变量
 
