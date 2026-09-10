@@ -1,9 +1,7 @@
-"""utils.security：敏感打码 + 必填参数校验。"""
+"""utils.security：敏感打码。"""
 from __future__ import annotations
 
-import pytest
-
-from src.utils.security import redact_sensitive, require_params
+from src.utils.security import redact_sensitive
 
 
 def test_redact_masks_sensitive_keys_case_insensitive():
@@ -32,15 +30,3 @@ def test_redact_is_shallow_copy():
     out = redact_sensitive(data)
     out["b"] = 2
     assert "b" not in data
-
-
-def test_require_params_ok():
-    require_params({"host": "h", "command": "ls"}, ("host", "command"))
-
-
-def test_require_params_missing_raises():
-    with pytest.raises(ValueError, match="缺少必填参数"):
-        require_params({"host": "h"}, ("host", "command"))
-    # 空字符串也视为缺失
-    with pytest.raises(ValueError):
-        require_params({"host": "", "command": "ls"}, ("host", "command"))

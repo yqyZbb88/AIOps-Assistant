@@ -1,13 +1,15 @@
-"""安全工具：敏感信息打码 + 命令/动作参数必填校验。
+"""安全工具：敏感信息打码。
 
 设计：
 - 记录 / 日志里任何包含密钥类字段的 dict 都应先过 redact_sensitive()，
-  保证 password/token/secret/api_key 等永不落入日志与审计；
-- 动作执行前用 require_params() 校验必填参数，缺参直接在进入 SSH/执行前拦截。
+  保证 password/token/secret/api_key 等永不落入日志与审计。
+
+注：参数必填校验不在本模块——host 由 plugins/common/endpoint.py 的
+endpoint_from_params 校验，命令参数由 plugins/common/cmddef.py 的 validated_params 校验。
 """
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any
 
 # 打码判定的键名子串（大小写不敏感；涵盖旧 ops_bot 的 password/token/secret/api_key）
 _SENSITIVE_SUBSTRINGS: tuple[str, ...] = ("password", "token", "secret", "api_key", "passwd")
@@ -32,19 +34,3 @@ def redact_sensitive(data: dict[str, Any]) -> dict[str, Any]:
         if _is_sensitive_key(key):
             redacted[key] = MASK
     return redacted
-
-
-def require_params(
-    params: dict[str, Any],
-    required: Iterable[str],
-    *,
-    scope: str = "动作",
-) -> None:
-    """校验必填参数非空；缺失时抛 ValueError（由调用方收敛为业务异常）。
-
-    用途：命令/主机等关键参数只能来自规则配置（rules.yaml），
-    缺参 → 立即失败，不让半截参数进入 SSH 等副作用路径。
-    """
-    missing = [name for name in required if not params.get(name)]
-    if missing:
-        raise ValueError(f"{scope}缺少必填参数: {', '.join(missing)}")

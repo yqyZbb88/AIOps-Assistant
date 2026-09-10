@@ -141,17 +141,6 @@ def interpolate(text: str) -> str:
     return _ENV_REF.sub(_env_value, text)
 
 
-def interpolate_mapping(data: Any) -> Any:
-    """递归遍历任意（YAML 解析后的）结构，对字符串节点做环境插值。"""
-    if isinstance(data, str):
-        return interpolate(data)
-    if isinstance(data, list):
-        return [interpolate_mapping(item) for item in data]
-    if isinstance(data, dict):
-        return {key: interpolate_mapping(value) for key, value in data.items()}
-    return data
-
-
 # ---------------------------------------------------------------------------
 # YAML → dataclass
 # ---------------------------------------------------------------------------
