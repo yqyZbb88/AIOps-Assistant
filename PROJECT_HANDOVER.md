@@ -211,10 +211,87 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     **静默丢弃**（[src/core/rule_engine.py:93-96](src/core/rule_engine.py#L93-L96)，只留一行 warning），
     看着 `auto_execute: true` 其实根本没启用；
   - 2026-09-10 用户决定：**先不做，仅登记**。
+- **对话历史维护（多轮对话 + 历史记录表）**：2026-09-10 用户提出并判定为「一直被忽略的至关重要功能」。
+  现状确为**单轮**：`reply()` 每轮只传当前一条消息
+  （[src/agent/assistant.py:276](src/agent/assistant.py#L276)），`/chat` 无会话概念
+  （`user` 字段**只用于打日志**）。设计已完成，结论与未决点如下，**勿重新考古**：
+
+  **先分清两件事**：「多轮记忆」（模型接得上上句，属线程态）与「历史记录表」（落盘、可查、可回放）
+  是两个问题，共用一套会话 id，但**存储决策不同**——这正是下面 A/B 分歧的根源。
+
+  **已定**：
+  - 会话 id **显式**：`/chat` 请求体加**可选** `session_id`，不传则新建并在响应回带。
+    **绝不复用 `user` 当会话 key**——同一人开两个话题会互相污染，且会悄悄改变一个既有字段的语义；
+  - **历史表是唯一真相（推荐路线 B）**：每轮从表取窗口内历史 → 拼新消息 → invoke → 把 user 与回答
+    都写回表；`thread_id` 仍每轮新 `uuid4()`、跑完即删，checkpointer 继续只当「审批中断的临时草稿纸」，
+    用法与今天完全一致（不与 checkpoint 的 state 打架）。代价：每轮全量重发历史，靠窗口限 token；
+  - 备选**路线 A**（`thread_id = session_id`、线程长活、历史全交给 checkpointer，可配官方
+    `SummarizationMiddleware` / `ContextEditingMiddleware`）：LangGraph 正统、不必自己传历史，
+    但**会架空这张表**——`InMemorySaver` 是进程内存，重启即丢、多 worker 各存一份；要持久得换
+    `langgraph-checkpoint-sqlite`（新增依赖），且历史是序列化 blob，查出来展示很别扭。
+    **A/B 是绑定的**：让中间件管记忆 ⟺ 必须走 A，**不能既要表是唯一真相又要中间件管历史**；
+  - 表用 **stdlib `sqlite3`**（零新增依赖），正好激活 [src/storage/db.py](src/storage/db.py)
+    那个空 TODO 占位（它原本就写着「落盘 + 归档」）。两张表：
+    `sessions(session_id, user, title, created_at, updated_at, status)` /
+    `messages(session_id, seq, role, content, status, approval_id, created_at)`，
+    索引 `(session_id, seq)`（`seq` 必须显式递增——同秒时间戳排不准）；
+  - **只存 user/assistant 文本，不存 tool 调用与工具返回**：中间那几轮 tool-call 消息既难序列化
+    也没必要（下轮模型需要数据会重新调工具），存了反而要维护一整套 `BaseMessage` 序列化；
+  - 落点：`interfaces/session.py`（`ChatMessage` 中性类型 + `SessionStore`）
+    → `storage/session.py`（sqlite 实现，+ 可选内存实现供降级/测试）
+    → `core/chat.py` 持有 store（**core 仍不 import langchain**）
+    → `assistant.reply(message, *, history=None)`（带默认值的 kwarg，既有调用点与 FakeAssistant 都不失效）
+    → `api/sessions.py`（`GET /sessions`、`GET /sessions/{id}`、`DELETE /sessions/{id}`）。
+
+  **审批 × 多轮的三个边界（最容易写错，实现前就要定）**：
+  1. **中断那轮的回答不在 `reply()` 时产生，而在 `decide()` 时**——表里那条只能先记「待审批提示」
+     （`status=pending_approval` + `approval_id`），续跑完再把最终回答补写进去；
+     **不补写，历史里就会永远留一段没下文的记录**；
+  2. 会话有未决审批时用户又发新消息：技术上安全（每轮线程独立，审批那条线程不受影响），
+     建议**允许**，但在会话行上标未决审批数，让前端能提示「这个会话还有一条命令等你批」；
+  3. **会话删除 / 过期时，未决审批必须一并作废**（继承 fail-safe：宁可让人重新发起，
+     也不能让一个陈旧的中断还挂着等执行）。
+
+  **要同步改的既有约束（别漏）**：`/chat` 加字段是**追加**（同 `/approvals` 的性质），但会碰三处——
+  [tests/test_api_approvals.py:112](tests/test_api_approvals.py#L112) 断言 `set(resp.json()) == {"reply"}`、
+  [README.md:342](README.md#L342) 写着「原五个路由的请求/响应契约一个字都没改」、
+  本文件「不要动的东西」的对外契约条目。（备选：`X-Session-Id` 请求/响应头，JSON 契约可真正一字不动，
+  但可发现性与可测性差一截。）
+
+  **坑：`OpsAssistant.chat()` / `reset()` / `self.messages`**
+  （[assistant.py:419-427](src/agent/assistant.py#L419-L427)）是讲义留下的**实例级共享列表**；
+  Agent 是**单例**，谁真去用它，所有 HTTP 请求就串味。多轮落地时删掉或明确标注 deprecated，
+  **别留着当诱饵**。
+
+  **先实测再写代码**（M3 靠这个避开了线程毒化，这次同理，用脚本化假模型 + 真 graph）：
+  ① 每轮新 `thread_id` + 传入完整多轮 messages，与 checkpointer 是否相容（会不会重复累积）；
+  ② 带历史的一轮触发中断后，`decide()` 取到的 `_last_ai_content` 是否仍是**本轮**最终回答
+  （而非历史里某条旧消息）；③ 历史为空 / 仅一条 / 超窗口三种边界。
+
+  **未决（动手前先问用户）**：路线 A 还是 B（倾向 B）；不传 `session_id` 时新建会话还是保持单轮
+  （倾向新建）；`/chat` 加字段还是用 header（倾向加字段）。
+- **熔断机制（调用次数 / 成本上限）**：2026-09-10 用户提出。现状：Agent **实际上没有成本熔断**——
+  LangGraph 确实有 `recursion_limit`，但实测默认值是 **10000**
+  （`langgraph._internal._config.DEFAULT_RECURSION_LIMIT`，本机 langgraph 实测），
+  远超任何正常回路，起不到成本控制作用；模型在一个 `invoke` 里可反复调工具直到自己停下。
+  **写命令路径有审批兜住，只读工具没有**：抽风的模型能把 Prometheus 打到超时、把 token 烧穿。
+  规格（待细化）：
+  - 用 langchain 1.2.12 现成的 `ToolCallLimitMiddleware` / `ModelCallLimitMiddleware`，挂在
+    [src/agent/assistant.py](src/agent/assistant.py) 那条 `create_agent(middleware=[...])` 上——
+    **与写命令审批零耦合**：只读 Agent 也能用，且不需要 checkpointer；
+  - 上限值**配置化**（`config/settings.yaml` 的 `agent` 段，如 `max_tool_calls` / `max_model_calls`），
+    不硬编码；缺省 / `0` = 关闭（保持现行为）；
+  - **触发后的行为要定**：给模型一段可读文本让它收尾，还是直接终止本轮？**关键是不得把异常抛到
+    `ChatService`**——会被它的 catch-all 吞掉、整条聊天静默回落关键词，与「中断不是异常」那条坑同源；
+  - 顺带核对审批侧既有的容量熔断（`ApprovalStore` 的 `max_pending=32` + 900s TTL）是否够用。
+  **动手前先实测**：多个中间件在 `create_agent(middleware=[a, b])` 里的**执行顺序语义**
+  （历史/记忆钩子与 HITL 的先后），以及超限时的**返回形状**（中断？异常？还是正常返回一段文本）——
+  **别凭记忆断言**。
 
 ### 搁置项（预留未实现）
 
-- `notifiers`（钉钉/企微）、[src/storage/db.py](src/storage/db.py) 的 SQLite 持久化（仅 TODO 占位）、
+- `notifiers`（钉钉/企微）、[src/storage/db.py](src/storage/db.py) 的 SQLite 持久化（仅 TODO 占位，
+  **由路线图的「对话历史维护」激活**——届时历史表就落在这里）、
   `docker/`、插件目录自动扫描发现、`logging.conf`。
 - `disk_clean` 不再单独立动作：M1 后直接加进 `config/actions.yaml` 即可。
 
@@ -237,6 +314,10 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 - **`ChatService.Rule` 那个小规则框架**：有点自造感，但有测试锁着且确实换来了可读性，不值得改。
 - **对外 HTTP 契约**（`/health` `/chat` `/alert` `/alerts/*` 的请求响应）：一个字都别改
   （`tests/test_container.py::test_create_app_smoke` 锁了路由存在性）。
+  **唯一的例外已登记**：路线图「对话历史维护」计划给 `/chat` **追加**可选 `session_id`
+  （请求与响应各一个字段，属**扩充**而非修改，同当初加 `/approvals` 的性质）——
+  真做的时候要连同 `tests/test_api_approvals.py:112` 的 `set(resp.json()) == {"reply"}`
+  与本文件此条一并更新，别让两处对不上。
 - **`config/*.yaml` 的现有格式与示例内容**：无需求不动配置。
 - **安全不变量相关的一切**（`shlex.quote`、redact、审计、恒不 sudo、凭据不进模型）：只许加固，不许放松。
 - **M3 的人工审批**（2026-09-10 新增，同样只许加固）：写工具与审批策略必须继续**成对产出**
