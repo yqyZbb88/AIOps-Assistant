@@ -14,35 +14,15 @@ core / agent 层只依赖本接口；具体实现（SSH、将来的 Agent 直连
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any
+
+# 命令元信息（ParamSpec / CommandSpec）已迁至中性层 interfaces/command.py，
+# 与写动作边界共用；此处 re-export 保持既有 import 路径不变。
+from src.interfaces.command import CommandSpec, ParamSpec  # noqa: F401
 
 
 class DiagnosticError(Exception):
     """只读诊断失败（未知命令 / 参数非法 / 连接与认证失败 / 执行异常）。"""
-
-
-@dataclass(frozen=True)
-class ParamSpec:
-    """命令参数声明（来自 diagnostics.yaml 的 params），供工具层建 schema。"""
-
-    name: str
-    type: str = "str"          # "str" | "int"
-    required: bool = False
-    default: Any = None
-    pattern: str | None = None  # str 型参数的全匹配正则（服务端校验）
-    minimum: int | None = None  # int 型参数下限
-    maximum: int | None = None  # int 型参数上限
-    description: str = ""
-
-
-@dataclass(frozen=True)
-class CommandSpec:
-    """一条白名单命令的元信息（Agent 可见的只读面）。"""
-
-    key: str
-    summary: str = ""
-    params: tuple[ParamSpec, ...] = ()
 
 
 class DiagnosticSource(ABC):
