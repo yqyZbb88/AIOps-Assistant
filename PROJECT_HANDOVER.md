@@ -50,9 +50,11 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 5. **Agent 两条工具通道，边界不同，别混**：
    - 监控工具（读指标/告警）与只读诊断工具 = **可自动调用**（只读、白名单命令、服务端参数校验、
      凭据不进模型），见 [src/agent/tools.py](src/agent/tools.py) 的 `build_tools` / `build_diag_tools`；
-   - **写动作永不直接暴露给模型自由选**：动作收敛成 `config/actions.yaml` 写命令目录
-     （管理员声明模板/参数/sudo），`rules.yaml` 只引用目录 key。`agent/tools.py` 底部留了
-     「动作执行工具位」注释——若要启用需配合 `interrupt_before` 人工审批，未批准不实现（路线图 M3）。
+   - **写动作永不直接暴露给模型自由选**：两条路径都是「管理员声明的白名单 + 目录 key」——
+     规则路径 = `config/actions.yaml` + `rules.yaml` 引用（**无头自动执行**）；
+     Agent 路径 = `config/agent_actions.yaml` + `build_agent_action_tools`（**强制人工审批**）。
+     两条白名单互相独立，**不要在它们之间共享条目**，也不要让 Agent 路径的写命令进
+     `container.executors()`（那会让它绕过审批被规则无头执行）。
 6. **安全不变量**（新增任何 Agent 能力先逐条对号）：
    - 模型上下文 / 工具参数里**永无** host / 密码 / 私钥 / 自由 shell 命令；
    - 命令串 = 配置里声明的模板 + 逐参校验并 `shlex.quote` 的值；模型自由文本永不拼进 shell；
@@ -66,8 +68,9 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
    收敛在 [src/core/capabilities.py](src/core/capabilities.py)（无 langchain 纯函数），Agent 工具与
    关键词兜底都转发它——**同一能力只写一处**；远程**非零退出码不算工具失败**（grep 无匹配、
    systemctl 查 failed 服务常返回非 0）——用 `ok=False` 连输出回传，由 Agent 自行判断。
-9. 改 `config/diagnostics.yaml` / `config/actions.yaml` / 注册新插件 / 新增工具 → **需重启进程**
-   才生效（Agent 工具集在首次聊天构建时定稿；executors 在容器首次装配时按目录构建并缓存）；
+9. 改 `config/diagnostics.yaml` / `config/actions.yaml` / `config/agent_actions.yaml` /
+   注册新插件 / 新增工具 → **需重启进程**才生效（Agent 工具集在首次聊天构建时定稿；
+   executors 在容器首次装配时按目录构建并缓存）；
    唯一例外是 `RuleEngine.reload_rules()`（热更新，已支持）。
 10. **`config/*.yaml` 的正文与注释都不要出现字面 `${`** ——`interpolate()` 对整个文件文本替换，
     注释里的 `${...}` 也会被当环境变量，冒出误导性日志。
@@ -75,7 +78,10 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：110 passed。**
+    **当前基线：189 passed**（2026-09-10 M3 后；M3 新增 79 例，其中
+    `test_agent_actions_hitl_graph.py` 用**真 graph + 脚本化假模型**验证审批语义，
+    含一条覆盖「容器 → 工厂 → OpsAssistant → 执行」的端到端装配用例——
+    单件全绿但接线接错时只有它会红）。
 
 ---
 
@@ -88,6 +94,11 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   （`memory`/`disk`/`top_processes`/`service_status`/`service_logs`）经 SSH 到目标主机排查；
   命令模板 + 参数校验全配置化，工具按白名单动态生成（模型只选命令名 + 语义参数）。
 - **Prometheus 指标查询**：即时值 + 按实例近 1h 趋势。
+- **Agent 写命令 + 强制人工审批**（M3，2026-09-10）：Agent 可申请执行
+  `config/agent_actions.yaml` 声明的写命令 → `HumanInTheLoopMiddleware` 在**执行前中断**
+  → `/approvals` 人工批准后才真正执行。凭据来自该文件 `target`（模型不可见），
+  sudo 逐条声明；未批准 / 过期 / 重启 / 淘汰 → 命令永不执行。出厂 `enabled: false`。
+  **与规则自动处置完全隔离**（两条白名单各自独立）。
 - **告警自动处置**：Alertmanager webhook 接收（`POST /alert`）+ 最近记录 + active 查询；
   `config/actions.yaml` 写命令目录（模板+参数+sudo）→ 通用执行器按目录 key 执行（带校验 + 审计）；
   只读诊断与写命令共用 `plugins/common`（endpoint/ssh/audit/cmddef）内核，两条入口/边界分离；
@@ -120,6 +131,8 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | 工具把「查询失败」当异常抛 | 监控/诊断工具内部捕获 `MonitorError`/`DiagnosticError` 返回**可读 str**，绝不抛到 Agent；连接失败、参数被拒都只是普通返回。 |
 | 同一监控能力写两遍（@tool 与兜底 handler 各查各的、措辞漂移） | M2 起能力**唯一实现** = `core/capabilities.py` 的 `xxx_text(monitor)` 纯函数（无 langchain，供兜底 import）；加能力只在此写「取数+格式化+失败文案」，再到 `agent/tools.py` build_tools 与 `core/chat.py` 规则各**转发一行**。Agent 工具输出 ≠ 兜底输出 = 改错位置了（`test_chat.py` 有同源回归锁死）。 |
 | 给模型自由参数/自由命令 | **永不**。模型只选命令名 + 语义参数；连接凭据只在 config target，构造后留实例内；str 参数全匹配后再 `shlex.quote`，int 十进制；命令模板静态部分 = 管理员可信文本。 |
+| **`create_agent` 对重名工具不报错**（2026-09-10 实测，静默遮蔽） | 命令 key 即工具名 → 写命令 key 与监控工具（`cpu_usage` 等）或只读诊断命令重名会被悄悄盖掉。冲突检测放在 **`container.agent_actions()`**（不是 assistant——那里抛异常会让 `ChatService._agent_broken` 置位、整条聊天回落）；命中即关本能力并记 ERROR。`RESERVED_AGENT_TOOL_NAMES` 有测试锁其与 `build_tools` 一致。 |
+| **中断不是异常 / 错误 resume 负载会永久毒化线程**（2026-09-10 实测） | 四个必须记住的语义：① 中断时 `invoke` 正常返回 `{"__interrupt__": [...]}`——`reply()` 必须**先判中断**，否则 `_last_ai_content` 会返回「抱歉，我暂时无法回答这个问题。」把待审批伪装成失败；② 有 checkpointer 时**必须**传 `thread_id`，否则抛 `ValueError` 被 `ChatService` catch-all 吞掉 → 整条聊天静默回落关键词；③ resume 必须用**存下来的那个** thread_id，错的会静默无操作；④ 决策条数/类型不合法 → LangGraph 把错负载缓存为 resume 值，**该线程之后连正确负载都执行不了** → 故 `decide()` 必须**先校验后 resume**、且审批 id **先 pop 后执行**（单次性）。 |
 | 真实密码入日志/文档 | 审计 params 一律 `redact_sensitive`；新写例子/注释/文档只允许 `${VAR}` 占位，真实值只存在用户 `.env`。 |
 | （已修 2026-09-04）根 `requirements.txt` 曾被写成 **UTF-16**，`pip install -r` 直接挂 | 依赖/文档文件一律 **UTF-8**；requirements 分「核心 / 可选①聊天+AI 分析 / 可选②SSH+只读诊断 / 可选③测试」，与 README「安装与依赖」保持一致。 |
 | **`Any` 退化成「看不见」的契约**（2026-09-10 踩到） | 层间边界一律标真实接口（`Assistant` Protocol / `RuleEngine` / `ActionExecutor`），不用 `Any`；**删/改 import 后用静态检查或全仓注解求值扫一遍**——因 `from __future__ import annotations` 使注解不求值，`Any` 被误删后测试与运行全绿，只有类型检查器会报。 |
@@ -131,8 +144,19 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 2. **单 Agent 够用**：不引入多 Agent 编排。异常处置走「单 Agent + 规则库 + 分层的**人工升级/审批**」；
    若将来要跑固定的故障应急剧本（runbook），优先用**线性 LangGraph 工作流**而不是并行多 Agent。
    多 Agent 只在出现「上下文膨胀 / 需并行分头排查 / 记忆相互独立」三个信号之一时才考虑。
-3. **Agent 不动系统**：写动作一律走 `config/actions.yaml` 写命令目录（管理员声明）+ `rules.yaml` 引用 key；
-   Agent 层只读诊断 + 读监控。（Agent 动作工具位已留注释，启用必须 `interrupt_before` 人工审批。）
+3. **Agent 动系统 = 独立白名单 + 强制人工审批**（2026-09-10 **修订**，原为「Agent 不动系统」）：
+   原决策是「写动作一律走 `config/actions.yaml` + `rules.yaml`，Agent 只读」。
+   M3 已实现受控放开，边界如下，**不构成对原决策的推翻而是限缩性扩展**：
+   - Agent 的写命令**另立一份白名单** `config/agent_actions.yaml`，**不复用** `actions.yaml`
+     （后者仍专属规则无头自动处置）——两条路径各自独立、互不可见；
+   - **每次调用强制人工审批**（`HumanInTheLoopMiddleware`），配置层**没有**任何开关能关闭；
+     决策只有 approve/reject，**不提供 edit**；
+   - 凭据只来自该文件 `target`（模型永不接触 host/密码）；sudo 由管理员逐条声明；
+   - 出厂 `enabled: false`；未批准 / 过期 / 重启 / 队列淘汰 → 命令**永不执行**；
+   - 审批只加在 **Agent 调用路径**，`RuleEngine` 的无头自动处置**不受影响**
+     （`agent_actions` 的执行器绝不进 `container.executors()`）。
+   原「Agent 动作工具位」注释已由 `build_agent_action_tools` 落地（返回 `WriteToolBundle`，
+   工具与审批策略成对产出）。
 4. **模型入口收敛**：一切聊天/AI 分析都复用根 `init.py` 的模型，不各自 new；
    加载逻辑唯一实现在 `src/utils/model_loader.py`（`ModelLoadError` 由调用方映射为各自的 `LLMError`，
    保持 utils 零 src 内依赖）。
@@ -163,10 +187,12 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   - **host label 尽量与监控侧 instance 标识对齐**（monitor 输出里模型已见过 `instance=IP:9100`），
     否则模型无法把「刚才告警那台」映射到主机枚举；
   - 每台各拉一条连接、失败互不影响；审计多记 host label。旧单 `target` 格式解析为单元素表兼容。
-- **Agent 动作工具**（写系统，M3 设计，默认关）：M1 的写命令目录已就位，Agent 只能从该目录选
-  「命令 key + 语义参数 + host label」，凭据不经模型；审批用 create_agent interrupt（或课程 08
-  中间件审批示例）+ checkpointer 断点续跑；审批只加在 **Agent 调用路径**，绝不进 `execute()` 内部
-  （规则无头自动处置不受影响）；写工具表与 build_tools 读工具表分开构建。
+- ~~**Agent 动作工具**（写系统，M3）~~ —— **2026-09-10 已实现**，见「既定决策记录 #3」。
+  落地形态：`config/agent_actions.yaml`（独立白名单）+ `plugins/agent_actions/`
+  + `agent/tools.py::build_agent_action_tools`（`WriteToolBundle`）
+  + `HumanInTheLoopMiddleware` + `InMemorySaver` + `api/approvals.py`。
+  **未做而留待将来**：多主机（host label）选择——当前写命令同样是**单目标**，
+  与只读诊断的「多主机诊断」待办同规格，届时两者应一并处理。
 - **输出通道抽象（Notifier）**：`print()` 目前只集中在 `core/agent.py` 两处（2026-09-10 已把
   `RuleEngine.print_results` 移入），真要接钉钉/企微时只需替换这一处。**届时再抽 `Notifier` Protocol，
   属设计决策而非缺陷；做之前先问用户**——`print` 内容是用户观察 `auto_execute=true` 效果的主要窗口。
@@ -201,6 +227,11 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   （`tests/test_container.py::test_create_app_smoke` 锁了路由存在性）。
 - **`config/*.yaml` 的现有格式与示例内容**：无需求不动配置。
 - **安全不变量相关的一切**（`shlex.quote`、redact、审计、恒不 sudo、凭据不进模型）：只许加固，不许放松。
+- **M3 的人工审批**（2026-09-10 新增，同样只许加固）：写工具与审批策略必须继续**成对产出**
+  （`WriteToolBundle`）；不得引入 `edit` 决策；`config/agent_actions.yaml` 的 `approval` 段
+  不得新增开关键；审批护栏只许加在 **Agent 路径**，绝不下沉进 `execute()`/`run()` 内部
+  （否则 `RuleEngine` 的无头自动处置会被连带影响）。
+  **已知残余风险**：`/approvals/*` 无鉴权，见 README「安全说明」——绑 `0.0.0.0` 前必须先加鉴权。
 
 ---
 
@@ -244,11 +275,14 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 110 passed（2026-09-10 结构收尾后）
-                                     #   diagnostics 22、prometheus_monitor 18、container 16、
-                                     #   chat 17（含 M2 同源回归「工具输出==兜底输出」）、
-                                     #   action_catalog 12、analysis 12、config_loader 5、
-                                     #   rule_engine 5、security 2、no-langchain 1
+python -m pytest tests -q            # 目前 189 passed（2026-09-10 M3 写命令+人工审批后）
+                                     #   M3 相关：agent_actions_catalog 16、agent_action_source 12、
+                                     #     approval_store 10、agent_tools_approval 10、
+                                     #     api_approvals 9、hitl_graph 15、container 16 → 23
+                                     #   既有：diagnostics 22、prometheus_monitor 18、
+                                     #     chat 17（含 M2 同源回归「工具输出==兜底输出」）、
+                                     #     action_catalog 12、analysis 12、config_loader 5、
+                                     #     rule_engine 5、security 2、no-langchain 1
 
 # 无 langchain 降级回归（单独跑）
 python -m pytest tests/test_no_langchain_import.py -q

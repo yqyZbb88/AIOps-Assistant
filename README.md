@@ -12,11 +12,14 @@
 - **告警自动处置**：规则库（rules.yaml）引用 **config/actions.yaml 写命令目录** → 通用执行器按目录 key
   执行命令（模板 + 参数校验 + sudo 声明 + 审计日志）；「写命令」与「只读诊断」共用 SSH/审计内核，边界分离；
 - **告警 AI 分析**：无自动处理规则的告警 → LLM 给出根因假设与处理建议。
+- **Agent 写命令（强制人工审批）**：Agent 可申请执行 config/agent_actions.yaml 声明的写命令
+  （重启服务 / 清理磁盘等）；调用后**中断**，经 `/approvals` 人工批准才真正执行。
+  与规则自动处置**完全隔离**（各用各的白名单）；未批准 / 过期 / 重启 → 命令永不执行。
 
-代码已按既定目标架构**就地重构**（`ops_bot/` 已删除；该任务的目标文档 `obs-agent.txt` 已不在仓库内，
-决策留痕见 [PROJECT_HANDOVER.md](./PROJECT_HANDOVER.md) 的「既定决策记录」），落实：
-模块解耦（interfaces/ 抽象 + plugins/ 实现）、可扩展性（各能力预留接口）、配置分离（config/ 不再硬编码）、
-可测试性（core 只依赖抽象接口，单测注入假组件）、安全性（密钥走 .env / 环境变量，动作审计）。
+代码按目标架构**就地分层**落地（既定决策留痕见 [PROJECT_HANDOVER.md](./PROJECT_HANDOVER.md)
+的「既定决策记录」），落实：模块解耦（interfaces/ 抽象 + plugins/ 实现）、可扩展性（各能力预留接口）、
+配置分离（config/ 不再硬编码）、可测试性（core 只依赖抽象接口，单测注入假组件）、
+安全性（密钥走 .env / 环境变量，动作审计）。
 
 ---
 
@@ -29,15 +32,17 @@ Assitant/
 ├── config/
 │   ├── settings.yaml          # 全局配置（支持 ${ENV} / ${ENV:-default} 插值）
 │   ├── rules.yaml             # 自动处置规则库（引用 actions.yaml 写命令；密码以环境变量占位）
-│   ├── actions.yaml           # 写命令目录：规则允许执行的修复命令白名单
+│   ├── actions.yaml           # 写命令目录：规则（rules.yaml）自动处置用，无头执行
+│   ├── agent_actions.yaml     # Agent 写命令白名单（独立一份）：每次调用强制人工审批
 │   └── diagnostics.yaml       # 只读诊断命令白名单 + 目标主机（Agent 排查用）
 ├── scripts/                   # 压测脚本 load_gen.sh / load_mem.sh（保留）
-├── 参考/                      # 尚硅谷 LangChain 1.x 讲义（10 章，保留）
+├── 参考/                      # 尚硅谷 LangChain 1.x 讲义（10 章，仅本地参考，不入库）
 ├── src/
 │   ├── main.py                # create_app()：装配 container → include api routers
 │   ├── api/                   # 薄 HTTP 层（依赖注入取 OpsAgent，无业务逻辑）
 │   │   ├── chat.py            #   POST /chat
 │   │   ├── alert.py           #   POST /alert、GET /alerts/recent、GET /alerts/active
+│   │   ├── approvals.py       #   GET /approvals、POST /approvals/{id}（写命令人工审批）
 │   │   └── health.py          #   GET /health
 │   ├── core/                  # 业务核心（只依赖 interfaces 抽象与注入组件）
 │   │   ├── agent.py           #   OpsAgent 主控制器（chat/process_alert/recent/active_alerts）
@@ -50,18 +55,24 @@ Assitant/
 │   ├── interfaces/            # 抽象接口层（core 只依赖这里）
 │   │   ├── monitor.py         #   MonitorSource + MonitorError
 │   │   ├── action.py          #   ActionExecutor + ActionError
+│   │   ├── command.py         #   CommandSpec / ParamSpec（命令元信息，读/写边界共用）
 │   │   ├── llm_client.py      #   LLMClient + LLMError
 │   │   ├── diagnostic.py      #   DiagnosticSource + DiagnosticError（只读诊断契约）
-│   │   └── assistant.py       #   Assistant（Protocol）：聊天 Agent 契约（core 不感知 langchain）
+│   │   ├── agent_action.py    #   AgentActionSource（Agent 写命令契约）+ render_agent_action
+│   │   ├── approval.py        #   PendingApproval / ApprovalOutcome / ApprovalError（审批中性类型）
+│   │   └── assistant.py       #   Assistant + ApprovalCapable（Protocol）：core 不感知 langchain
 │   ├── plugins/               # 具体插件实现（实现 interfaces）+ 共享内核
 │   │   ├── common/                            # 跨家族共享内核（读/写两条边界共用）
 │   │   │   ├── endpoint.py                    #   SshEndpoint 连接抽象（认证二选一）
 │   │   │   ├── ssh.py                         #   exec_command：Endpoint + 命令串 → (exit/out/err)
 │   │   │   ├── audit.py                       #   record_execution：统一审计写入 ops_agent.audit
 │   │   │   └── cmddef.py                      #   命令目录机制：模板+参数+校验+build_command（纯）
-│   │   ├── actions/                           # WRITE 边界：写命令目录 → 通用执行器
+│   │   ├── actions/                           # WRITE：rules.yaml 的写命令目录 → 通用执行器
 │   │   │   ├── catalog.py                     #   config/actions.yaml 解析（写命令白名单）
 │   │   │   └── executor.py                    #   CatalogCommandExecutor：按目录 key 执行命令
+│   │   ├── agent_actions/                     # WRITE：Agent 写命令（强制人工审批）
+│   │   │   ├── catalog.py                     #   config/agent_actions.yaml 解析 + 冲突检测
+│   │   │   └── source.py                      #   SshAgentActionSource：按目录执行写命令
 │   │   ├── monitors/prometheus_monitor.py      # MonitorSource：Prometheus 查询+趋势
 │   │   ├── llm_clients/deepseek_client.py      # LLMClient：告警分析直连
 │   │   └── diagnostics/                        # READ 边界：只读诊断（Agent 工具用）
@@ -71,11 +82,12 @@ Assitant/
 │   │   ├── prompts.py         #   系统提示词 / Agent 名（纯常量，只有 agent/ 用）
 │   │   ├── tools.py           #   build_tools(monitor)/build_diag_tools：@tool 工厂（监控工具薄接线转发 core/capabilities）
 │   │   └── assistant.py       #   OpsAssistant：经 utils/model_loader 取模型，构建 Agent
-│   ├── registry.py            # 插件注册表（monitors / llms / diagnostics；写动作走 config/actions.yaml 目录，不入注册表）
+│   ├── registry.py            # 插件注册表（monitors / llms / diagnostics；两类写命令均走配置文件，不入注册表）
 │   ├── container.py           # DI 容器：settings → 插件实例 → OpsAgent（全部惰性/缓存）
 │   ├── storage/               # 数据模型与状态存储
 │   │   ├── models.py          #   告警/规则 pydantic 模型（Alert / AlertmanagerPayload / …）
 │   │   ├── memory.py          #   AlertStore：最近告警内存缓冲
+│   │   ├── approval.py        #   ApprovalStore：待审批写命令的缓冲（有界/单次性/会过期）
 │   │   └── db.py              #   SQLite 持久化（搁置，仅 TODO 预留）
 │   └── utils/                 # 基础设施工具
 │       ├── config_loader.py   #   settings.yaml 解析 + 环境插值 + 默认兜底（ROOT_DIR）
@@ -159,6 +171,42 @@ commands:
   `pattern`（全匹配），int 用 min/max 收敛；连接凭据由 rules.yaml 每条规则 params 提供（本文件不落）；
 - 改目录需**重启进程**生效（executors 首次装配时按目录构建并缓存）。
 
+### config/agent_actions.yaml（Agent 写命令白名单 · 强制人工审批）
+
+与 `actions.yaml` **完全独立**的另一份白名单：`actions.yaml` 供规则无头自动执行，
+本文件只给聊天 Agent 用，且**每次调用都必须经人工审批**。Agent 申请执行 → 服务中断并返回
+待审批提示 → 人在 `/approvals` 批准后命令才真正执行。
+
+```yaml
+enabled: false                # 出厂默认关闭
+target:                       # 连接凭据只在这里（密码 .env 占位），模型永远看不到
+  host: 192.168.20.128
+  port: 22
+  username: root
+  password: "${SSH_PASSWORD_192_168_20_128}"
+output_limit: 4000
+approval:                     # 只有这两个键；写别的键（如 enabled）= 配置错误 → 关闭能力
+  timeout_seconds: 900        # 待审批项存活时长，过期即丢弃（不会自动批准）
+  max_pending: 32             # 同时待审批上限，超出按最旧淘汰（同样只丢弃不执行）
+commands:
+  restart_service:
+    summary: 重启一个 systemd 服务
+    template: "systemctl restart {service}"
+    sudo: true                # 管理员逐条声明，模型无法提权
+    params:
+      service: { type: str, pattern: "^[A-Za-z0-9_.:@-]{1,128}$", description: 服务名 }
+```
+
+要点：
+- **审批不可关闭**：配置层没有任何开关能绕过人工审核（`approval` 段写多余键即报错并关闭能力）；
+  决策只支持 `approve` / `reject`——**不提供 `edit`**（允许编辑参数等于绕过管理员声明）；
+- **审批 id 单次有效**：重复提交返回 404，不会二次执行；
+- **fail-safe**：未批准 / 已过期 / 进程重启 / 多 worker 落到别的实例 / 审批队列淘汰
+  → 命令**永不执行**（过期只会丢弃，绝不自动批准）；
+- 命令 key 同时是 Agent 工具名，**不得与监控工具或只读诊断命令重名**
+  （重名会被静默遮蔽）——冲突时本能力整体关闭并记 ERROR，聊天与只读诊断不受影响；
+- 改完需**重启进程**生效。
+
 ### config/rules.yaml（自动处置规则库）
 
 内置示例引用 config/actions.yaml 的目录 key，格式如下（密码一律环境变量占位）：
@@ -225,7 +273,7 @@ commands:
 |---|---|
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek 模型（init.py 读取） |
 | `PROMETHEUS_URL` | Prometheus 地址（缺省 localhost:9090） |
-| `SSH_PASSWORD_192_168_20_128` | 目标主机 root 密码：规则中 SSH 动作与 diagnostics.yaml 只读诊断共用 |
+| `SSH_PASSWORD_192_168_20_128` | 目标主机 root 密码：规则 SSH 动作、只读诊断、Agent 写命令三处共用 |
 
 ---
 
@@ -252,6 +300,11 @@ python src/main.py
 | `POST /alert` | Alertmanager webhook 推送 → `AlertAck` |
 | `GET /alerts/recent?limit=` | 最近被动接收的告警记录 |
 | `GET /alerts/active` | 实时活动告警（监控源故障转 502） |
+| `GET /approvals` | 待人工审批的写命令调用（不可用时返回空列表） |
+| `POST /approvals/{id}` | 提交 `{"action":"approve"\|"reject","reason":""}` 并续跑；未知/已用 → 404，能力未启用 → 503 |
+
+> `/approvals` 是新增路由，原五个路由的请求/响应契约**一个字都没改**：
+> 写命令待审批时 `/chat` 仍返回 `{"reply": str}`，只是 `reply` 内容是待审批提示。
 
 ---
 
@@ -268,6 +321,12 @@ python -m pytest tests -q
 M2 能力**同源回归**（同一 FakeMonitor 下 Agent 工具输出 == 关键词兜底输出，锁死"单一实现"）；
 另有 `test_no_langchain_import.py`（在屏蔽 langchain/dotenv 的子进程中验证核心可 import、
 聊天照常回落）。
+
+Agent 写命令的审批链路用**真 graph + 脚本化假模型**离线验证
+（`test_agent_actions_hitl_graph.py`）：走真实的 `create_agent` +
+`HumanInTheLoopMiddleware` + `InMemorySaver`，断言「批准前不执行 / 批准后恰好执行一次 /
+拒绝不执行 / 审批 id 单次性 / 非法决策不毒化线程 / 只读工具不被打断」，并有一条**端到端装配**
+用例覆盖「容器 → 工厂 → OpsAssistant → 执行」整条接线。**当前基线：189 passed。**
 
 ---
 
@@ -286,14 +345,20 @@ M2 能力**同源回归**（同一 FakeMonitor 下 Agent 工具输出 == 关键�
   模型只传语义参数（服务名 / 行数等），服务端做正则全匹配 / 取值收敛 / shell 转义后再拼命令，
   恒不 sudo、凭据不进模型上下文；每次真实执行写 `ops_agent.audit`（与动作同通道，记录命令/主机/参数，
   不含密码）。
+- **Agent 写命令的强制人工审批**：Agent 只能申请执行 `config/agent_actions.yaml` 声明的命令，
+  凭据来自该文件 `target`（不进模型上下文 / 不进工具参数），参数服务端全匹配校验 + shell 转义，
+  sudo 只按目录逐条声明。调用后由 `HumanInTheLoopMiddleware` **在执行前中断**，
+  经 `/approvals` 人工批准后才执行；写工具与审批策略在代码里**成对产出**
+  （`WriteToolBundle`），结构上无法只取工具而不启用审批。
+- **⚠️ `/approvals/*` 目前没有鉴权**：任何能访问该端口且知道审批 id 的人都能批准写命令。
+  现有缓解：审批 id 为随机不可枚举值、`server.host` 默认仅 `127.0.0.1`、
+  出厂 `enabled: false`、白名单固定且命令由管理员声明。
+  **若要把服务绑到 `0.0.0.0` 或暴露到局域网，请先自行加一层鉴权（如共享密钥头）。**
 - **SSH host key**：演示环境使用 `AutoAddPolicy`；生产建议核对 known_hosts 后改用 RejectPolicy。
-- **提交前**：`.env` 与含密钥文件不要进版本库。仓库尚未 `git init`，建议：
-
-  ```bash
-  git init
-  git add .
-  # 确认 .gitignore 已忽略 .env / __pycache__ / .venv 等再 commit
-  ```
+- **提交前**：`.env` 与含密钥文件不要进版本库。仓库已于 2026-09-10 完成 `git init`，
+  `.gitignore` 已忽略 `.env` / `__pycache__` / `.pytest_cache` / `.venv` / `参考/` /
+  `.claude/settings.local.json`。提交纪律：先确认 `git status --short` 干净，且
+  `git ls-files` 里**不得出现**上述被忽略项；一任务一 commit，做完立刻跑一次全量测试。
 
 ---
 
@@ -309,6 +374,10 @@ M2 能力**同源回归**（同一 FakeMonitor 下 Agent 工具输出 == 关键�
   兜底自动同款文案。高危「执行动作工具」位已预留注释（默认不注册，启用前建议配合 `interrupt_before` 人工审批）。
 - **给 Agent 加只读诊断命令**：在 `config/diagnostics.yaml` 的 `commands` 加一条（安全模板 +
   参数 `pattern`/`min`/`max`）→ 重启服务生效，工具按白名单自动生成，无需改代码。
+- **给 Agent 加写命令**：在 `config/agent_actions.yaml` 的 `commands` 加一条（安全模板 +
+  参数 `pattern`/`min`/`max` + `sudo` 声明）→ 重启服务生效。写工具与审批策略自动成对生成，
+  无需改代码；**审批无法关闭**，新增命令一律走人工审核。
+  注意命令 key 不得与监控工具（`cpu_usage` 等）或只读诊断命令重名。
 - **聊天兜底加"状态/帮助"类静态回复**：`core/chat.py` 的 `_rules` 列表追加 `Rule(keyword, reply=...)`。
 
 ## 搁置项（本期不实现，仅预留）
