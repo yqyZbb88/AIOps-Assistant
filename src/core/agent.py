@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from src.core.analysis import AlertAnalyzer
 from src.core.chat import ChatService
