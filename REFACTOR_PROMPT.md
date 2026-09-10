@@ -99,7 +99,8 @@ src/
 │   ├── monitor.py           MonitorSource + MonitorError（cpu/memory/disk/alerts/trend）
 │   ├── action.py            ActionExecutor + ActionError
 │   ├── llm_client.py        LLMClient + LLMError
-│   └── diagnostic.py        DiagnosticSource + DiagnosticError + render_diag
+│   ├── diagnostic.py        DiagnosticSource + DiagnosticError + render_diag
+│   └── assistant.py         Assistant（Protocol）：reply(message)->str（core/chat 的 Agent 契约）
 ├── plugins/
 │   ├── common/                ★ 共享内核（读写两边界共用；顶层无 langchain/paramiko）
 │   │   ├── endpoint.py        SshEndpoint（连接抽象，认证二选一 key→password）

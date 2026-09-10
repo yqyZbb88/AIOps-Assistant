@@ -14,10 +14,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from src.core.analysis import AlertAnalyzer
 from src.core.chat import ChatService
+from src.core.rule_engine import RuleEngine
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.monitor import MonitorSource
 from src.storage.memory import AlertStore
@@ -38,7 +38,7 @@ class OpsAgent:
         *,
         store: AlertStore | None = None,
         chat_service: ChatService | None = None,
-        rule_engine: Any | None = None,
+        rule_engine: RuleEngine | None = None,
         analysis: AlertAnalyzer | None = None,
         llm: LLMClient | None = None,
     ) -> None:

@@ -51,7 +51,8 @@ Assitant/
 │   │   ├── monitor.py         #   MonitorSource + MonitorError
 │   │   ├── action.py          #   ActionExecutor + ActionError
 │   │   ├── llm_client.py      #   LLMClient + LLMError
-│   │   └── diagnostic.py      #   DiagnosticSource + DiagnosticError（只读诊断契约）
+│   │   ├── diagnostic.py      #   DiagnosticSource + DiagnosticError（只读诊断契约）
+│   │   └── assistant.py       #   Assistant（Protocol）：聊天 Agent 契约（core 不感知 langchain）
 │   ├── plugins/               # 具体插件实现（实现 interfaces）+ 共享内核
 │   │   ├── common/                            # 跨家族共享内核（读/写两条边界共用）
 │   │   │   ├── endpoint.py                    #   SshEndpoint 连接抽象（认证二选一）

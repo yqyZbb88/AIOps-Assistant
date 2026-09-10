@@ -16,13 +16,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from src import plugins  # noqa: F401  （导入即把插件注册进 registry）
 from src.core.agent import OpsAgent
 from src.core.analysis import AlertAnalyzer
 from src.core.chat import ChatService
 from src.core.rule_engine import RuleEngine
+from src.interfaces.action import ActionExecutor
 from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.monitor import MonitorSource
@@ -41,7 +41,7 @@ class Container:
         self._ops_agent: OpsAgent | None = None
         self._monitor: MonitorSource | None = None
         self._llm: LLMClient | None = None
-        self._executors: dict[str, Any] | None = None
+        self._executors: dict[str, ActionExecutor] | None = None
         self._diagnostics: DiagnosticSource | None = None
 
     # -- 组件（惰性 + 缓存） ----------------------------------------------
@@ -80,7 +80,7 @@ class Container:
             self._llm = cls()
         return self._llm
 
-    def executors(self) -> dict[str, Any]:
+    def executors(self) -> dict[str, ActionExecutor]:
         """把 config/actions.yaml 写命令目录实例化为执行器（键 = 目录 key = rules.action）。
 
         M1b：动作收敛为「写命令目录 + 通用执行器」（见 plugins/actions/catalog、executor），

@@ -5,6 +5,14 @@ core / api 只依赖这里的抽象基类与异常，不直接依赖具体插件
 """
 
 from src.interfaces.action import ActionError, ActionExecutor
+from src.interfaces.assistant import Assistant
+from src.interfaces.diagnostic import (
+    CommandSpec,
+    DiagnosticError,
+    DiagnosticSource,
+    ParamSpec,
+    render_diag,
+)
 from src.interfaces.llm_client import LLMClient, LLMError
 from src.interfaces.monitor import MonitorError, MonitorSource
 
@@ -13,6 +21,12 @@ __all__ = [
     "MonitorError",
     "ActionExecutor",
     "ActionError",
+    "Assistant",
     "LLMClient",
     "LLMError",
+    "DiagnosticSource",
+    "DiagnosticError",
+    "CommandSpec",
+    "ParamSpec",
+    "render_diag",
 ]

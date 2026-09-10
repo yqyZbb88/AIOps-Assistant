@@ -21,9 +21,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Callable
 
 from src.core import capabilities
+from src.interfaces.assistant import Assistant
 from src.interfaces.monitor import MonitorSource
 
 logger = logging.getLogger("ops_agent.chat")
@@ -82,12 +83,12 @@ class ChatService:
         self,
         monitor: MonitorSource,
         *,
-        assistant_factory: Callable[[], Any] | None = None,
+        assistant_factory: Callable[[], Assistant] | None = None,
     ) -> None:
         self.monitor = monitor
-        # 注入的 Agent 工厂：返回带 reply(message)->str 的对象；失败抛异常即回落
+        # 注入的 Agent 工厂：返回 Assistant 契约对象；失败抛异常即回落
         self._assistant_factory = assistant_factory
-        self._assistant: Any = None
+        self._assistant: Assistant | None = None
         self._agent_broken = assistant_factory is None
         # 规则按优先级从高到低排列，第一条命中生效；动态 handler 与 Agent 工具转发
         # 同一批 capabilities 纯函数（src/core/capabilities.py），无 LLM 时产出同款规范文案
@@ -134,7 +135,7 @@ class ChatService:
                 return rule.respond()
         return DEFAULT_REPLY
 
-    def _ensure_assistant(self) -> Any | None:
+    def _ensure_assistant(self) -> Assistant | None:
         """首次聊天时经工厂构建 Agent 并缓存；构建失败标记 broken 后回落。"""
         if self._assistant is not None:
             return self._assistant
