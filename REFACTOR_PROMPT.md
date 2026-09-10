@@ -115,7 +115,7 @@ src/
 │       ├── commands.py        diagnostics.yaml 解析（config 级；命令级机制委托 common/cmddef）
 │       └── ssh_diagnostics.py SshDiagnostics(DiagnosticSource)：SSH 执行白名单只读命令
 ├── agent/                    ★ LangChain Agent 编排（惰性，只在首次聊天构建）
-│   ├── prompts.py           系统提示词 / 告警分析 system / AGENT_NAME（纯常量）
+│   ├── prompts.py           系统提示词 / AGENT_NAME（纯常量；只有 agent/ 用）
 │   ├── tools.py             build_tools(monitor) + build_diag_tools(diag)（监控 @tool 薄接线转发 core/capabilities）
 │   └── assistant.py         OpsAssistant：惰性复用 init.py 模型，构建 Agent
 ├── registry.py              注册表：monitors / llms / diagnostics 按类注册；
@@ -157,7 +157,7 @@ tests/                       离线单测（conftest 提供 Fake* 全套）
 
 ### 既定决策记录（勿推翻）
 
-1. **就地分层重构已完成**：不再扁平化/不再迁回 ops_bot；`obs-agent.txt` 仅作参考保留。
+1. **就地分层重构已完成**：不再扁平化/不再迁回 ops_bot；原目标文档 `obs-agent.txt` 已不在仓库内。
 2. **单 Agent 够用**：不引入多 Agent 编排。异常处置走「单 Agent + 规则库 + 分层的**人工升级/审批**」；
    若将来要跑固定的故障应急剧本（runbook），优先用**线性 LangGraph 工作流**而不是并行多 Agent。
    多 Agent 只在出现「上下文膨胀 / 需并行分头排查 / 记忆相互独立」三个信号之一时才考虑。

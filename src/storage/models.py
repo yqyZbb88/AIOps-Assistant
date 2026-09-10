@@ -92,7 +92,7 @@ class ActionRule(BaseModel):
     """一条「告警 → 动作」规则。"""
 
     alertname: str = Field(..., description="告警规则名，需与 Prometheus 的 alert 字段一致")
-    action: str = Field(..., description="动作名，必须已注册到 actions 注册表")
+    action: str = Field(..., description="config/actions.yaml 写命令目录的 key")
     params: dict[str, Any] = Field(default_factory=dict, description="传给动作的参数")
     auto_execute: bool = Field(False, description="true=命中即自动执行；false=仅命中提示")
     description: str = Field("", description="规则用途说明")

@@ -13,7 +13,8 @@
   执行命令（模板 + 参数校验 + sudo 声明 + 审计日志）；「写命令」与「只读诊断」共用 SSH/审计内核，边界分离；
 - **告警 AI 分析**：无自动处理规则的告警 → LLM 给出根因假设与处理建议。
 
-代码已按 [obs-agent.txt](./obs-agent.txt) 的目标架构**就地重构**（`ops_bot/` 已删除），落实：
+代码已按既定目标架构**就地重构**（`ops_bot/` 已删除；该任务的目标文档 `obs-agent.txt` 已不在仓库内，
+决策留痕见 [REFACTOR_PROMPT.md](./REFACTOR_PROMPT.md) 的「既定决策记录」），落实：
 模块解耦（interfaces/ 抽象 + plugins/ 实现）、可扩展性（各能力预留接口）、配置分离（config/ 不再硬编码）、
 可测试性（core 只依赖抽象接口，单测注入假组件）、安全性（密钥走 .env / 环境变量，动作审计）。
 
@@ -43,6 +44,7 @@ Assitant/
 │   │   ├── chat.py            #   ChatService：Agent-first + 关键词兜底（转发 capabilities）
 │   │   ├── capabilities.py    #   ★ 监控能力单一实现：查询+格式化纯函数（无 langchain，工具与兜底共用）
 │   │   ├── rule_engine.py     #   规则引擎（加载 + 匹配决策，只依赖 ActionExecutor 接口）
+│   │   ├── prompts.py         #   告警分析 system 提示词（纯常量；analysis.py 用）
 │   │   ├── analysis.py        #   告警 LLM 分析（上下文组装 + LLM 编排）
 │   │   └── exceptions.py      #   业务异常基类
 │   ├── interfaces/            # 抽象接口层（core 只依赖这里）
@@ -65,10 +67,10 @@ Assitant/
 │   │       ├── commands.py                     #   diagnostics.yaml 解析（config 级；命令级复用 common/cmddef）
 │   │       └── ssh_diagnostics.py              #   经 SSH 执行白名单只读命令（注册 diagnostic "ssh"）
 │   ├── agent/                 # ★ 保留的 Agent 编排层（create_agent + @tool + 提示词）
-│   │   ├── prompts.py         #   系统提示词 / Agent 名（纯常量，可被任意层 import）
+│   │   ├── prompts.py         #   系统提示词 / Agent 名（纯常量，只有 agent/ 用）
 │   │   ├── tools.py           #   build_tools(monitor)/build_diag_tools：@tool 工厂（监控工具薄接线转发 core/capabilities）
 │   │   └── assistant.py       #   OpsAssistant：惰性复用 init.py 模型，构建 Agent
-│   ├── registry.py            # 插件注册表（monitors / actions / llms / diagnostics）
+│   ├── registry.py            # 插件注册表（monitors / llms / diagnostics；写动作走 config/actions.yaml 目录，不入注册表）
 │   ├── container.py           # DI 容器：settings → 插件实例 → OpsAgent（全部惰性/缓存）
 │   ├── storage/               # 数据模型与状态存储
 │   │   ├── models.py          #   告警/规则 pydantic 模型（Alert / AlertmanagerPayload / …）
@@ -271,7 +273,8 @@ M2 能力**同源回归**（同一 FakeMonitor 下 Agent 工具输出 == 关键�
 
 - **密钥只进 .env / 环境变量**：代码、`config/`、文档均不落明文。规则密码以
   `${SSH_PASSWORD_192_168_20_128}` 占位，加载时插值；变量未设置时插值为空，不会误连。
-- **动作审计**：plugins/actions 基类在 execute 前后向 `ops_agent.audit` logger 写结构化记录
+- **动作审计**：写命令执行器（`CatalogCommandExecutor`）经 `plugins/common/audit.py` 统一向
+  `ops_agent.audit` logger 写结构化记录
   `{action, host, params(打码), started_at, result/error}`，**永不包含密码**。
 - **敏感打码**：日志/处置记录统一过 `utils.security.redact_sensitive`（password/token/secret/api_key → ***）。
 - **动作来源可信**：动作命令只来自 config/actions.yaml 写命令目录（管理员声明，含 sudo 与参数 schema），

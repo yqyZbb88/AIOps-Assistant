@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from src.agent.prompts import ALERT_ANALYSIS_SYSTEM
+from src.core.prompts import ALERT_ANALYSIS_SYSTEM
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.monitor import MonitorSource
 from src.storage.models import Alert

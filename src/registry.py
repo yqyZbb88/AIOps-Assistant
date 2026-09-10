@@ -1,8 +1,10 @@
-"""插件注册表：monitors / actions / llms / diagnostics 四类插件按名注册与取用。
+"""插件注册表：monitors / llms / diagnostics 三类插件按名注册与取用。
 
 - 插件（plugins/ 下各包）在 import 时把实现类注册进来；
 - container 依据 settings（monitor.provider / llm.provider 等）按名取类并实例化；
-- 注册表本身不 import 任何插件（避免环依赖），只做「名 → 实现类」的登记。
+- 注册表本身不 import 任何插件（避免环依赖），只做「名 → 实现类」的登记；
+- **写动作不走注册表**：M1b 起动作由 config/actions.yaml 写命令目录声明，
+  生产实现由 container.executors() 惰性构建（见 src/plugins/actions/）。
 """
 from __future__ import annotations
 
