@@ -70,6 +70,64 @@ def test_chat_agent_first_then_fallback(fakemonitor):
     assert "CPU 使用率" in broken.reply("CPU")
 
 
+def test_chat_falls_back_when_agent_reply_raises(fakemonitor):
+    """Agent 构建成功但 reply() 抛异常（网络抖动等）→ 本轮回落关键词。
+
+    阶段 8 补：此前只覆盖了「工厂失败」，这条分支无测试。
+    与工厂失败的区别：**不**标记 broken，下次仍会重试 Agent（见下一个用例）。
+    """
+    class BoomAssistant:
+        def reply(self, message: str) -> str:
+            raise RuntimeError("网络抖动（模拟）")
+
+    svc = ChatService(fakemonitor, assistant_factory=lambda: BoomAssistant())
+    # 命中关键词 → 走兜底规则
+    assert "CPU 使用率" in svc.reply("CPU 高不高")
+    # 未命中关键词 → 默认回复
+    assert svc.reply("讲个笑话") == DEFAULT_REPLY
+
+
+def test_agent_retried_after_reply_exception(fakemonitor):
+    """reply() 异常不标记 broken：Agent 恢复后下次调用仍走 Agent。
+
+    这刻意区别于工厂失败（工厂失败=环境不可用，标记 broken 不再重试；
+    reply 失败=单次调用失败，如网络抖动，重试才有意义）。
+    """
+    calls = {"n": 0}
+
+    class FlakyAssistant:
+        def reply(self, message: str) -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("网络抖动（模拟）")
+            return f"[Agent]{message}"
+
+    svc = ChatService(fakemonitor, assistant_factory=lambda: FlakyAssistant())
+    assert svc.reply("你好") == DEFAULT_REPLY   # 第 1 次失败 → 回落
+    assert svc.reply("你好") == "[Agent]你好"    # 第 2 次恢复 → 仍走 Agent
+
+
+def test_factory_failure_marks_broken_and_stops_retrying(fakemonitor):
+    """工厂失败 → 标记 broken，后续不再重试工厂（避免每次聊天都重复昂贵构建）。"""
+    calls = {"n": 0}
+
+    def broken_factory():
+        calls["n"] += 1
+        raise RuntimeError("langchain 不可用（模拟）")
+
+    svc = ChatService(fakemonitor, assistant_factory=broken_factory)
+    assert svc.reply("CPU")            # 第 1 次：尝试构建 → 失败 → 兜底
+    assert svc.reply("CPU")            # 第 2 次：已 broken，直接兜底
+    assert calls["n"] == 1             # 工厂只被调用一次
+
+
+def test_chat_without_factory_never_calls_agent(fakemonitor):
+    """未注入工厂 → _agent_broken 初始为 True，直接关键词兜底（无 Agent 的部署形态）。"""
+    svc = ChatService(fakemonitor)
+    assert svc._agent_broken is True
+    assert "CPU 使用率" in svc.reply("CPU")
+
+
 def test_agent_tools_share_text_with_fallback(fakemonitor):
     """M2 同源回归：Agent 工具与关键词兜底转发同一批 capabilities 纯函数，产出一致。
 
