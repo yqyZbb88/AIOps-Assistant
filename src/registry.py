@@ -8,26 +8,18 @@
 """
 from __future__ import annotations
 
-from typing import Any
-
-_MISSING = object()
-
 
 class Registry:
     """插件注册表（按类别分组，键为插件名）。"""
 
     def __init__(self) -> None:
         self._monitors: dict[str, type] = {}
-        self._actions: dict[str, type] = {}
         self._llms: dict[str, type] = {}
         self._diagnostics: dict[str, type] = {}
 
     # -- 注册 -------------------------------------------------------------
     def register_monitor(self, name: str, entry: type) -> None:
         self._monitors[name] = entry
-
-    def register_action(self, name: str, entry: type) -> None:
-        self._actions[name] = entry
 
     def register_llm(self, name: str, entry: type) -> None:
         self._llms[name] = entry
@@ -43,16 +35,8 @@ class Registry:
     def llm_class(self, name: str) -> type:
         return self._llms[name]
 
-    def action_class(self, name: str, default: Any = _MISSING) -> type:
-        """返回动作实现类；未注册且给了 default 时返回 default。"""
-        if default is not _MISSING:
-            return self._actions.get(name, default)
-        return self._actions[name]
-
-    def diagnostic_class(self, name: str, default: Any = _MISSING) -> type:
-        """返回只读诊断源实现类；未注册且给了 default 时返回 default。"""
-        if default is not _MISSING:
-            return self._diagnostics.get(name, default)
+    def diagnostic_class(self, name: str) -> type:
+        """返回只读诊断源实现类；未注册抛 KeyError（由 container 转清晰报错）。"""
         return self._diagnostics[name]
 
     # -- 查询 -------------------------------------------------------------
@@ -62,20 +46,9 @@ class Registry:
     def llm_names(self) -> list[str]:
         return sorted(self._llms)
 
-    def action_names(self) -> list[str]:
-        """已注册的动作名（rules.yaml 的 action 字段应在此集合内）。"""
-        return sorted(self._actions)
-
     def diagnostic_names(self) -> list[str]:
         """已注册的只读诊断源名（diagnostics.yaml 的 provider 字段应在此集合内）。"""
         return sorted(self._diagnostics)
-
-    def all_action_classes(self) -> dict[str, type]:
-        """返回 {动作名: 实现类} 副本，供 container 实例化全部执行器。"""
-        return dict(self._actions)
-
-    def has_action(self, name: str) -> bool:
-        return name in self._actions
 
     def has_monitor(self, name: str) -> bool:
         return name in self._monitors
