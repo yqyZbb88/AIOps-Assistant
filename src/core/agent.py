@@ -70,7 +70,7 @@ class OpsAgent:
             remediation = self.rule_engine.execute_for_payload(payload)
             if remediation:
                 ack.remediation = remediation
-                self.rule_engine.print_results(remediation)
+                self._print_remediation(remediation)
 
             # 2) 无自动处理规则的告警 → LLM 根因分析（失败仅日志，不阻塞）
             unmatched = self.rule_engine.unmatched_alerts(payload)
@@ -92,6 +92,19 @@ class OpsAgent:
             ack.received, len(ack.remediation), len(ack.ai_advice),
         )
         return ack
+
+    @staticmethod
+    def _print_remediation(records: list[dict[str, Any]]) -> None:
+        """把规则处置结果打印到控制台（阶段先以终端推送；后续可换钉钉/企微）。
+
+        由 RuleEngine 移入：该引擎只有一个调用方（本类），移入后它变回纯决策，
+        本模块成为**唯一**的输出口子（与 _print_ai_advice 并列），便于将来整体替换通知渠道。
+        """
+        for r in records:
+            print(
+                f"[自动处置] alertname={r['alertname']} status={r['status']} "
+                f"action={r['action'] or r['matched_rule']} detail={r['detail']}"
+            )
 
     @staticmethod
     def _print_ai_advice(advice: list[dict[str, Any]]) -> None:

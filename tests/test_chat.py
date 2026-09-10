@@ -263,6 +263,69 @@ def test_ops_agent_process_alert_llm_unavailable_not_blocking(fakemonitor):
         assert len(agent.recent()) == 2
 
 
+def test_ops_agent_prints_remediation_to_console(fakemonitor, capsys):
+    """处置结果的终端输出由 OpsAgent 负责（阶段 9 从 RuleEngine 移入）。
+
+    文案逐字锁定：print 内容是用户观察 auto_execute=true 效果的主要窗口，
+    搬动实现时最容易悄悄改掉的就是这里。
+    """
+    class OkExecutor(ActionExecutor):
+        name = "ok_action"
+        description = "fake"
+
+        def execute(self, params: dict) -> dict:
+            return {"ok": True, "host": params["host"]}
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        rf = Path(td) / "rules.yaml"
+        rf.write_text(
+            "rules:\n  - alertname: HighCPUUsage\n    action: ok_action\n"
+            "    params: {host: h1}\n    auto_execute: true\n",
+            encoding="utf-8",
+        )
+        engine = RuleEngine(executors={"ok_action": OkExecutor()}, rules_file=rf)
+        agent = OpsAgent(monitor=fakemonitor, rule_engine=engine)
+        agent.process_alert(make_payload(make_alert("HighCPUUsage")))
+
+    out = capsys.readouterr().out
+    assert "[自动处置]" in out
+    assert "alertname=HighCPUUsage" in out
+    assert "status=ok" in out
+    assert "action=ok_action" in out
+
+
+def test_rule_engine_itself_prints_nothing(fakemonitor, capsys):
+    """RuleEngine 不再自行输出：它只产出记录，输出归 OpsAgent。
+
+    这是阶段 9「让 RuleEngine 变回纯决策、输出只剩一个口子」的护栏。
+    """
+    class OkExecutor(ActionExecutor):
+        name = "ok_action"
+        description = "fake"
+
+        def execute(self, params: dict) -> dict:
+            return {"ok": True}
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        rf = Path(td) / "rules.yaml"
+        rf.write_text(
+            "rules:\n  - alertname: HighCPUUsage\n    action: ok_action\n"
+            "    params: {}\n    auto_execute: true\n",
+            encoding="utf-8",
+        )
+        engine = RuleEngine(executors={"ok_action": OkExecutor()}, rules_file=rf)
+        records = engine.execute_for_payload(make_payload(make_alert("HighCPUUsage")))
+        assert records and records[0]["status"] == "ok"
+
+    assert capsys.readouterr().out == ""  # 引擎自身零输出
+
+
 def test_ops_agent_active_alerts_propagates_monitor_error(fakemonitor):
     class BoomMonitor:
         def active_alerts(self):

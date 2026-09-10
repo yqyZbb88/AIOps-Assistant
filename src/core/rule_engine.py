@@ -9,6 +9,8 @@
   审计（真实 SSH 尝试前后）由执行器内部完成（见 plugins/actions/executor.py 与 common/audit.py）。
 
 本模块不感知具体动作实现；executors 由 container 注入（可注入假执行器做单测）。
+**本模块不做任何输出**：处置结果的终端打印在 OpsAgent（见 core/agent.py），
+规则引擎只负责「匹配 + 决策 + 执行 + 产出记录」，保持纯净可测。
 """
 from __future__ import annotations
 
@@ -172,13 +174,3 @@ class RuleEngine:
             if not alert.is_resolved and alert.alertname not in known
         ]
 
-    # -- 结果展示 ----------------------------------------------------------
-    @staticmethod
-    def print_results(records: list[dict[str, Any]]) -> None:
-        """把处置结果打印到控制台并写日志（后续可替换为通知钉钉/企微等）。"""
-        for r in records:
-            line = (
-                f"[自动处置] alertname={r['alertname']} status={r['status']} "
-                f"action={r['action'] or r['matched_rule']} detail={r['detail']}"
-            )
-            print(line)  # 终端可见，便于观察
