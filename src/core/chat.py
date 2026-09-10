@@ -24,7 +24,13 @@ import logging
 from typing import Callable
 
 from src.core import capabilities
-from src.interfaces.assistant import Assistant
+from src.interfaces.approval import (
+    ApprovalError,
+    ApprovalOutcome,
+    ApprovalUnavailableError,
+    PendingApproval,
+)
+from src.interfaces.assistant import ApprovalCapable, Assistant
 from src.interfaces.monitor import MonitorSource
 
 logger = logging.getLogger("ops_agent.chat")
@@ -134,6 +140,34 @@ class ChatService:
             if rule.match(message):
                 return rule.respond()
         return DEFAULT_REPLY
+
+    # ------------------------------------------------------------------
+    # 人工审批转发（写命令能力为可选；不支持时给出明确语义）
+    # ------------------------------------------------------------------
+    def pending_approvals(self) -> list[PendingApproval]:
+        """当前待人工决策的写命令调用；Agent 未构建/不支持审批时返回空列表。
+
+        **刻意走已建好的 self._assistant**，不调用 _ensure_assistant()：
+        审批查询是旁路操作，不该为它触发 Agent 构建，也不该在构建失败时
+        把 _agent_broken 置位（否则一次空查询就会拖垮后续聊天）。
+        """
+        assistant = self._assistant
+        if assistant is None or not isinstance(assistant, ApprovalCapable):
+            return []
+        try:
+            return assistant.pending_approvals()
+        except Exception as exc:
+            logger.warning("查询待审批项失败: %s", exc)
+            return []
+
+    def decide(self, approval_id: str, *, action: str, reason: str = "") -> ApprovalOutcome:
+        """提交一次审批决策；Agent 不支持审批时抛 ApprovalError（由 api 转 503/404）。"""
+        assistant = self._assistant
+        if assistant is None or not isinstance(assistant, ApprovalCapable):
+            raise ApprovalUnavailableError(
+                "Agent 未启用写命令能力（config/agent_actions.yaml 未启用，或聊天尚未构建 Agent）"
+            )
+        return assistant.decide(approval_id, action=action, reason=reason)
 
     def _ensure_assistant(self) -> Assistant | None:
         """首次聊天时经工厂构建 Agent 并缓存；构建失败标记 broken 后回落。"""

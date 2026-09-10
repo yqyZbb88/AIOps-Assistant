@@ -19,6 +19,7 @@ from typing import Any
 from src.core.analysis import AlertAnalyzer
 from src.core.chat import ChatService
 from src.core.rule_engine import RuleEngine
+from src.interfaces.approval import ApprovalOutcome, PendingApproval
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.monitor import MonitorSource
 from src.storage.memory import AlertStore
@@ -55,6 +56,15 @@ class OpsAgent:
     def chat(self, message: str) -> str:
         """聊天入口：Agent-first + 关键词兜底（详见 ChatService）。"""
         return self.chat_service.reply(message)
+
+    # -- 人工审批（Agent 写命令的强制审核环节） -----------------------------
+    def pending_approvals(self) -> list[PendingApproval]:
+        """当前待人工决策的写命令调用（新的在前）；未启用写命令时为空列表。"""
+        return self.chat_service.pending_approvals()
+
+    def decide(self, approval_id: str, *, action: str, reason: str = "") -> ApprovalOutcome:
+        """提交一次审批决策并续跑；未知/过期/已用过 → ApprovalError（api 层转 404）。"""
+        return self.chat_service.decide(approval_id, action=action, reason=reason)
 
     # -- 告警接收（记录 + 规则处置 + AI 分析） -----------------------------
     def process_alert(self, payload: AlertmanagerPayload) -> AlertAck:

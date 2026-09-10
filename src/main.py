@@ -10,6 +10,10 @@
     POST /alert             Alertmanager webhook
     GET  /alerts/recent     最近接收的告警
     GET  /alerts/active     实时活动告警（监控源查询失败转 502）
+
+人工审批（Agent 写命令，config/agent_actions.yaml 启用后才有内容）：
+    GET  /approvals             待审批的写命令调用
+    POST /approvals/{id}        提交 approve/reject 并续跑
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.api import alert as alert_api
+from src.api import approvals as approvals_api
 from src.api import chat as chat_api
 from src.api import health as health_api
 from src.container import Container
@@ -57,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_api.router)
     app.include_router(chat_api.router)
     app.include_router(alert_api.router)
+    app.include_router(approvals_api.router)
     return app
 
 

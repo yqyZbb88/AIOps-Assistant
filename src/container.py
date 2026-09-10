@@ -23,10 +23,12 @@ from src.core.analysis import AlertAnalyzer
 from src.core.chat import ChatService
 from src.core.rule_engine import RuleEngine
 from src.interfaces.action import ActionExecutor
+from src.interfaces.agent_action import AgentActionSource
 from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.monitor import MonitorSource
 from src.registry import registry
+from src.storage.approval import ApprovalStore
 from src.storage.memory import AlertStore
 from src.utils.config_loader import Settings, load_settings
 
@@ -43,6 +45,8 @@ class Container:
         self._llm: LLMClient | None = None
         self._executors: dict[str, ActionExecutor] | None = None
         self._diagnostics: DiagnosticSource | None = None
+        self._agent_actions: AgentActionSource | None = None
+        self._agent_actions_config = None
 
     # -- 组件（惰性 + 缓存） ----------------------------------------------
     def monitor(self) -> MonitorSource:
@@ -128,13 +132,68 @@ class Container:
         self._diagnostics = cls(config)
         return self._diagnostics
 
+    def agent_actions(self) -> AgentActionSource | None:
+        """Agent 写命令源；未启用 / 校验失败 / 缺 paramiko / 工具名冲突 → None。
+
+        凭据来自 config/agent_actions.yaml 的 target（密码 .env 占位插值），实例化后留在本
+        对象内，模型上下文与工具参数里永无 host/密码/私钥。
+
+        **工具名冲突检测**：写命令 key 会变成 Agent 工具名，而 create_agent 对重名工具
+        不报错（静默遮蔽），所以必须在这里拦住。冲突时只关闭本能力——聊天与只读诊断不受影响。
+        """
+        if self._agent_actions is not None:
+            return self._agent_actions
+        from src.plugins.agent_actions.catalog import (
+            RESERVED_AGENT_TOOL_NAMES,
+            colliding_keys,
+            load_agent_actions_config,
+        )
+
+        config = load_agent_actions_config()
+        if config is None:
+            return None
+        # paramiko 未装 → 能力降级（不注册写工具，Agent 看不到），而非启动失败
+        try:
+            import paramiko  # noqa: F401
+        except ImportError:
+            logger.warning("缺少可选依赖 paramiko，Agent 写命令能力关闭（pip install paramiko）")
+            return None
+
+        occupied = set(RESERVED_AGENT_TOOL_NAMES)
+        diag = self.diagnostics()
+        if diag is not None:
+            occupied |= {spec.key for spec in diag.commands()}
+        clashes = colliding_keys((c.key for c in config.commands), occupied)
+        if clashes:
+            logger.error(
+                "Agent 写命令与已占用的工具名冲突，本能力关闭（重名工具会被静默遮蔽）: %s",
+                ", ".join(sorted(clashes)),
+            )
+            return None
+
+        from src.plugins.agent_actions.source import SshAgentActionSource
+
+        self._agent_actions_config = config
+        self._agent_actions = SshAgentActionSource(config)
+        return self._agent_actions
+
     def _assistant_factory(self):
         """聊天 Agent 工厂（惰性）：首次聊天被 ChatService 调用才构建。"""
         from src.agent.assistant import OpsAssistant  # 触发 langchain/init.py 惰性导入
 
+        write_source = self.agent_actions()
+        approvals = None
+        if write_source is not None:
+            # 有写命令才建审批存储：容量/时限来自配置（审批本身无开关，恒为强制）
+            policy = self._agent_actions_config.approval
+            approvals = ApprovalStore(
+                maxlen=policy.max_pending, ttl_seconds=policy.timeout_seconds
+            )
         return OpsAssistant(
             monitor=self.monitor(),
             diag=self.diagnostics(),
+            agent_actions=write_source,
+            approvals=approvals,
             debug=self.settings.agent.debug,
             name=self.settings.agent.name,
         )
