@@ -1,0 +1,66 @@
+# Agent 写命令白名单（WRITE 边界 · 仅 Agent 路径）
+#
+# 作用：让聊天 Agent 能申请执行「会改动目标系统」的命令（重启服务、清理磁盘等）。
+#
+# 与 config/actions.yaml 的区别（两套白名单互不相干，勿混）：
+#   - actions.yaml  —— 给 rules.yaml 规则用，收到告警后**无头自动执行**（有 auto_execute 开关）；
+#   - 本文件        —— 只给**聊天 Agent** 用，**每次调用强制人工审批**，批准后才会执行。
+#   两边命令各自声明，本文件不复用 actions.yaml 的任何条目。
+#
+# ******** 安全语义（改之前务必读懂）********
+#   1) 审批**不可关闭**：没有任何开关能绕过人工审核。approval 段只接受 timeout_seconds
+#      与 max_pending 两个键，多写任何键（例如 enabled）都会导致本能力整体关闭并报错，
+#      这是刻意设置的绊线——「关掉审批」这件事在配置层根本不存在。
+#   2) 凭据不进模型：连接信息只写在本文件的 target 段，密码用环境变量占位，真实值在 .env。
+#      模型只能选命令名 + 语义参数，永远看不到主机与密码。
+#   3) sudo 由管理员逐条声明（每条命令的 sudo 字段）；模型无法提权。
+#   4) 未批准 / 已过期 / 进程重启 / 多 worker 落到别的实例 → 命令**永不执行**（fail-safe）。
+#      过期只会丢弃，绝不会自动批准。
+#
+# 由 src/plugins/agent_actions/catalog.py 解析；文件缺失 / enabled=false / 校验失败
+# → 本能力关闭（Agent 不加写工具，聊天与只读诊断不受影响），服务照常启动。
+#
+# 生效：改完需**重启进程**（Agent 工具集在首次聊天构建时定稿并缓存）。
+#
+# 注意：本文件正文与注释都不要出现 `${` 字面量（插值机制对整个文件文本替换）。
+
+# 出厂默认关闭。启用前请先确认 target 与实际命令模板。
+enabled: false
+
+# 目标主机与连接凭据。密码用环境变量占位，真实值只写在 .env（本文件不落任何明文）。
+target:
+  host: 192.168.20.128
+  port: 22
+  username: root
+  password: "${SSH_PASSWORD_192_168_20_128}"
+  connect_timeout: 8
+
+# 单条命令输出回传给 Agent 的字符上限（超出截断，避免刷爆模型上下文）。
+output_limit: 4000
+
+# 审批策略：**只有**下面两个键。写别的键 = 配置错误 → 本能力关闭。
+approval:
+  timeout_seconds: 900     # 待审批项存活时长（秒），过期即丢弃（不会自动批准）
+  max_pending: 32          # 同时待审批的数量上限，超出按最旧淘汰（同样只丢弃不执行）
+
+# 允许 Agent 申请执行的写命令。key 即 Agent 工具名，须匹配 ^[a-z][a-z0-9_]*$。
+# 每条命令：summary（给模型看的说明）/ template（管理员可信模板，只放 {name} 占位）/
+#           sudo（是否提权执行）/ params（参数声明：str 必须给 pattern 全匹配，int 用 min-max）。
+# 模板占位集合必须**等于** params 声明集合（多写或漏写都导致校验失败并关闭本能力）。
+commands:
+
+  restart_service:
+    summary: 重启一个 systemd 服务（会中断该服务当前连接与正在处理的请求）
+    template: "systemctl restart {service}"
+    sudo: true
+    params:
+      service:
+        type: str
+        pattern: "^[A-Za-z0-9_.:@-]{1,128}$"
+        description: 服务名，如 nginx / mysql
+
+  cleanup_disk:
+    summary: 执行磁盘清理脚本（需管理员预先放到目标主机的 /opt/ops 下）
+    template: "cd /opt/ops && bash cleanup_disk.sh"
+    sudo: false
+    params: {}
