@@ -1,10 +1,12 @@
 """运维工具集（对齐「尚硅谷-07-智能体」第 9.2 节工具定义格式）。
 
-两块能力都封装成 LangChain 工具交给 Agent 按需调用：
+三块能力都封装成 LangChain 工具交给 Agent 按需调用：
 1) `build_tools(monitor)`：读监控数据（CPU / 内存 / 磁盘 / 告警），闭包注入 MonitorSource；
 2) `build_diag_tools(diag)`：只读主机诊断（free / df / ps / systemctl / journalctl），
    命令白名单在 config/diagnostics.yaml 声明，工具按白名单动态生成——Agent 只选命令名 +
-   受控语义参数，凭据 / 自由命令永不进模型上下文。
+   受控语义参数，凭据 / 自由命令永不进模型上下文；
+3) `build_agent_action_tools(source)`：**会改动系统**的写命令（config/agent_actions.yaml），
+   与 2) 的区别是它返回 WriteToolBundle——工具与人工审批策略成对产出，无法只取其一。
 
 设计约束（与旧 ops_bot/tools.py 一致）：
 - 每个工具返回 str，docstring 写清 Args / Returns / Examples；
@@ -12,21 +14,31 @@
   src/core/capabilities.py（无 langchain 纯函数，Agent 工具与关键词兜底共用同一套）；
   只读诊断工具（build_diag_tools）内部捕获 DiagnosticError 返回友好提示——诊断命令
   失败只是「查询失败」可读返回，不中断 Agent；
+- 写命令工具（build_agent_action_tools）捕获 AgentActionError 转可读文本；它**不会**
+  在模型调用时执行——HumanInTheLoopMiddleware 先中断，人工批准后才真正执行；
 - 顶层 import langchain 无碍：本模块只会在构建 Agent（assistant 工厂）时被导入。
 
-扩展方式：监控工具 = build_tools 里写 @tool 追加；只读诊断 = config/diagnostics.yaml 加命令。
+扩展方式：监控工具 = build_tools 里写 @tool 追加；只读诊断 = config/diagnostics.yaml 加命令；
+Agent 写命令 = config/agent_actions.yaml 加命令（改完需重启进程）。
 """
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from typing import Iterable
 
 from langchain.tools import tool
 from langchain_core.tools import StructuredTool
 from pydantic import Field, create_model
 
 from src.core import capabilities
+from src.interfaces.agent_action import (
+    AgentActionError,
+    AgentActionSource,
+    render_agent_action,
+)
+from src.interfaces.command import CommandSpec
 from src.interfaces.diagnostic import (
-    CommandSpec,
     DiagnosticError,
     DiagnosticSource,
     render_diag,
@@ -134,8 +146,12 @@ def _tool_args_model(spec: CommandSpec):
     return create_model(f"DiagArgs_{spec.key}", **fields)
 
 
-def _tool_description(spec: CommandSpec) -> str:
-    """生成工具 description：语义 + 参数清单；明确「只读，不改动系统」。"""
+def _tool_description(spec: CommandSpec, *, kind: str = "read") -> str:
+    """生成工具 description：语义 + 参数清单。
+
+    kind="read"（默认）：只读诊断工具，措辞保持原样（有测试逐字断言）；
+    kind="write"：Agent 写命令工具，必须让模型明白「调用≠执行，要等人工审批」。
+    """
     text = spec.summary or spec.key
     parts = []
     for param in spec.params:
@@ -145,7 +161,13 @@ def _tool_description(spec: CommandSpec) -> str:
             parts.append(f"{param.name}: 可选 {param.type}，默认 {param.default!r}")
     if parts:
         text += "。" + "；".join(parts) + "。"
-    text += "（只读诊断命令，不会改动系统，凭据无需你提供）"
+    if kind == "write":
+        text += (
+            "（写命令，会改动目标系统；调用后将进入人工审批，"
+            "审批通过前不会执行，因此不要在被批准前声称已执行；凭据无需你提供）"
+        )
+    else:
+        text += "（只读诊断命令，不会改动系统，凭据无需你提供）"
     return text
 
 
@@ -182,23 +204,82 @@ def build_diag_tools(diag: DiagnosticSource | None) -> list:
 
 
 # ---------------------------------------------------------------------------
-# 动作执行工具位（预留，默认不注册）
+# Agent 写命令工具（M3：强制人工审批，默认关闭）
 # ---------------------------------------------------------------------------
-# 说明：把重启服务 / 执行命令等动作包成 @tool 后，Agent 就能「自主执行恢复动作」。
-# 出于安全考虑默认不启用，原因：
-#   1) 执行凭据（host/密码/私钥）应来自规则配置，而不是让模型自由捏造参数；
-#   2) 自动"改系统"风险高，启用前建议配合 create_agent 的 interrupt_before 做人工审批，
-#      或只对受控主机开放。
-# 需要启用时，参考下面的示例把 @tool 写出来，再追加进 build_tools 的返回列表即可。
-#
-# @tool
-# def run_remediation(action_name: str, host: str, command: str) -> str:
-#     """在指定主机上执行一条恢复命令（高危操作，需人工确认后再调用）。"""
-#     ...
-#
-# 更推荐的做法：把动作做成「规则-动作」式白名单，由人工在 config/rules.yaml 里声明，
-# 而不是让 LLM 自由选择（见 README「安全说明」）。
-#
-# 边界区分：上面 build_diag_tools 暴露的「只读诊断」走的是另一条低危通道——命令白名单
-# 在 config/diagnostics.yaml 声明、参数服务端校验、恒不 sudo、只读不改系统，因此允许
-# Agent 直接调用；本预留位指的还是「会改系统的处置动作」，接入前仍需 interrupt_before 审批。
+@dataclass(frozen=True)
+class WriteToolBundle:
+    """写工具栏 + 配套的审批策略，**成对产出**。
+
+    刻意不做成「返回工具列表，审批另行配置」：那样调用方可以只拿工具不要审批，
+    从而绕过人工审核。把 interrupt_on 绑在同一个返回值里，使「有写工具必有审批」
+    成为结构上的事实，而不是靠约定。
+    """
+
+    tools: list
+    interrupt_on: dict
+
+
+def _make_write_tool(source: AgentActionSource, spec: CommandSpec):
+    """把一条白名单写命令包成 LangChain 工具：source.run(key, params) → 可读文本。
+
+    与只读诊断工具的区别仅在于异常类型与渲染文案；args schema 同样**只含语义参数**，
+    绝不生成 host/port/username/password 等连接字段。
+    """
+
+    def _run(**values) -> str:
+        try:
+            result = source.run(spec.key, params=values)
+        except AgentActionError as exc:
+            logger.warning("Agent 写命令工具 %s 调用失败: %s", spec.key, exc)
+            return f"写命令执行失败：{exc}"
+        return render_agent_action(result)
+
+    return StructuredTool.from_function(
+        func=_run,
+        name=spec.key,
+        description=_tool_description(spec, kind="write"),
+        args_schema=_tool_args_model(spec),
+    )
+
+
+def build_agent_action_tools(
+    source: AgentActionSource | None,
+    *,
+    reserved: Iterable[str] = (),
+) -> WriteToolBundle:
+    """按注入的 AgentActionSource 生成写命令工具 + 审批策略；source 为 None 返回空。
+
+    Args:
+        source: 写命令源（接口 AgentActionSource），如 SshAgentActionSource；None = 该能力关闭
+        reserved: 已被占用的工具名（监控工具名 + 只读诊断命令名）。命中的命令被丢弃并记
+            ERROR——create_agent 对重名工具**不报错**（静默遮蔽），必须在这里拦住。
+    Returns:
+        WriteToolBundle(tools, interrupt_on)。interrupt_on 恒为
+        {工具名: {"allowed_decisions": ["approve", "reject"]}}——**永不提供 edit**，
+        因为允许编辑参数等于绕过管理员在配置里声明的模板与约束。
+    """
+    if source is None:
+        return WriteToolBundle(tools=[], interrupt_on={})
+
+    occupied = set(reserved)
+    tools: list = []
+    interrupt_on: dict = {}
+    for spec in source.commands():
+        if spec.key in occupied:
+            logger.error(
+                "Agent 写命令 %r 与已占用的工具名冲突，已丢弃该命令（重名工具会被静默遮蔽）",
+                spec.key,
+            )
+            continue
+        tools.append(_make_write_tool(source, spec))
+        # 恒 approve/reject：不给 edit，也不给「不中断」
+        interrupt_on[spec.key] = {"allowed_decisions": ["approve", "reject"]}
+    return WriteToolBundle(tools=tools, interrupt_on=interrupt_on)
+
+
+# 边界区分：
+#   - build_tools        —— 监控读数，只读，Agent 可直接调用；
+#   - build_diag_tools   —— 只读诊断（config/diagnostics.yaml，恒不 sudo、不改系统），可直接调用；
+#   - build_agent_action_tools（上方）—— 会改系统的写命令（config/agent_actions.yaml），
+#     必须经 HumanInTheLoopMiddleware 人工审批后才执行，且与 rules.yaml 的无头自动处置
+#     完全隔离（两者各用各的白名单，互不可见）。
