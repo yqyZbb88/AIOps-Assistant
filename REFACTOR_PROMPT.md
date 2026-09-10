@@ -201,8 +201,11 @@ tests/                       离线单测（conftest 提供 Fake* 全套）
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 60 passed（test_diagnostics.py 22 条、test_action_catalog.py 12 条、
-                                     # test_chat.py 含 M2 同源回归「工具输出==兜底输出」、no-langchain 回归）
+python -m pytest tests -q            # 目前 110 passed（2026-09-10 结构收尾后）
+                                     #   diagnostics 22、prometheus_monitor 18、container 16、
+                                     #   chat 17（含 M2 同源回归「工具输出==兜底输出」）、
+                                     #   action_catalog 12、analysis 12、config_loader 5、
+                                     #   rule_engine 5、security 2、no-langchain 1
 
 # 无 langchain 降级回归（单独跑）
 python -m pytest tests/test_no_langchain_import.py -q
