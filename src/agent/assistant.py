@@ -4,7 +4,7 @@
 create_agent(model, tools, system_prompt) → 封装类(chat/reset) → invoke 取末条 AI 消息。
 本模块把这段结构落到运维场景，成为聊天链路的主入口：
 
-    模型     = 惰性复用根目录 init.py 的 init_chat_model（单一入口，本模块只做定位+导入）
+    模型     = 惰性复用根目录 init.py 的 init_chat_model（经 utils/model_loader 取用，单一入口）
     工具     = agent/tools.py 的 build_tools(monitor)（CPU/内存/磁盘/告警，注入 monitor）
     封装类   = OpsAssistant（reply=单轮对话；chat/reset 预留多轮）
 
@@ -25,51 +25,17 @@ create_agent(model, tools, system_prompt) → 封装类(chat/reset) → invoke �
 from __future__ import annotations
 
 import logging
-import sys
-from pathlib import Path
 from typing import Any
 
 from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.monitor import MonitorSource
+from src.utils.model_loader import ModelLoadError, content_text, get_model
 
 logger = logging.getLogger("ops_agent.agent")
-
-# 项目根目录（init.py / .env 所在处，即仓库根）
-_PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 
 
 class LLMError(Exception):
     """LLM 初始化 / 调用失败时抛出。"""
-
-
-# ---------------------------------------------------------------------------
-# 模型访问：惰性复用 init.py（单一模型入口）
-# ---------------------------------------------------------------------------
-_model = None
-
-
-def get_model():
-    """惰性返回 init.py 中创建的模型对象（首次调用时才 import init.py）。"""
-    global _model
-    if _model is None:
-        try:
-            # init.py 的 load_dotenv 依赖运行 cwd，这里显式加载项目根 .env 兜底
-            try:
-                from dotenv import load_dotenv
-
-                load_dotenv(_PROJECT_ROOT / ".env", override=True)
-            except Exception:  # 未安装 python-dotenv 时忽略，交给 init.py 处理
-                pass
-            if str(_PROJECT_ROOT) not in sys.path:
-                sys.path.insert(0, str(_PROJECT_ROOT))
-            from init import model  # 复用 init.py：单一模型入口
-
-            _model = model
-        except Exception as exc:
-            raise LLMError(
-                f"LLM 初始化失败（请检查 .env 的 DEEPSEEK_API_KEY 与 init.py）: {exc}"
-            ) from exc
-    return _model
 
 
 # ---------------------------------------------------------------------------
@@ -110,25 +76,8 @@ def _last_ai_content(response: dict[str, Any]) -> str:
     for msg in reversed(messages):
         # msg.type == "ai" 且 content 非空才算最终回答（工具调用轮 content 常为空）
         if getattr(msg, "type", "") == "ai" and msg.content:
-            return _content_text(msg.content)
+            return content_text(msg.content)
     return "抱歉，我暂时无法回答这个问题。"
-
-
-def _content_text(content: str | list[dict[str, str]]) -> str:
-    """把消息 content（str 或消息块列表）归一化为纯文本。"""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                text = block.get("text") or block.get("content")
-                if text:
-                    parts.append(str(text))
-            else:
-                parts.append(str(block))
-        return "\n".join(parts)
-    return str(content)
 
 
 class OpsAssistant:
@@ -166,8 +115,11 @@ class OpsAssistant:
         self.tools = build_tools(monitor)
         if diag is not None:
             self.tools = [*self.tools, *build_diag_tools(diag)]
-        # 惰性复用 init.py 模型入口；模型/provider 参数只改 init.py 即可
-        self.model = get_model()
+        # 惰性复用 init.py 模型入口（utils/model_loader 单例缓存）；模型/provider 只改 init.py
+        try:
+            self.model = get_model()
+        except ModelLoadError as exc:
+            raise LLMError(str(exc)) from exc
         self.agent = _build_agent(
             model=self.model,
             tools=self.tools,

@@ -69,7 +69,7 @@ Assitant/
 │   ├── agent/                 # ★ 保留的 Agent 编排层（create_agent + @tool + 提示词）
 │   │   ├── prompts.py         #   系统提示词 / Agent 名（纯常量，只有 agent/ 用）
 │   │   ├── tools.py           #   build_tools(monitor)/build_diag_tools：@tool 工厂（监控工具薄接线转发 core/capabilities）
-│   │   └── assistant.py       #   OpsAssistant：惰性复用 init.py 模型，构建 Agent
+│   │   └── assistant.py       #   OpsAssistant：经 utils/model_loader 取模型，构建 Agent
 │   ├── registry.py            # 插件注册表（monitors / llms / diagnostics；写动作走 config/actions.yaml 目录，不入注册表）
 │   ├── container.py           # DI 容器：settings → 插件实例 → OpsAgent（全部惰性/缓存）
 │   ├── storage/               # 数据模型与状态存储
@@ -77,9 +77,10 @@ Assitant/
 │   │   ├── memory.py          #   AlertStore：最近告警内存缓冲
 │   │   └── db.py              #   SQLite 持久化（搁置，仅 TODO 预留）
 │   └── utils/                 # 基础设施工具
-│       ├── config_loader.py   #   settings.yaml 解析 + 环境插值 + 默认兜底
+│       ├── config_loader.py   #   settings.yaml 解析 + 环境插值 + 默认兜底（ROOT_DIR）
 │       ├── logger.py          #   日志级别控制 + 审计 logger（ops_agent.audit）
-│       └── security.py        #   敏感打码 redact_sensitive / 参数必填校验
+│       ├── security.py        #   敏感打码 redact_sensitive
+│       └── model_loader.py    #   ★ 模型单一入口：惰性复用 init.py + 进程内单例缓存
 └── tests/                     # 离线单测（conftest 提供 FakeMonitor / FakeLLM / FakeDiagnostics）
 ```
 

@@ -124,9 +124,10 @@ src/
 ├── storage/{models,memory}.py   数据模型（pydantic）+ 最近告警内存缓冲
 │   └── db.py                SQLite 持久化（仅 TODO 预留，未实现）
 └── utils/
-    ├── config_loader.py     yaml 解析 + 全文件 ${ENV}/${ENV:-d} 插值 + Settings 冻结 dataclass
+    ├── config_loader.py     yaml 解析 + 全文件 ${ENV}/${ENV:-d} 插值 + Settings 冻结 dataclass（ROOT_DIR）
     ├── logger.py            日志级别 + 审计 logger（ops_agent.audit）
-    └── security.py          redact_sensitive（password/token/secret/api_key → ***）
+    ├── security.py          redact_sensitive（password/token/secret/api_key → ***）
+    └── model_loader.py      ★ 模型单一入口：get_model() 惰性复用 init.py + 进程内单例；content_text()
 config/{settings,rules,actions,diagnostics}.yaml    配置（密码一律 ${VAR} 占位）
 tests/                       离线单测（conftest 提供 Fake* 全套）
 ```
