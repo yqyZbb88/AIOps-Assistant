@@ -55,12 +55,16 @@ def test_open_is_idempotent(tmp_path):
     assert second.query("SELECT session_id FROM sessions") == [{"session_id": "s1"}]
 
 
-def test_sessions_has_pending_approvals_column(tmp_path):
-    """列名写错会让后续 INSERT 报 no such column 再被上层吞掉——这里显式锁住。"""
+def test_sessions_columns_are_exact(tmp_path):
+    """列名写错会让后续 INSERT 报 no such column 再被上层吞掉——这里显式锁住。
+
+    注意**没有** pending_approvals 列：待审批数由 messages 状态实时统计得出。
+    存成列就得在 append_turn / update_pending / reconcile_pending 三处同步维护，
+    批量作废时极易漂移；实时统计则不可能算错。
+    """
     db = open_database(tmp_path / "ops.db")
     cols = {r["name"] for r in db.query("PRAGMA table_info(sessions)")}
-    assert {"session_id", "user", "title", "status", "created_at", "updated_at",
-            "pending_approvals"} <= cols
+    assert cols == {"session_id", "user", "title", "status", "created_at", "updated_at"}
 
 
 # -- 版本双向校验 -----------------------------------------------------------

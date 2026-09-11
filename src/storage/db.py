@@ -41,13 +41,12 @@ SCHEMA_VERSION = 1
 _DDL: tuple[str, ...] = (
     """
     CREATE TABLE IF NOT EXISTS sessions (
-        session_id        TEXT PRIMARY KEY,
-        user              TEXT NOT NULL DEFAULT '',
-        title             TEXT NOT NULL DEFAULT '',
-        status            TEXT NOT NULL DEFAULT 'active',
-        created_at        TEXT NOT NULL,
-        updated_at        TEXT NOT NULL,
-        pending_approvals INTEGER NOT NULL DEFAULT 0
+        session_id TEXT PRIMARY KEY,
+        user       TEXT NOT NULL DEFAULT '',
+        title      TEXT NOT NULL DEFAULT '',
+        status     TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
     )
     """,
     """

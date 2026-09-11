@@ -16,11 +16,13 @@ import pytest
 
 from src.container import Container
 from src.core.agent import OpsAgent
+from src.storage.session import InMemorySessionStore, SqliteSessionStore
 from src.utils.config_loader import (
     LLMSettings,
     MonitorSettings,
     PrometheusSettings,
     Settings,
+    StorageSettings,
 )
 
 
@@ -120,6 +122,43 @@ def test_diagnostics_built_when_config_and_paramiko_present():
 
 
 # ---------------------------------------------------------------------------
+# sessions：配置关闭 → None；SQLite 不可用 → 内存降级（服务照常启动）
+# ---------------------------------------------------------------------------
+def test_sessions_none_when_disabled():
+    """`Settings()` 的 storage.enabled 默认就是 False——测试里直接构造它不会被写脏。"""
+    assert Container(settings=Settings()).sessions() is None
+
+
+def test_sessions_built_when_enabled(tmp_path):
+    c = Container(settings=Settings(
+        storage=StorageSettings(enabled=True, db_path=str(tmp_path / "ops.db"))
+    ))
+    assert isinstance(c.sessions(), SqliteSessionStore)
+
+
+def test_sessions_is_cached(tmp_path):
+    """两次调用同一实例：每次新建会让 purge 游标与连接各自为政。"""
+    c = Container(settings=Settings(
+        storage=StorageSettings(enabled=True, db_path=str(tmp_path / "ops.db"))
+    ))
+    assert c.sessions() is c.sessions()
+
+
+def test_sessions_falls_back_to_memory_when_db_unusable(tmp_path):
+    """db_path 的父路径被普通文件占住 → 开库失败 → 内存实现（多轮仍可用，只是不持久）。"""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    c = Container(settings=Settings(
+        storage=StorageSettings(enabled=True, db_path=str(blocker / "sub" / "ops.db"))
+    ))
+
+    store = c.sessions()
+
+    assert isinstance(store, InMemorySessionStore)
+    assert c.sessions() is store, "降级结果也要缓存，否则每个请求重试一次开库并刷 ERROR"
+
+
+# ---------------------------------------------------------------------------
 # ops_agent：完整装配
 # ---------------------------------------------------------------------------
 def test_ops_agent_assembles_full_chain():
@@ -170,6 +209,9 @@ def test_create_app_smoke():
         assert expected in paths, f"缺少路由 {expected}"
     # 人工审批（M3 新增，非破坏性扩充）
     for expected in ("/approvals", "/approvals/{approval_id}"):
+        assert expected in paths, f"缺少路由 {expected}"
+    # 对话历史（M4 新增，非破坏性扩充）
+    for expected in ("/sessions", "/sessions/{session_id}"):
         assert expected in paths, f"缺少路由 {expected}"
 
 

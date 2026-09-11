@@ -78,7 +78,9 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：189 passed**（2026-09-10 M3 后；M3 新增 79 例，其中
+    **当前基线：264 passed**（2026-09-11 M4 第一批后；M4-1 新增 60 例：
+    `test_sqlite_db.py` 15、`test_session_store.py` 43、`test_api_sessions.py` 13、
+    container +4，减去重排的 15。M3 的 79 例其中
     `test_agent_actions_hitl_graph.py` 用**真 graph + 脚本化假模型**验证审批语义，
     含一条覆盖「容器 → 工厂 → OpsAssistant → 执行」的端到端装配用例——
     单件全绿但接线接错时只有它会红）。
@@ -90,7 +92,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **189**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **264**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
 
     **特别注意「两处都写了同一件事」**：README 与本文件经常重复描述同一条约束
@@ -119,6 +121,13 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   `config/actions.yaml` 写命令目录（模板+参数+sudo）→ 通用执行器按目录 key 执行（带校验 + 审计）；
   只读诊断与写命令共用 `plugins/common`（endpoint/ssh/audit/cmddef）内核，两条入口/边界分离；
   规则表外的告警 → LLM 根因假设与建议（`[AI 分析]`），分析失败仅记日志不阻塞。
+- **SQLite 持久化底座 + 会话表**（M4 第一批，2026-09-11）：[src/storage/db.py](src/storage/db.py)
+  从空 TODO 占位变成真实现（连接工厂 + 六张表 + `PRAGMA user_version` 双向校验），
+  [src/storage/session.py](src/storage/session.py) 提供会话/消息读写（SQLite + 内存两套实现），
+  `/sessions` 三个端点可查可删。**零新增依赖**（stdlib `sqlite3`）。
+  **注意这是中间态**：入库的只有「会话与消息」两张表，`/chat` 尚未接线（Agent 仍是单轮），
+  告警/处置/AI 建议三张归档表**建好了但没有任何写入方**。第二批完成前，本能力
+  **对外只有 `/sessions` 这一个可用的空表**——别误以为历史已经在记了。
 
 ### 分层边界（一句话版；完整目录树见 [README.md](./README.md)）
 
@@ -153,6 +162,11 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | （已修 2026-09-04）根 `requirements.txt` 曾被写成 **UTF-16**，`pip install -r` 直接挂 | 依赖/文档文件一律 **UTF-8**；requirements 分「核心 / 可选①聊天+AI 分析 / 可选②SSH+只读诊断 / 可选③测试」，与 README「安装与依赖」保持一致。 |
 | **`Any` 退化成「看不见」的契约**（2026-09-10 踩到） | 层间边界一律标真实接口（`Assistant` Protocol / `RuleEngine` / `ActionExecutor`），不用 `Any`；**删/改 import 后用静态检查或全仓注解求值扫一遍**——因 `from __future__ import annotations` 使注解不求值，`Any` 被误删后测试与运行全绿，只有类型检查器会报。 |
 | 文档与代码互相误导（2026-09-10 集中清理过一轮，一次修掉 7 处） | 代码改了就同步文档；**解释「已不存在的东西」的段落一律删掉**（如「原 X 已被 Y 取代而移除」），只留仍然有用的约束性说明。**完整规则见「硬性约束 #12」，动手前当 review 清单逐项打勾。** |
+| **`with sqlite3.connect(p) as conn:` 不关连接**（2026-09-11 M4） | 连接上下文管理器**只提交/回滚事务**。漏一个 handle，Windows 上表现为 `database is locked`、db 文件删不掉、同步盘冲突。必须 `with closing(sqlite3.connect(...)) as conn, conn:`（见 [db.py](src/storage/db.py) 的连接工厂）。 |
+| **sqlite 的 `foreign_keys` 是「每连接」pragma 且默认 OFF**（2026-09-11 M4） | 建表时写 `REFERENCES` **不产生任何约束**。本项目索性不声明外键、删父子数据时**显式同事务删子表**（见 [storage/session.py](src/storage/session.py) 的 `delete`），别假装有级联。 |
+| **WAL 在网络盘 / 同步盘上开不起来**（2026-09-11 M4） | 仓库在 `Desktop` 下，OneDrive 常接管桌面，而同步盘不支持 WAL 所需的共享内存。开 WAL 失败要**回落 `journal_mode=DELETE` 并只记 warning**，不能整体关闭持久化——否则「能不能用历史」取决于一个无关的同步客户端。另：`PRAGMA user_version` 版本**高于**当前代码时（文件来自更新的代码）必须记 ERROR 并拒绝使用，**绝不写入**。 |
+| **TTL 靠字符串比较，时间戳格式必须逐字一致**（2026-09-11 M4） | 清理是 `WHERE created_at < cutoff` 的字典序比较，只有同为 UTC + `timespec="seconds"` 时才等价于时间序。写成别的精度或本地时区 → 比较恒为「未过期」，清理**静默失效**且不报错。格式原先在 6 个文件各写一遍，已收敛到 [src/utils/time.py](src/utils/time.py)，**别再写第 7 份**。 |
+| **审批中断要标「整轮」，不能只标 assistant 那行**（2026-09-11 M4） | 一轮 = user + assistant 两行。若只有 assistant 行是 `pending_approval`、user 行仍是 `final`，下一轮的历史窗口里就会出现一条**没有回答的提问**，模型会把旧问题当新问题再答一遍。两行必须共享同一个 `status` / `approval_id`（见 `SessionStore.append_turn`）。 |
 
 ### 既定决策记录（勿推翻）
 
@@ -227,7 +241,14 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     看着 `auto_execute: true` 其实根本没启用；
   - 2026-09-10 用户决定：**先不做，仅登记**。
 - **对话历史维护（多轮对话 + 历史记录表）**：2026-09-10 用户提出并判定为「一直被忽略的至关重要功能」。
-  现状确为**单轮**：`reply()` 每轮只传当前一条消息
+  **⚠️ 2026-09-11 起分两批交付，当前处于「第一批已完成、第二批未开始」的中间态：**
+  - **第一批（已完成，commit 见 git log）**：存储底座 + 会话/消息两张表的读写 + `/sessions` 三端点。
+    落点 `interfaces/session.py` → `storage/session.py`（SQLite + 内存降级两实现）→
+    `container.sessions()`（三级降级：配置关 → None；SQLite 打不开 → 内存实现；正常 → SQLite）。
+  - **第二批（未开始）**：`/chat` 带 `session_id`、历史进模型窗口、审批回填；
+    以及状态日志（告警/处置/AI 建议落盘 + 审计落文件）。**方案见下，勿重新考古。**
+
+  现状仍为**单轮**：`reply()` 每轮只传当前一条消息
   （[src/agent/assistant.py:276](src/agent/assistant.py#L276)），`/chat` 无会话概念
   （`user` 字段**只用于打日志**）。设计已完成，结论与未决点如下，**勿重新考古**：
 
@@ -255,8 +276,16 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   - 落点：`interfaces/session.py`（`ChatMessage` 中性类型 + `SessionStore`）
     → `storage/session.py`（sqlite 实现，+ 可选内存实现供降级/测试）
     → `core/chat.py` 持有 store（**core 仍不 import langchain**）
-    → `assistant.reply(message, *, history=None)`（带默认值的 kwarg，既有调用点与 FakeAssistant 都不失效）
-    → `api/sessions.py`（`GET /sessions`、`GET /sessions/{id}`、`DELETE /sessions/{id}`）。
+    → `assistant.reply_turn(message, *, history=())` → `api/sessions.py`（`GET /sessions`、
+    `GET /sessions/{id}`、`DELETE /sessions/{id}`）。
+
+    **⚠️ 路线图原写「给 `reply` 加带默认值的 kwarg `history=None`」——2026-09-11 评审推翻，
+    不采用。** 原因：`runtime_checkable` 只检验**方法名是否存在**、不检验签名，[tests/test_chat.py](tests/test_chat.py)
+    里 3 个局部 fake 只实现 `reply(self, message)` → `isinstance(assistant, HistoryCapable)`
+    仍判 True，带 kwarg 调用时才 TypeError，**守卫形同虚设**。改用**新方法名**
+    `reply_turn()` 返回 `TurnResult`（含 `status` 与 `approval_id`），照 `ApprovalCapable` 的先例。
+    另一个原因：`reply` 只回 `str`，而 core 需要 `approval_id` 才能写 `pending_approval` 行——
+    只回文本的话 pending 行根本无从落。
 
   **审批 × 多轮的三个边界（最容易写错，实现前就要定）**：
   1. **中断那轮的回答不在 `reply()` 时产生，而在 `decide()` 时**——表里那条只能先记「待审批提示」
@@ -283,8 +312,10 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   ② 带历史的一轮触发中断后，`decide()` 取到的 `_last_ai_content` 是否仍是**本轮**最终回答
   （而非历史里某条旧消息）；③ 历史为空 / 仅一条 / 超窗口三种边界。
 
-  **未决（动手前先问用户）**：路线 A 还是 B（倾向 B）；不传 `session_id` 时新建会话还是保持单轮
-  （倾向新建）；`/chat` 加字段还是用 header（倾向加字段）。
+  **三个未决点已于 2026-09-11 用户拍板**：路线 **B**；`/chat` **body 加可选 `session_id`**
+  （不用 header）、响应**恒回带**；不传 `session_id` 时**新建会话**。
+  另定：**落盘范围四份全做**（告警记录 / 处置结果 / 审计日志落文件 / AI 建议），
+  保留策略 **TTL + 容量上限**（惰性清理 + 节流），**交付分两批**（见本条目开头）。
 - **熔断机制（调用次数 / 成本上限）**：2026-09-10 用户提出。现状：Agent **实际上没有成本熔断**——
   LangGraph 确实有 `recursion_limit`，但实测默认值是 **10000**
   （`langgraph._internal._config.DEFAULT_RECURSION_LIMIT`，本机 langgraph 实测），
@@ -305,9 +336,11 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ### 搁置项（预留未实现）
 
-- `notifiers`（钉钉/企微）、[src/storage/db.py](src/storage/db.py) 的 SQLite 持久化（仅 TODO 占位，
-  **由路线图的「对话历史维护」激活**——届时历史表就落在这里）、
-  `docker/`、插件目录自动扫描发现、`logging.conf`。
+- `notifiers`（钉钉/企微）、`docker/`、插件目录自动扫描发现、`logging.conf`、
+  **告警/处置/AI 建议的归档写入**（三张表已随 M4 第一批建好，但**无写入方**，
+  待 M4 第二批在 `OpsAgent.process_alert` 末尾接线）、**审计日志落文件**（RotatingFileHandler）。
+- ~~[src/storage/db.py](src/storage/db.py) 的 SQLite 持久化（仅 TODO 占位）~~
+  —— **2026-09-11 已实现**，见「已实现能力」。
 - `disk_clean` 不再单独立动作：M1 后直接加进 `config/actions.yaml` 即可。
 
 ### 明确不做（除非需求变化）
@@ -329,10 +362,12 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 - **`ChatService.Rule` 那个小规则框架**：有点自造感，但有测试锁着且确实换来了可读性，不值得改。
 - **对外 HTTP 契约**（`/health` `/chat` `/alert` `/alerts/*` 的请求响应）：一个字都别改
   （`tests/test_container.py::test_create_app_smoke` 锁了路由存在性）。
-  **唯一的例外已登记**：路线图「对话历史维护」计划给 `/chat` **追加**可选 `session_id`
-  （请求与响应各一个字段，属**扩充**而非修改，同当初加 `/approvals` 的性质）——
+  **新增路由不属于改动**：`/approvals`（M3）与 `/sessions`（M4 第一批）都是**追加**，
+  原五个路由的请求/响应至今**一个字没动**。
+  **仍在计划中的唯一例外**：路线图「对话历史维护」第二批要给 `/chat` **追加**可选
+  `session_id`（请求与响应各一个字段，属**扩充**而非修改，同当初加 `/approvals` 的性质）——
   真做的时候要连同 `tests/test_api_approvals.py:112` 的 `set(resp.json()) == {"reply"}`
-  与本文件此条一并更新，别让两处对不上。
+  与 README 路由表那句「一个字都没改」一并更新，别让两处对不上。
 - **`config/*.yaml` 的现有格式与示例内容**：无需求不动配置。
 - **安全不变量相关的一切**（`shlex.quote`、redact、审计、恒不 sudo、凭据不进模型）：只许加固，不许放松。
 - **M3 的人工审批**（2026-09-10 新增，同样只许加固）：写工具与审批策略必须继续**成对产出**
@@ -340,6 +375,33 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   不得新增开关键；审批护栏只许加在 **Agent 路径**，绝不下沉进 `execute()`/`run()` 内部
   （否则 `RuleEngine` 的无头自动处置会被连带影响）。
   **已知残余风险**：`/approvals/*` 无鉴权，见 README「安全说明」——绑 `0.0.0.0` 前必须先加鉴权。
+
+---
+
+## M4 第一批（2026-09-11）持久化底座 + 会话表
+
+「对话历史维护 + 状态日志持久化」五阶段里的**前两阶段**。设计见「路线图」，
+**不碰聊天链路**，可独立跑通与验证。测试 189 → 264。
+
+1. **配置**：`config/settings.yaml` 新增 `storage` 段；`config_loader.py` 加 `StorageSettings`。
+   **`StorageSettings.enabled` 的 dataclass 默认值是 `False`**——测试里 `Settings()` 被直接
+   构造多次，默认打开会让用例写真实 db 文件、跨用例串数据、`git status` 变脏。出厂开关只在 yaml 里。
+2. **底座**：`src/storage/db.py` 从空 TODO 变成真实现。要点：每操作新开连接、`closing` 关连接、
+   `isolation_level=None` + 显式 `BEGIN IMMEDIATE`、WAL 失败回落、版本双向校验、失败返回 `None`。
+3. **会话存储**：`interfaces/session.py`（中性类型 + `SessionStore` + `HistoryCapable`）→
+   `storage/session.py`（SQLite + 内存两套实现，跑同一组契约断言）。TTL/容量清理**惰性 + 节流**，
+   `clock` 可注入。
+4. **端点**：`api/sessions.py` 三个端点；`container.sessions()` 三级降级（配置关 → None；
+   SQLite 打不开 → 内存实现；正常 → SQLite）；`main.py` 挂 router。
+5. **`.gitignore`**：补 `data/`、`*.db`、`*.db-wal`、`*.db-shm`——`*.db` **匹配不到 WAL 旁文件**，
+   而它们同样含会话原文。
+
+**中途修正的两处设计**（都已落到代码与注释里）：
+
+- `sessions.pending_approvals` 原计划**存成列**，改为**读时统计**：存列就得在
+  `append_turn` / `update_pending` / `reconcile_pending` 三处同步维护，批量作废时极易漂移。
+- 审批中断原本只把 assistant 行标 `pending_approval`，测试直接暴露了后果
+  （user 行仍是 final → 下轮窗口出现无回答的提问），改为**整轮同进同出**。
 
 ---
 
@@ -383,10 +445,12 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 189 passed（2026-09-10 M3 写命令+人工审批后）
+python -m pytest tests -q            # 目前 264 passed（2026-09-11 M4 第一批后）
+                                     #   M4-1 新增：sqlite_db 15、session_store 43（两种实现
+                                     #     跑同一组契约断言）、api_sessions 13、container +4
                                      #   M3 相关：agent_actions_catalog 16、agent_action_source 12、
                                      #     approval_store 10、agent_tools_approval 10、
-                                     #     api_approvals 9、hitl_graph 15、container 16 → 23
+                                     #     api_approvals 9、hitl_graph 15、container 16 → 27
                                      #   既有：diagnostics 22、prometheus_monitor 18、
                                      #     chat 17（含 M2 同源回归「工具输出==兜底输出」）、
                                      #     action_catalog 12、analysis 12、config_loader 5、

@@ -20,6 +20,20 @@ from src.interfaces.diagnostic import (
 )
 from src.interfaces.llm_client import LLMClient, LLMError
 from src.interfaces.monitor import MonitorError, MonitorSource
+from src.interfaces.session import (
+    ROLE_ASSISTANT,
+    ROLE_USER,
+    STATUS_ABANDONED,
+    STATUS_FINAL,
+    STATUS_PENDING_APPROVAL,
+    ChatMessage,
+    HistoryCapable,
+    SessionError,
+    SessionInfo,
+    SessionNotFoundError,
+    SessionStore,
+    TurnResult,
+)
 
 __all__ = [
     "MonitorSource",
@@ -33,6 +47,18 @@ __all__ = [
     "PendingApproval",
     "LLMClient",
     "LLMError",
+    "SessionStore",
+    "SessionError",
+    "SessionNotFoundError",
+    "ChatMessage",
+    "SessionInfo",
+    "TurnResult",
+    "HistoryCapable",
+    "ROLE_USER",
+    "ROLE_ASSISTANT",
+    "STATUS_FINAL",
+    "STATUS_PENDING_APPROVAL",
+    "STATUS_ABANDONED",
     "DiagnosticSource",
     "DiagnosticError",
     "AgentActionSource",

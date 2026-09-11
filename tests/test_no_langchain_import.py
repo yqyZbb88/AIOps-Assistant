@@ -37,6 +37,12 @@ from src.interfaces.agent_action import AgentActionError, AgentActionSource  # n
 from src.interfaces.approval import ApprovalError, PendingApproval  # noqa: F401
 from src.plugins.agent_actions import catalog as agent_actions_catalog  # noqa: F401
 from src.plugins.agent_actions import source as agent_actions_source  # noqa: F401
+# M4：持久化底座与会话存储用的是标准库 sqlite3，无 langchain 也必须可用
+from src.interfaces.session import ChatMessage, SessionStore, TurnResult  # noqa: F401
+from src.storage import db as storage_db  # noqa: F401
+from src.storage import session as storage_session  # noqa: F401
+from src.utils import time as utils_time  # noqa: F401
+from src.api import sessions as sessions_api  # noqa: F401
 
 # 2) FakeMonitor + 聊天回落断言
 class FakeMonitor:

@@ -14,6 +14,11 @@
 人工审批（Agent 写命令，config/agent_actions.yaml 启用后才有内容）：
     GET  /approvals             待审批的写命令调用
     POST /approvals/{id}        提交 approve/reject 并续跑
+
+对话历史（config/settings.yaml 的 storage 段启用后才有内容）：
+    GET    /sessions            会话列表（最近更新的在前）
+    GET    /sessions/{id}       会话详情（含全部消息）
+    DELETE /sessions/{id}       删除会话连同其消息
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from src.api import alert as alert_api
 from src.api import approvals as approvals_api
 from src.api import chat as chat_api
 from src.api import health as health_api
+from src.api import sessions as sessions_api
 from src.container import Container
 from src.utils.config_loader import Settings
 from src.utils.logger import configure_logging
@@ -63,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(chat_api.router)
     app.include_router(alert_api.router)
     app.include_router(approvals_api.router)
+    app.include_router(sessions_api.router)
     return app
 
 
