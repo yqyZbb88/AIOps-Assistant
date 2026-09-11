@@ -129,6 +129,7 @@ class RuleEngine:
     def _execute_rule(self, alert: Alert, rule: ActionRule) -> dict[str, Any]:
         """对单条「已匹配规则」执行（auto_execute 决策 + 调用执行器），返回处置记录。"""
         record: dict[str, Any] = {
+            "alert_key": alert.alert_key,  # 与归档表的关联键（见 storage/models.py）
             "alertname": alert.alertname,
             "severity": alert.severity,
             "instance": alert.instance,

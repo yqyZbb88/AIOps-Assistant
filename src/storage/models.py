@@ -49,6 +49,16 @@ class Alert(BaseModel):
         """是否已解决。"""
         return self.status == "resolved"
 
+    @property
+    def alert_key(self) -> str:
+        """归档表之间的关联键（告警 / 处置 / AI 建议三表靠它串起来）。
+
+        **不能直接用 fingerprint**：它默认为空串，而 Alertmanager 之外的来源
+        （含全部既有测试的构造）根本不设它——空串当 join key 会把不同告警并成一条。
+        故回落成「告警名 + 实例 + 开始时间」的复合键。
+        """
+        return self.fingerprint or f"{self.alertname}|{self.instance}|{self.startsAt}"
+
 
 class AlertmanagerPayload(BaseModel):
     """Alertmanager webhook 通知的顶层结构。"""

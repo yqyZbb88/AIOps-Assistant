@@ -219,3 +219,29 @@ def fakediag() -> FakeDiagnostics:
 @pytest.fixture
 def fake_actions() -> FakeAgentActions:
     return FakeAgentActions()
+
+
+# ---------------------------------------------------------------------------
+# 全局隔离：测试不得往仓库里写审计日志
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="session", autouse=True)
+def _no_audit_file_in_tests():
+    """摘掉审计 logger 上的文件 handler，让测试套件绝不往仓库写文件。
+
+    为什么需要：`import src.main` 会执行模块级的 `app = create_app()`，而它用
+    **仓库真实配置**（config/settings.yaml 的 logging.audit_file）给 audit logger 挂上
+    `logs/audit.log` 的文件 handler。此后任何一条审计（测试里被 stub 掉的
+    exec_command 也会走 record_execution）都会写进仓库——测试跑完在仓库里留下
+    一堆假数据（192.168.1.1 / h / boom 这类）。
+
+    文件落盘本身由 tests/test_logger.py 用 tmp_path 专门覆盖，不需要真实路径参与。
+    """
+    import logging
+
+    from src.utils.logger import _FILE_HANDLER_TAG, AUDIT_LOGGER_NAME
+
+    audit_logger = logging.getLogger(AUDIT_LOGGER_NAME)
+    for handler in list(audit_logger.handlers):
+        if getattr(handler, _FILE_HANDLER_TAG, None):
+            audit_logger.removeHandler(handler)
+    yield

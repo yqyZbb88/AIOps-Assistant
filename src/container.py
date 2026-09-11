@@ -26,10 +26,12 @@ from src.interfaces.action import ActionExecutor
 from src.interfaces.agent_action import AgentActionSource
 from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.llm_client import LLMClient
+from src.interfaces.history import HistoryStore
 from src.interfaces.monitor import MonitorSource
 from src.interfaces.session import SessionStore
 from src.registry import registry
 from src.storage.approval import ApprovalStore
+from src.storage.db import Database
 from src.storage.memory import AlertStore
 from src.utils.config_loader import Settings, load_settings
 
@@ -50,6 +52,10 @@ class Container:
         self._agent_actions_config = None
         self._sessions: SessionStore | None = None
         self._sessions_ready = False
+        self._history: HistoryStore | None = None
+        self._history_ready = False
+        self._db: Database | None = None
+        self._db_ready = False
 
     # -- 组件（惰性 + 缓存） ----------------------------------------------
     def monitor(self) -> MonitorSource:
@@ -180,15 +186,33 @@ class Container:
         self._agent_actions = SshAgentActionSource(config)
         return self._agent_actions
 
+    def _database(self) -> Database | None:
+        """打开（并缓存）SQLite 底座；配置关闭或打不开 → None。
+
+        **会话与状态日志共用同一个 Database 实例**（同一个 .db 文件、同一套连接参数）。
+        结果含 None 一起缓存：开库失败会打 ERROR 日志，不能每个请求重试一次刷屏。
+        """
+        if self._db_ready:
+            return self._db
+        self._db_ready = True
+
+        cfg = self.settings.storage
+        if not cfg.enabled:
+            logger.info("持久化未启用（storage.enabled=false），会话与告警归档均不落盘")
+            return None
+
+        from src.storage.db import open_database
+
+        self._db = open_database(self._resolve_db_path(cfg.db_path))
+        return self._db
+
     def sessions(self) -> SessionStore | None:
-        """会话存储；`storage.enabled=false` 或 SQLite 打不开 → None（持久化能力关闭）。
+        """会话存储；配置关闭或 SQLite 打不开 → None（持久化能力关闭）。
 
         三级降级，任一级都不影响服务启动：
         1. 配置关闭            → None（不落盘，行为与改造前一致）；
         2. SQLite 打不开        → **内存实现**（多轮会话仍可用，只是重启即丢）；
         3. 正常                → SqliteSessionStore。
-
-        结果**缓存一次**（含 None）：开库失败会打 ERROR 日志，不能每个请求重试一次刷屏。
         """
         if self._sessions_ready:
             return self._sessions
@@ -197,14 +221,10 @@ class Container:
         cfg = self.settings.storage
         from src.storage.session import InMemorySessionStore, SqliteSessionStore
 
-        if not cfg.enabled:
-            logger.info("持久化未启用（storage.enabled=false），会话与告警归档均不落盘")
-            return None
-
-        from src.storage.db import open_database
-
-        db = open_database(self._resolve_db_path(cfg.db_path))
+        db = self._database()
         if db is None:
+            if not cfg.enabled:
+                return None
             logger.warning(
                 "SQLite 不可用，会话降级为内存实现：多轮对话可用，但重启即丢"
             )
@@ -222,6 +242,31 @@ class Container:
         self._sessions = store
         self._reconcile_pending(store)
         return store
+
+    def history(self) -> HistoryStore | None:
+        """状态日志归档存储；配置关闭或 SQLite 打不开 → None（不落盘）。
+
+        与会话存储不同，这里**没有内存降级实现**：归档的价值全在「跨重启可查」，
+        一个重启即丢的归档表只会误导人以为记录还在。故不可用时直接 None。
+        """
+        if self._history_ready:
+            return self._history
+        self._history_ready = True
+
+        db = self._database()
+        if db is None:
+            return None
+
+        from src.storage.history import SqliteHistoryStore
+
+        cfg = self.settings.storage
+        self._history = SqliteHistoryStore(
+            db,
+            ttl_seconds=cfg.history_ttl_hours * 3600,
+            max_rows=cfg.max_history_rows,
+            purge_interval_seconds=cfg.purge_interval_seconds,
+        )
+        return self._history
 
     @staticmethod
     def _reconcile_pending(store: SessionStore) -> None:
@@ -300,6 +345,7 @@ class Container:
             rule_engine=rule_engine,
             analysis=analyzer,
             llm=llm,
+            history=self.history(),  # 未启用 → None，告警接收照常
         )
         logger.info(
             "OpsAgent 装配完成: monitor=%s actions=%d llm=%s",

@@ -1,12 +1,13 @@
-"""告警路由：POST /alert 接收、GET /alerts/recent、GET /alerts/active。"""
+"""告警路由：POST /alert 接收、GET /alerts/recent、GET /alerts/active、GET /alerts/history。"""
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from src.core.agent import OpsAgent
+from src.interfaces.history import HistoryError
 from src.interfaces.monitor import MonitorError
 from src.storage.models import AlertAck, AlertmanagerPayload
 
@@ -35,8 +36,37 @@ def alert(payload: AlertmanagerPayload, request: Request) -> AlertAck:
 
 @router.get("/alerts/recent", response_model=list[dict[str, Any]])
 def alerts_recent(request: Request, limit: int = 20) -> list[dict[str, Any]]:
-    """查看最近接收的告警记录（内存缓冲，进程重启后清空）。"""
+    """最近接收的告警记录（**内存热缓冲**，进程重启后清空）。
+
+    与 /alerts/history 的区别：这个是「刚发生了什么」的快速视图（有界 deque，
+    不落盘、容量小）；history 是落盘归档（可跨重启查、可关联处置与 AI 建议）。
+    两者数据源不同，**不是一个东西的两种读法**。
+    """
     return _agent(request).recent(limit)
+
+
+@router.get("/alerts/history", response_model=dict[str, Any])
+def alerts_history(
+    request: Request,
+    limit: int = Query(50, ge=1, le=500, description="每类最多返回条数"),
+) -> dict[str, Any]:
+    """落盘的告警归档：告警 + 处置结果 + AI 建议，各取最近 limit 条。
+
+    持久化未启用时三者均为**空列表**（沿用「能力缺失 = 空而非报错」的约定）；
+    存储故障则 503——那是故障，不该伪装成「没有记录」。
+    """
+    store = request.app.state.container.history()
+    if store is None:
+        return {"alerts": [], "remediations": [], "advice": [], "storage": "off"}
+    try:
+        return {
+            "alerts": [r.to_dict() for r in store.recent_alerts(limit=limit)],
+            "remediations": [r.to_dict() for r in store.recent_remediations(limit=limit)],
+            "advice": [r.to_dict() for r in store.recent_advice(limit=limit)],
+            "storage": "ok" if store.healthy else "degraded",
+        }
+    except HistoryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/alerts/active", response_model=list[dict[str, Any]])

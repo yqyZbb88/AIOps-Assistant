@@ -78,7 +78,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：298 passed**（2026-09-11 M4 第二批「多轮」完成后；本日共增 109 例：
+    **当前基线：342 passed**（2026-09-11 M4 第二批「多轮」完成后；本日共增 109 例：
     `test_sqlite_db.py` 15、`test_session_store.py` 43、`test_api_sessions.py` 18、
     `test_chat_history.py` 14、`test_history_capable.py` 9、既有文件 +10）。
     M3 的 79 例其中
@@ -93,7 +93,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **298**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **342**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
 
     **特别注意「两处都写了同一件事」**：README 与本文件经常重复描述同一条约束
@@ -130,7 +130,13 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   审批中断的整轮落 `pending_approval`、审批后**原地回填**最终回答；
   开库时把残留的孤儿审批轮标 `abandoned`。**零新增依赖**（stdlib `sqlite3`）。
   三级降级：配置关 → 不落库；SQLite 打不开 → 内存实现（多轮可用、重启即丢）；正常 → SQLite。
-  **仍未做**：状态日志（告警/处置/AI 建议三张归档表**建好但无写入方**）与审计落文件。
+- **状态日志归档 + 审计落文件**（M4 第二批，2026-09-11）：
+  `POST /alert` 的处理产出（告警 / 处置结果 / AI 建议）落三张表，靠 `Alert.alert_key`
+  关联（**不是裸 fingerprint**——它默认空串，做 join key 会把不同告警并成一条）；
+  `GET /alerts/history` 可跨重启查。写入放在 `process_alert` **末尾、一次性、单事务**，
+  失败只记 ERROR——不给告警接收新增失败模式。
+  审计经 `RotatingFileHandler` 落到 `logs/audit.log`（默认 5 MiB × 3 份），
+  **handler 幂等**（`create_app` 会被调很多次，重复挂会让每条写 N 遍并争抢文件）。
 
 ### 分层边界（一句话版；完整目录树见 [README.md](./README.md)）
 
@@ -176,6 +182,10 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | **给既有方法「加一个带默认值的 kwarg」不等于向后兼容**（2026-09-11） | `runtime_checkable` 的 Protocol **只检验方法名是否存在、不检验签名**。所以给 `Assistant.reply` 加 `history=None` 后，只实现 `reply(self, message)` 的既有假对象仍会被 `isinstance(x, HistoryCapable)` 判为 True，然后在调用处 TypeError——**守卫形同虚设**。多轮能力因此另起方法名 `reply_turn`（照 `ApprovalCapable`/`ApprovalCancellable` 的先例）。加能力一律**新方法名 + 新 Protocol**，不要改既有方法的签名。 |
 | **持久化/IO 调用不能落在 Agent 的 catch-all try 里**（2026-09-11） | `ChatService` 那条 `except Exception` 会把任何异常归类成「LLM 抖动」并回落关键词，且只 warning、无 `exc_info`。DB 读写若圈在里面，schema 写错、盘满、权限错最终都表现为「模型最近有点飘」，永远查不出来。落库必须放在 try **之外**，有自己的错误处理与可观测出口（`/health` 的 `storage` 字段）。 |
 | **模型窗口里的「控制面消息」要过滤掉**（2026-09-11） | 待审批提示（`⚠️ 待人工审批…审批 id：xxx`）是给人看的，进模型上下文会让模型在后续轮次里幻觉「还在等批准」。会话表用 `status` 区分：`history()` 只返回 `final`、`messages()` 返回全部——**同一张表两个读口**，分别服务「给模型看」与「给人看」。 |
+| **`logging` 的 handler 是全局状态，加 handler 必须幂等**（2026-09-11） | `configure_logging` 每次 `create_app` 都会调用（测试里几十次）。无条件 `addHandler` 会让每条日志写 N 遍，且 N 个 handler 争抢同一文件——**Windows 上轮转 rename 直接 PermissionError**。按路径查重跳过。另外 `RotatingFileHandler` **不创建父目录**（`logs/` 不存在直接抛），且用 `delay=True` 避免启动即占句柄。 |
+| **`import src.main` 有副作用：模块级 `create_app()` 会按仓库真实配置挂上文件 handler**（2026-09-11 实测踩到） | 后果不只是「测试互相串」——测试里被 stub 掉的 `exec_command` 照样走 `record_execution`，于是**测试套件会往仓库的 `logs/audit.log` 写一堆假数据**（实测跑完留下 32 行 `192.168.1.1` / `h` / `boom`）。已加 `tests/conftest.py` 的 session 级 autouse fixture 摘掉文件 handler；文件落盘本身由 `test_logger.py` 用 `tmp_path` 专门覆盖。**新增任何「按真实配置打开资源」的模块级副作用时，都要同步加这样的隔离**，否则测试会悄悄污染工作区。 |
+| **`purge_interval_seconds=0` 时清理会在写入途中就跑**（2026-09-11 踩到） | 「写入时顺带清理」的设计意味着：想手动控制清理时机的测试，必须在断言前**真的关掉**自动清理。而且不能只给个大数——`_last_purge` 初值是 0、clock 是 epoch 秒（1.7e9），**任何有限大数都会在首次写入时被判为「已超间隔」**。要关就传 `float("inf")`。（两次踩到：会话存储与状态日志各一次。） |
+| **归档/落盘前要过一遍「这些内容原本进过磁盘吗」**（2026-09-11） | 把只进 console 的数据改为落盘时，等于**升级了它的泄露面**。`remediations.detail` 里含远端命令 stdout，此前因为「整段输出不落日志」的约定而安全；一落盘就成了磁盘明文。新增任何落盘字段前，先问「这段内容原本的可见范围是什么」。 |
 | 写测试时：脚本化假模型**用尽后会重复末条**，且**未声明的工具名不会被 HITL 拦截**（2026-09-11 踩到） | ① 想让"跑完一轮"必须显式给一条终结 `AIMessage(content=...)`，否则模型会一直调工具直到撞递归上限（实测报 `GraphRecursionError: Recursion limit of 10000`）；② 测试里写第二/第三条写命令时，命令名**必须在假目录里声明过**，未声明的名字会被当成普通工具直接穿过审批（我曾用 `cleanup_disk` 验证链式审批，结果 `decide` 返回 completed）。 |
 
 ### 既定决策记录（勿推翻）
@@ -258,7 +268,8 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   - **第二批多轮部分（已完成）**：`reply_turn(message, *, history=())`、`ChatService.reply_turn`
     （落库在 Agent 的 catch-all **之外**，关键词兜底也落库）、`/chat` 带 `session_id`、
     审批中断落 pending 并原地回填、会话删除作废其未决审批、开库回收孤儿审批轮。
-  - **第二批剩余**：状态日志（告警/处置/AI 建议落盘 + 审计落文件）。**方案见下，勿重新考古。**
+  - **第二批状态日志部分（已完成）**：告警/处置/AI 建议三表归档 + `GET /alerts/history` +
+    审计落文件。**本条目整体已完成**，见「已实现能力」。
 
   改造前是**单轮**：`reply()` 每轮只传当前一条消息
   （[src/agent/assistant.py:276](src/agent/assistant.py#L276)），`/chat` 无会话概念
@@ -390,9 +401,10 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ---
 
-## M4 第二批·多轮部分（2026-09-11）
+## M4 第二批（2026-09-11）多轮接线 + 状态日志
 
-把「对话历史」真正接到聊天链路上。测试 269 → 298。**状态日志（阶段 4–5）仍未做。**
+把「对话历史」接到聊天链路上，并把四份重启即丢的数据落盘。测试 269 → 342。
+**本小节之后 M4 整体完成**（只剩熔断机制仍是路线图条目）。
 
 **先跑了三条 spike 实测**（脚本化假模型 + 真 graph，全离线），结论：
 
@@ -419,6 +431,22 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 - 开库时 `reconcile_pending(set())` 把孤儿审批轮标 `abandoned`：新进程里任何 pending 行
   必然是孤儿（审批与 checkpoint 都在进程内存）。已实机验证（见下）。
 - `/health` 追加 `storage: "ok"|"degraded"`——**为让写失败可观测**，不把降级藏进日志。
+
+**状态日志部分**：
+
+- `interfaces/history.py`（三个中性 dataclass + `HistoryStore` ABC）→ `storage/history.py`。
+  告警表用 `UNIQUE(alert_key, starts_at, status)` + `INSERT OR IGNORE` 做**重投幂等**，
+  同时保留 firing→resolved 的状态迁移（若用 `UNIQUE(alert_key)` + REPLACE，
+  「曾经 firing 过」的痕迹就没了）。
+- **写入前强制截断** `detail`（500 字符）/ `advice`（4000）。`detail` 里含执行器拼进去的
+  **远端命令 stdout**，此前只进 console 所以无所谓；一落盘就变成磁盘明文，
+  违反 `common/audit.py` 那条「整段命令输出不落日志」的既有不变量。
+- 归档**不做内存降级**（与会话相反）：归档的价值全在「跨重启可查」，
+  给一个重启即丢的归档表只会让人误以为记录还在。
+- `src/api/alert.py` 追加 `GET /alerts/history`（**没有**另建 `api/alerts.py`——
+  该文件本就承载 `/alerts/*` 三条路由，新增端点放这里更自然）。
+- 审计落文件：`RotatingFileHandler` + **幂等挂载** + 建父目录 + `delay=True`，
+  见坑表。`logging.audit=false` 的既有语义（提到 WARNING、不是关闭）保持不变。
 
 **实机验证**（真 uvicorn、真 SQLite、**不触发真实模型**）：预置一条孤儿 pending 行后启动，
 日志打出「已将 1 条残留的待审批对话标记为作废」，`/health` 返回 `{"status":"ok","storage":"ok"}`，
@@ -510,7 +538,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 298 passed（2026-09-11 M4 第二批「多轮」后）
+python -m pytest tests -q            # 目前 342 passed（2026-09-11 M4 第二批「多轮」后）
                                      #   M4 新增：sqlite_db 15、session_store 43（两种实现
                                      #     跑同一组契约断言）、api_sessions 18、chat_history 14、
                                      #     history_capable 9（真 graph 跑多轮×审批跨模块接线）

@@ -104,6 +104,11 @@ class StorageSettings:
 class LoggingSettings:
     level: str = "INFO"
     audit: bool = True
+    # 审计落盘：dataclass 默认**空串**（不落文件）——与 storage.enabled 同理，
+    # 测试里 Settings() 被直接构造多次，默认写文件会在仓库里堆 logs/ 并跨用例串数据。
+    audit_file: str = ""
+    audit_max_bytes: int = 5 * 1024 * 1024
+    audit_backup_count: int = 3
 
 
 @dataclass(frozen=True)

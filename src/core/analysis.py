@@ -123,6 +123,7 @@ class AlertAnalyzer:
         advice = self.llm.complete(prompt, system=self.system)
 
         return {
+            "alert_key": alert.alert_key,  # 与归档表的关联键（见 storage/models.py）
             "alertname": alert.alertname,
             "severity": alert.severity,
             "instance": alert.instance,

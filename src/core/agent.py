@@ -20,11 +20,19 @@ from src.core.analysis import AlertAnalyzer
 from src.core.chat import ChatService
 from src.core.rule_engine import RuleEngine
 from src.interfaces.approval import ApprovalOutcome, PendingApproval
+from src.interfaces.history import (
+    AdviceRecord,
+    AlertRecord,
+    HistoryError,
+    HistoryStore,
+    RemediationRecord,
+)
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.monitor import MonitorSource
 from src.interfaces.session import ChatReply
 from src.storage.memory import AlertStore
 from src.storage.models import AlertAck, AlertmanagerPayload
+from src.utils.time import now_iso
 
 logger = logging.getLogger("ops_agent.core")
 
@@ -44,9 +52,12 @@ class OpsAgent:
         rule_engine: RuleEngine | None = None,
         analysis: AlertAnalyzer | None = None,
         llm: LLMClient | None = None,
+        history: HistoryStore | None = None,
     ) -> None:
         self.monitor = monitor
         self.store = store or AlertStore(maxlen=DEFAULT_RECENT_LIMIT)
+        # 状态日志归档（可选）：None = 不落盘，告警接收与查询全部照常
+        self.history = history
         self.chat_service = chat_service or ChatService(monitor)
         self.rule_engine = rule_engine  # 通常由 container 注入（含执行器）
         self.llm = llm
@@ -115,11 +126,90 @@ class OpsAgent:
                 ack.ai_advice = advice
                 self._print_ai_advice(advice)
 
+        self._archive(payload, ack)
+
         logger.info(
             "告警处理完成，确认 %d 条，自动处置 %d 条，AI 分析 %d 条",
             ack.received, len(ack.remediation), len(ack.ai_advice),
         )
         return ack
+
+    # -- 状态日志归档（M4 第二批；可选能力，未注入时整体跳过） -----------------
+    def _archive(self, payload: AlertmanagerPayload, ack: AlertAck) -> None:
+        """把本次处理的产出落进归档表。
+
+        **刻意放在流程最末尾、一次调用、一个事务**，而不是插在三个步骤之间：
+
+        1. 本方法的 docstring 承诺「任何单点失败不影响告警记录与其它告警」。写库若插在
+           中间，一次 DB 异常就会中断其后的 `unmatched_alerts` / `analyze_many`——
+           等于给告警处理**新增了一个原本不存在的失败模式**。放在末尾，失败面收敛成
+           「少一条归档」。
+        2. 三张表必须同批一致：一次调用 = 一个 BEGIN IMMEDIATE，不会出现
+           「告警写了、处置没写」的半批。
+        3. `rule_engine` / `analysis` 是纯决策且被测试锁着「零输出」，在那里插 IO
+           会同时破坏可测性与那条护栏。
+
+        失败只记 ERROR：归档不该让告警接收失败。
+        """
+        if self.history is None:
+            return
+        try:
+            stamp = now_iso()
+            alerts = [
+                AlertRecord(
+                    alert_key=alert.alert_key,
+                    alertname=alert.alertname,
+                    severity=alert.severity,
+                    instance=alert.instance,
+                    summary=alert.annotations.get("summary", ""),
+                    status=alert.status,
+                    starts_at=alert.startsAt,
+                    ends_at=alert.endsAt,
+                    # 复用 store 打的时间戳（ack.alerts 与 payload.alerts 同序同长，
+                    # 由上面那句列表推导保证），避免同一件事记出两个时间
+                    received_at=(
+                        ack.alerts[idx].get("received_at", stamp)
+                        if idx < len(ack.alerts) else stamp
+                    ),
+                )
+                for idx, alert in enumerate(payload.alerts)
+            ]
+            remediations = [RemediationRecord(**self._remediation_fields(r)) for r in ack.remediation]
+            advice = [AdviceRecord(**self._advice_fields(a)) for a in ack.ai_advice]
+            self.history.record_batch(
+                alerts=alerts, remediations=remediations, advice=advice
+            )
+        except HistoryError as exc:
+            logger.error("状态日志归档失败（本次告警未归档）: %s", exc)
+        except Exception as exc:  # noqa: BLE001 - 归档绝不能影响告警接收
+            logger.error("状态日志归档异常（本次告警未归档）: %s", exc, exc_info=True)
+
+    @staticmethod
+    def _remediation_fields(record: dict[str, Any]) -> dict[str, Any]:
+        """从处置记录 dict 里挑出归档字段（多余键不落库，缺键给默认值）。"""
+        return {
+            "alert_key": record.get("alert_key", ""),
+            "alertname": record.get("alertname", ""),
+            "severity": record.get("severity", ""),
+            "instance": record.get("instance", ""),
+            "matched_rule": record.get("matched_rule", ""),
+            "action": record.get("action"),
+            "status": record.get("status") or "",
+            "detail": record.get("detail", ""),
+            "executed_at": record.get("executed_at", ""),
+        }
+
+    @staticmethod
+    def _advice_fields(record: dict[str, Any]) -> dict[str, Any]:
+        """从 AI 建议 dict 里挑出归档字段。"""
+        return {
+            "alert_key": record.get("alert_key", ""),
+            "alertname": record.get("alertname", ""),
+            "severity": record.get("severity", ""),
+            "instance": record.get("instance", ""),
+            "advice": record.get("advice", ""),
+            "analyzed_at": record.get("analyzed_at", ""),
+        }
 
     @staticmethod
     def _print_remediation(records: list[dict[str, Any]]) -> None:

@@ -41,7 +41,7 @@ Assitant/
 │   ├── main.py                # create_app()：装配 container → include api routers
 │   ├── api/                   # 薄 HTTP 层（依赖注入取 OpsAgent，无业务逻辑）
 │   │   ├── chat.py            #   POST /chat
-│   │   ├── alert.py           #   POST /alert、GET /alerts/recent、GET /alerts/active
+│   │   ├── alert.py           #   POST /alert、GET /alerts/recent、/alerts/active、/alerts/history
 │   │   ├── approvals.py       #   GET /approvals、POST /approvals/{id}（写命令人工审批）
 │   │   ├── sessions.py        #   GET /sessions、GET/DELETE /sessions/{id}（对话历史）
 │   │   └── health.py          #   GET /health
@@ -62,7 +62,8 @@ Assitant/
 │   │   ├── agent_action.py    #   AgentActionSource（Agent 写命令契约）+ render_agent_action
 │   │   ├── approval.py        #   PendingApproval / ApprovalOutcome / ApprovalError（审批中性类型）
 │   │   ├── session.py         #   ChatMessage/SessionInfo/TurnResult + SessionStore + HistoryCapable
-│   │   └── assistant.py       #   Assistant + ApprovalCapable（Protocol）：core 不感知 langchain
+│   │   ├── history.py         #   AlertRecord/RemediationRecord/AdviceRecord + HistoryStore（归档契约）
+│   │   └── assistant.py       #   Assistant + ApprovalCapable/ApprovalCancellable（Protocol）
 │   ├── plugins/               # 具体插件实现（实现 interfaces）+ 共享内核
 │   │   ├── common/                            # 跨家族共享内核（读/写两条边界共用）
 │   │   │   ├── endpoint.py                    #   SshEndpoint 连接抽象（认证二选一）
@@ -91,6 +92,7 @@ Assitant/
 │   │   ├── memory.py          #   AlertStore：最近告警内存缓冲
 │   │   ├── approval.py        #   ApprovalStore：待审批写命令的缓冲（有界/单次性/会过期）
 │   │   ├── session.py         #   SessionStore：会话+消息落盘（SQLite 实现 / 内存降级实现）
+│   │   ├── history.py         #   HistoryStore：告警/处置/AI 建议三表归档（SQLite 实现）
 │   │   └── db.py              #   ★ SQLite 底座：连接工厂 + 建表 + 版本校验（失败降级为 None）
 │   └── utils/                 # 基础设施工具
 │       ├── config_loader.py   #   settings.yaml 解析 + 环境插值 + 默认兜底（ROOT_DIR）
@@ -150,6 +152,7 @@ pip install -r requirements.txt
 | Agent 写命令 | [agent_actions.yaml](config/agent_actions.yaml) · `enabled` | `true`（**已启用**） | 原设计为出厂关闭，**2026-09-10 起本仓库已打开**；每次调用仍需人工审批 |
 | 告警 AI 分析 | [settings.yaml](config/settings.yaml) · `llm.enabled` | `true` | `false` → 跳过 LLM 分析，告警接收不受影响 |
 | 动作审计日志 | settings.yaml · `logging.audit` | `true` | `false` → **只记失败**，成功执行静默（**非完全关闭**） |
+| 审计落盘 | settings.yaml · `logging.audit_file` | `logs/audit.log` | 留空则只进 console（重启即丢；审计的用处恰是事后追查） |
 | SQLite 持久化 | settings.yaml · `storage.enabled` | `true`（**yaml 里**） | 代码里 dataclass 默认 `false`，看出厂值以本文件为准；`false`/打不开 → 服务照常起，只是不落盘 |
 | 对外监听地址 | settings.yaml · `server.host` | `127.0.0.1` | 仅本机可访问；改 `0.0.0.0` 前先读「安全说明」的残余风险 |
 
@@ -190,6 +193,8 @@ pip install -r requirements.txt
 | `storage.history_ttl_hours/max_history_rows` | 告警·处置·AI 建议归档的过期时长 / 行数上限 |
 | `storage.purge_interval_seconds` | 清理节流间隔（避免每次写都全表扫） |
 | `logging.level/audit` | 日志级别 / 动作审计开关 |
+| `logging.audit_file` | 审计落盘路径（默认 `logs/audit.log`；留空 = 只进 console） |
+| `logging.audit_max_bytes/audit_backup_count` | 审计文件轮转上限（5 MiB）与保留份数（3） |
 
 ### config/actions.yaml（写命令目录，WRITE 边界）
 
@@ -347,6 +352,7 @@ python src/main.py
 | `POST /alert` | Alertmanager webhook 推送 → `AlertAck` |
 | `GET /alerts/recent?limit=` | 最近被动接收的告警记录 |
 | `GET /alerts/active` | 实时活动告警（监控源故障转 502） |
+| `GET /alerts/history` | **落盘归档**：告警 + 处置结果 + AI 建议（持久化未启用时三者均为空） |
 | `GET /approvals` | 待人工审批的写命令调用（不可用时返回空列表） |
 | `POST /approvals/{id}` | 提交 `{"action":"approve"\|"reject","reason":""}` 并续跑；未知/已用 → 404，能力未启用 → 503 |
 | `GET /sessions` | 会话列表，最近更新的在前（持久化未启用时返回空列表） |
@@ -387,9 +393,14 @@ Agent 写命令的审批链路用**真 graph + 脚本化假模型**离线验证
 拒绝不执行 / 审批 id 单次性 / 非法决策不毒化线程 / 只读工具不被打断」，并有一条**端到端装配**
 用例覆盖「容器 → 工厂 → OpsAssistant → 执行」整条接线。持久化与对话历史（M4）的用例同样全离线：`test_sqlite_db.py`（建表幂等、schema 版本
 **双向校验**、开库失败降级、连接确实被关闭）、`test_session_store.py`（同一组断言跑
-SQLite 与内存两套实现）、`test_api_sessions.py`（端点 + 未启用时的 503/空列表降级）。
+SQLite 与内存两套实现）、`test_api_sessions.py`（端点 + 未启用时的 503/空列表降级）、
+`test_chat_history.py`（历史注入、会话落库、读写失败降级）、
+`test_history_capable.py`（**真 graph** 跑多轮×审批的跨模块接线：中断落 pending、
+审批后原地回填、链式审批、作废）、`test_history_store.py`（三表归档、关联键、重投幂等、
+截断、清理）、`test_api_alerts.py`（`POST /alert` → `/alerts/history` 端到端 + 归档失败
+不影响告警接收）、`test_logger.py`（审计落盘的幂等挂载与开关语义）。
 
-**当前基线：298 passed。**
+**当前基线：342 passed。**
 
 ---
 
@@ -448,15 +459,15 @@ SQLite 与内存两套实现）、`test_api_sessions.py`（端点 + 未启用时
 ## 搁置项（本期不实现，仅预留）
 
 notifiers（钉钉/企微通知）、docker/、插件目录自动扫描发现、logging.conf（用 settings 控制日志级别）、
-配置热更新（见「路线图」）、**熔断机制（工具/模型调用次数上限）**、
-**告警·处置·AI 建议的归档**（三张表已建好但尚无写入方）、**审计日志落文件**。
+配置热更新、**熔断机制（工具/模型调用次数上限）**。
 对应占位注释与扩展位已留在相关文件中，后续按需实现即可。
-熔断机制与状态日志归档的现状、已定设计登记在 [PROJECT_HANDOVER.md](./PROJECT_HANDOVER.md)「路线图」。
+熔断机制的现状、已定设计与未决点登记在 [PROJECT_HANDOVER.md](./PROJECT_HANDOVER.md)「路线图」。
 
-> **对话历史维护（M4）已完成主体**：SQLite 底座、会话与消息落盘、`/chat` 多轮、
-> 审批中断落 pending 与审批后回填、`/sessions` 三个端点、孤儿审批回收。
+> **对话历史维护与状态日志（M4）已完成**：SQLite 底座、会话与消息落盘、`/chat` 多轮、
+> 审批中断落 pending 与审批后回填、会话删除作废未决审批、孤儿审批回收、`/sessions` 三端点；
+> 告警/处置/AI 建议三表归档 + `/alerts/history`；审计落文件并轮转。
+>
 > **Agent 现在支持多轮对话**——传回上次的 `session_id` 即可续聊；不传则新建会话
 > （与改造前行为一致）。服务在持久化层**不再是无状态的**，但**不传 session_id 时仍无状态**。
 >
-> 仍未做的两块是**状态日志**：告警/处置/AI 建议三张归档表建好了但**没有写入方**，
-> 审计日志也还没落文件。
+> 持久化整体可关（`storage.enabled=false`）或自动降级：关掉后行为与改造前完全一致。

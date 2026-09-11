@@ -158,6 +158,43 @@ def test_sessions_falls_back_to_memory_when_db_unusable(tmp_path):
     assert c.sessions() is store, "降级结果也要缓存，否则每个请求重试一次开库并刷 ERROR"
 
 
+def test_history_none_when_disabled():
+    assert Container(settings=Settings()).history() is None
+
+
+def test_history_built_when_enabled(tmp_path):
+    from src.storage.history import SqliteHistoryStore
+
+    c = Container(settings=Settings(
+        storage=StorageSettings(enabled=True, db_path=str(tmp_path / "ops.db"))
+    ))
+    assert isinstance(c.history(), SqliteHistoryStore)
+
+
+def test_history_has_no_memory_fallback(tmp_path):
+    """SQLite 打不开时归档直接关闭，**不做内存降级**。
+
+    归档的价值全在「跨重启可查」；给一个重启即丢的归档表，只会让人误以为记录还在。
+    （会话多轮则相反：内存降级仍能提供当次可用的多轮对话，所以那边有降级。）
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    c = Container(settings=Settings(
+        storage=StorageSettings(enabled=True, db_path=str(blocker / "sub" / "ops.db"))
+    ))
+
+    assert c.history() is None
+
+
+def test_sessions_and_history_share_one_database(tmp_path):
+    """同一个 .db 文件只开一次：两套 store 共用 Database 实例。"""
+    c = Container(settings=Settings(
+        storage=StorageSettings(enabled=True, db_path=str(tmp_path / "ops.db"))
+    ))
+
+    assert c.sessions().db is c.history().db
+
+
 def test_sessions_reconciles_orphan_pending_on_open(tmp_path):
     """开库时把残留的「待审批」轮标为 abandoned。
 
@@ -236,8 +273,8 @@ def test_create_app_smoke():
     # 人工审批（M3 新增，非破坏性扩充）
     for expected in ("/approvals", "/approvals/{approval_id}"):
         assert expected in paths, f"缺少路由 {expected}"
-    # 对话历史（M4 新增，非破坏性扩充）
-    for expected in ("/sessions", "/sessions/{session_id}"):
+    # 对话历史与状态日志（M4 新增，非破坏性扩充）
+    for expected in ("/sessions", "/sessions/{session_id}", "/alerts/history"):
         assert expected in paths, f"缺少路由 {expected}"
 
 

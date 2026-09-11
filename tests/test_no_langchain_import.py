@@ -39,8 +39,10 @@ from src.plugins.agent_actions import catalog as agent_actions_catalog  # noqa: 
 from src.plugins.agent_actions import source as agent_actions_source  # noqa: F401
 # M4：持久化底座与会话存储用的是标准库 sqlite3，无 langchain 也必须可用
 from src.interfaces.session import ChatMessage, SessionStore, TurnResult  # noqa: F401
+from src.interfaces.history import AlertRecord, HistoryStore, RemediationRecord  # noqa: F401
 from src.storage import db as storage_db  # noqa: F401
 from src.storage import session as storage_session  # noqa: F401
+from src.storage import history as storage_history  # noqa: F401
 from src.utils import time as utils_time  # noqa: F401
 from src.api import sessions as sessions_api  # noqa: F401
 

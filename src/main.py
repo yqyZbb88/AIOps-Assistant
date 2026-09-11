@@ -53,6 +53,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(
         level=settings_.logging.level,
         audit=settings_.logging.audit,
+        audit_file=settings_.logging.audit_file,
+        audit_max_bytes=settings_.logging.audit_max_bytes,
+        audit_backup_count=settings_.logging.audit_backup_count,
     )
     agent = container.ops_agent()
 

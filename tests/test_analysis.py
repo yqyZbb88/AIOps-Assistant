@@ -115,10 +115,15 @@ def test_analyze_many_continues_after_single_failure(fakemonitor):
 
 
 def test_analyze_many_returns_entry_fields(fakemonitor, fakellm):
-    """成功条目字段齐全（api 层与存储依赖这些键）。"""
+    """成功条目字段齐全（api 层与存储依赖这些键）。
+
+    `alert_key` 是 M4 追加的归档关联键（见 storage/models.py::Alert.alert_key）。
+    """
     entries = AlertAnalyzer(fakemonitor, llm=fakellm).analyze_many([make_alert("A")])
     (entry,) = entries
-    assert set(entry) == {"alertname", "severity", "instance", "advice", "analyzed_at"}
+    assert set(entry) == {
+        "alert_key", "alertname", "severity", "instance", "advice", "analyzed_at"
+    }
     assert entry["alertname"] == "A"
     assert entry["advice"] == fakellm.text
 

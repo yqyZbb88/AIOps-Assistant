@@ -50,3 +50,6 @@ storage:
 logging:
   level: INFO              # 日志级别（DEBUG / INFO / WARNING / ERROR）
   audit: true              # 是否启用动作审计日志（ops_agent.audit）
+  audit_file: "logs/audit.log"   # 审计落盘路径（相对仓库根）；留空 = 只进 console
+  audit_max_bytes: 5242880       # 单个文件上限（5 MiB），超出轮转
+  audit_backup_count: 3          # 保留的轮转份数（audit.log.1 / .2 / .3）
