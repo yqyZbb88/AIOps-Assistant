@@ -37,6 +37,9 @@ STATUS_FINAL = "final"
 STATUS_PENDING_APPROVAL = "pending_approval"
 STATUS_ABANDONED = "abandoned"
 
+# 每轮默认重发给模型的历史消息条数上限（限 token；实现与调用方共用同一个默认值）
+DEFAULT_MESSAGE_WINDOW = 20
+
 # 可以进入模型上下文的窗口状态：**只有** final。
 # pending/abandoned 是控制面信息，展示给用户看（GET /sessions/{id}），但不给模型——
 # 否则模型每轮都读到一段「等我批准」，会诱发「还在等批准」的幻觉。
@@ -125,6 +128,27 @@ class TurnResult:
         return {"text": self.text, "status": self.status, "approval_id": self.approval_id}
 
 
+@dataclass(frozen=True)
+class ChatReply:
+    """一次 `/chat` 的结果：回答文本 + 会话 id。
+
+    会话 id **恒回带**（新建时是新生成的，续聊时是原来的）：只在新建时回带的话，
+    客户端与测试都得处理「有时有、有时没有」，是最容易漏传分支的形态。
+    """
+
+    reply: str
+    session_id: str | None = None
+    #: 本轮若触发写命令审批，这里是被中断那一轮的审批 id（`/approvals/{id}` 用）
+    approval_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "reply": self.reply,
+            "session_id": self.session_id,
+            "approval_id": self.approval_id,
+        }
+
+
 class SessionStore(ABC):
     """会话与消息的存储抽象（实现见 src/storage/session.py）。
 
@@ -199,22 +223,25 @@ class SessionStore(ABC):
     @abstractmethod
     def update_pending(
         self,
-        session_id: str,
         approval_id: str,
         *,
         content: str,
         status: str = STATUS_FINAL,
         next_approval_id: str | None = None,
     ) -> bool:
-        """把某条 `pending_approval` 行推进到下一步。返回是否命中。
+        """按 **approval_id** 定位某轮 pending 并推进到下一步。返回是否命中。
 
         - status=final            → **回填最终回答**（content），approval_id 保留为历史痕迹
         - status=pending_approval → **链式审批**：content 换成新的待审批提示，
                                     approval_id 换成 next_approval_id
         - status=abandoned        → 作废（审批已不可能再有下文）
 
-        用 UPDATE 原地改而不是追加新行：追加会让窗口里夹着「等我批准」的控制面噪音
-        （虽然窗口已按状态过滤，但追加仍会让 seq 语义变乱）。
+        **不需要 session_id**：approval_id 由 uuid4 生成、全局唯一，单独就能定位到行——
+        这省掉了「把 session_id 一路穿到审批记录里再带回来」的整条管线。
+        调用方（core/chat.py）在 decide() 后只有 approval_id，正好够用。
+
+        用 UPDATE 原地改而不是追加新行：追加会让窗口里夹着「等我批准」的控制面噪音，
+        且 seq 语义变乱。
         """
 
     @abstractmethod

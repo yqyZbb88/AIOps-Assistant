@@ -43,3 +43,21 @@ class ApprovalCapable(Protocol):
     def decide(self, approval_id: str, *, action: str, reason: str = "") -> ApprovalOutcome:
         """提交一次审批决策（approve/reject）并续跑；未知/过期/已用过抛 ApprovalError。"""
         ...
+
+
+@runtime_checkable
+class ApprovalCancellable(Protocol):
+    """可**作废**待审批项的 Agent（可选能力）。
+
+    用于「会话被删除 → 该会话的未决审批一并作废」：宁可让人重新发起，也不能让一个
+    陈旧的写命令还挂在队列里等着被执行（继承 M3 的 fail-safe 取向）。
+
+    **刻意另立协议而不往 `ApprovalCapable` 里加方法**：它是 runtime_checkable 的
+    结构化协议，加方法会让所有既有实现（如 tests 的 FakeApprovalAssistant）**静默地
+    不再 isinstance 通过**，从而整体降级成「审批不可用」——这类失败不报错，只表现为
+    功能悄悄消失。要加新能力就照这个先例新立一个协议。
+    """
+
+    def cancel_pending(self, approval_id: str) -> bool:
+        """作废一条待审批项（其命令永不执行）；命中返回 True，未知/已处理返回 False。"""
+        ...

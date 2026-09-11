@@ -213,13 +213,32 @@ class Container:
             )
             return self._sessions
 
-        self._sessions = SqliteSessionStore(
+        store = SqliteSessionStore(
             db,
             ttl_seconds=cfg.session_ttl_hours * 3600,
             max_sessions=cfg.max_sessions,
             purge_interval_seconds=cfg.purge_interval_seconds,
         )
-        return self._sessions
+        self._sessions = store
+        self._reconcile_pending(store)
+        return store
+
+    @staticmethod
+    def _reconcile_pending(store: SessionStore) -> None:
+        """开库时把残留的「待审批」轮标为 abandoned。
+
+        **新进程里任何 pending 行必然是孤儿**：待审批项存在 `ApprovalStore`（进程内存），
+        checkpoint 线程存在 `InMemorySaver`（同样是进程内存），两者都不可能跨重启存活。
+        不处理的话那些行会永远显示「有一条命令等你批」，而 `/approvals` 里根本没有它——
+        用户永远批不了。宁可诚实标成「已作废」。
+        """
+        try:
+            count = store.reconcile_pending(set())
+        except Exception as exc:  # noqa: BLE001 - 清理失败不该阻止服务启动
+            logger.warning("清理残留待审批会话失败（不影响启动）: %s", exc)
+            return
+        if count:
+            logger.info("已将 %d 条残留的待审批对话标记为作废（审批不跨进程存活）", count)
 
     @staticmethod
     def _resolve_db_path(raw: str):
@@ -266,6 +285,8 @@ class Container:
         chat_service = ChatService(
             monitor=monitor,
             assistant_factory=self._assistant_factory,
+            sessions=self.sessions(),  # 未启用/打不开 → None，聊天照常
+            message_window=settings.storage.message_window,
         )
         analyzer = AlertAnalyzer(
             monitor=monitor,

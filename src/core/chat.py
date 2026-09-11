@@ -31,8 +31,21 @@ from src.interfaces.approval import (
     ApprovalUnavailableError,
     PendingApproval,
 )
-from src.interfaces.assistant import ApprovalCapable, Assistant
+from src.interfaces.assistant import ApprovalCancellable, ApprovalCapable, Assistant
 from src.interfaces.monitor import MonitorSource
+from src.interfaces.session import (
+    DEFAULT_MESSAGE_WINDOW,
+    STATUS_ABANDONED,
+    STATUS_FINAL,
+    STATUS_PENDING_APPROVAL,
+    ChatMessage,
+    ChatReply,
+    HistoryCapable,
+    SessionError,
+    SessionNotFoundError,
+    SessionStore,
+    TurnResult,
+)
 
 logger = logging.getLogger("ops_agent.chat")
 
@@ -91,6 +104,8 @@ class ChatService:
         monitor: MonitorSource,
         *,
         assistant_factory: Callable[[], Assistant] | None = None,
+        sessions: SessionStore | None = None,
+        message_window: int = DEFAULT_MESSAGE_WINDOW,
     ) -> None:
         self.monitor = monitor
         # 注入的 Agent 工厂：返回 Assistant 契约对象；失败抛异常即回落
@@ -99,6 +114,9 @@ class ChatService:
         self._agent_broken = assistant_factory is None
         # 只护「首次构建」，见 _ensure_assistant 的 docstring
         self._assistant_lock = threading.Lock()
+        # 会话存储（可选）：None = 不落库，聊天与兜底全部照常
+        self._sessions = sessions
+        self._message_window = max(int(message_window), 1)
         # 规则按优先级从高到低排列，第一条命中生效；动态 handler 与 Agent 工具转发
         # 同一批 capabilities 纯函数（src/core/capabilities.py），无 LLM 时产出同款规范文案
         self._rules = [
@@ -131,18 +149,117 @@ class ChatService:
     # 主入口
     # ------------------------------------------------------------------
     def reply(self, message: str) -> str:
-        """根据输入消息返回回复（Agent-first，失败自动回落）。"""
+        """单轮回复（原契约不变：不带会话、不落库）。"""
+        return self.reply_turn(message).reply
+
+    def reply_turn(self, message: str, *, session_id: str | None = None) -> ChatReply:
+        """带会话的一轮：Agent-first → 关键词兜底，并把这一轮写进会话表。
+
+        三个刻意的结构选择：
+
+        1. **落库放在 Agent 的 try/except 之外**。上面那条 catch-all 会吞掉一切异常并
+           回落关键词，若把 DB 写也圈进去，任何持久化 bug 都会被归类成「LLM 抖动」而永远
+           查不出来。这里 Agent 调用单独包 try，落库在 try 外、有自己的错误处理。
+        2. **关键词兜底的回答同样落库**。落库若只发生在 Agent 分支里，那么「没装 langchain /
+           没 key」的降级部署里会话表永远是空的，同一功能在两套部署下行为不同——而这个
+           仓库把降级部署当一等公民（有专门的 no-langchain 回归测试）。
+        3. **持久化不可用时只是不落库**，聊天照常（`_sessions is None` → 全程跳过）。
+        """
+        sid = self._resolve_session(session_id)
+        history = self._load_history(sid)
+
+        turn: TurnResult | None = None
         assistant = self._ensure_assistant()
         if assistant is not None:
             try:
-                return assistant.reply(message)
+                turn = self._agent_turn(assistant, message, history)
             except Exception as exc:  # Agent 调用失败（网络等）→ 本轮回落关键词
                 logger.warning("Agent 回复异常，回落关键词引擎: %s", exc)
+        if turn is None:
+            turn = self._fallback_turn(message)
 
+        self._record_turn(sid, message, turn)
+        return ChatReply(reply=turn.text, session_id=sid, approval_id=turn.approval_id)
+
+    # ------------------------------------------------------------------
+    # 会话（可选能力：存储不可用时全程跳过，行为与改造前一致）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _agent_turn(
+        assistant: Assistant, message: str, history: list[ChatMessage]
+    ) -> TurnResult:
+        """让 Agent 跑一轮。
+
+        支持历史的实现走 reply_turn；只实现了 reply 的旧对象退回单轮
+        （**必须靠 isinstance 分派，不能给 reply 加 history kwarg**：runtime_checkable
+        只查方法名不查签名，加 kwarg 时旧对象会被误判为支持，然后在调用处 TypeError）。
+        """
+        if isinstance(assistant, HistoryCapable):
+            return assistant.reply_turn(message, history=history)
+        return TurnResult(text=assistant.reply(message))
+
+    def _fallback_turn(self, message: str) -> TurnResult:
         for rule in self._rules:
             if rule.match(message):
-                return rule.respond()
-        return DEFAULT_REPLY
+                return TurnResult(text=rule.respond())
+        return TurnResult(text=DEFAULT_REPLY)
+
+    def _resolve_session(self, session_id: str | None) -> str | None:
+        """确定本轮会话 id；存储不可用 → None（不落库）。
+
+        传了未知 id 一律抛 SessionNotFoundError（api 转 404）：**不静默重建**——
+        否则 DELETE 形同虚设，删掉的会话一被引用就复活。
+        """
+        store = self._sessions
+        if store is None:
+            return None
+        try:
+            if session_id:
+                if store.get(session_id) is None:
+                    raise SessionNotFoundError(f"会话不存在或已过期: {session_id}")
+                return session_id
+            return store.create().session_id
+        except SessionNotFoundError:
+            raise
+        except SessionError as exc:
+            logger.error("会话存储不可用，本轮不落库: %s", exc)
+            return None
+
+    def _load_history(self, session_id: str | None) -> list[ChatMessage]:
+        """取可进模型窗口的历史；读失败降级为空历史（少记性，但不影响本轮回答）。"""
+        if self._sessions is None or session_id is None:
+            return []
+        try:
+            return self._sessions.history(session_id, limit=self._message_window)
+        except SessionError as exc:
+            logger.warning("读取会话历史失败，本轮按无历史处理: %s", exc, exc_info=True)
+            return []
+
+    def _record_turn(self, session_id: str | None, message: str, turn: TurnResult) -> None:
+        """把一轮写进会话表（user + assistant 同事务）。
+
+        失败**只记日志不抛**：聊天已经答完了，不能因为落库失败就让用户拿不到回答。
+        代价是「历史表是唯一真相」在失败时会缺一块——所以必须记 ERROR 并让
+        `/health` 能反映出 degraded，不能静默。
+        """
+        if self._sessions is None or session_id is None:
+            return
+        pending = turn.status == "pending_approval"
+        try:
+            self._sessions.append_turn(
+                session_id,
+                user_content=message,
+                assistant_content=turn.text,
+                status=STATUS_PENDING_APPROVAL if pending else STATUS_FINAL,
+                approval_id=turn.approval_id,
+            )
+        except SessionError as exc:
+            logger.error("写入会话历史失败（本轮未落库，历史将缺一块）: %s", exc)
+
+    @property
+    def storage_healthy(self) -> bool:
+        """持久化是否正常（供 /health 暴露降级）。未启用存储时视为正常。"""
+        return self._sessions is None or self._sessions.healthy
 
     # ------------------------------------------------------------------
     # 人工审批转发（写命令能力为可选；不支持时给出明确语义）
@@ -164,13 +281,68 @@ class ChatService:
             return []
 
     def decide(self, approval_id: str, *, action: str, reason: str = "") -> ApprovalOutcome:
-        """提交一次审批决策；Agent 不支持审批时抛 ApprovalError（由 api 转 503/404）。"""
+        """提交一次审批决策；Agent 不支持审批时抛 ApprovalError（由 api 转 503/404）。
+
+        决策跑完后要**回填会话表**：中断那轮的最终回答是在这里才产生的，不回填的话
+        历史里就会永远留一条「待审批」没有下文。三个出口都要处理——
+        跑完（final）/ 又触发下一条（链式 pending）/ 抛错（保持 pending 不动）。
+        """
         assistant = self._assistant
         if assistant is None or not isinstance(assistant, ApprovalCapable):
             raise ApprovalUnavailableError(
                 "Agent 未启用写命令能力（config/agent_actions.yaml 未启用，或聊天尚未构建 Agent）"
             )
-        return assistant.decide(approval_id, action=action, reason=reason)
+        try:
+            outcome = assistant.decide(approval_id, action=action, reason=reason)
+        except ApprovalUnavailableError:
+            raise  # 能力没开 ≠ 这一条失效，不能把它标成 abandoned
+        except ApprovalError:
+            # 未知 / 已过期 / 已被处理：审批队列里已经没有了，历史里那条不可能再有下文
+            self._abandon_pending(approval_id)
+            raise
+        self._resolve_pending(approval_id, outcome)
+        return outcome
+
+    def cancel_pending(self, approval_id: str) -> bool:
+        """作废一条待审批项（会话被删除时用）。Agent 不支持时返回 False。
+
+        与 pending_approvals/decide 同款：走**已建好的** `self._assistant`，
+        不触发 Agent 构建、不置 `_agent_broken`。
+        """
+        assistant = self._assistant
+        if assistant is None or not isinstance(assistant, ApprovalCancellable):
+            return False
+        try:
+            return assistant.cancel_pending(approval_id)
+        except Exception as exc:
+            logger.warning("作废待审批项失败 id=%s: %s", approval_id, exc)
+            return False
+
+    def _resolve_pending(self, approval_id: str, outcome: ApprovalOutcome) -> None:
+        """把审批结果回填到会话表。"""
+        if self._sessions is None:
+            return
+        chained = outcome.status == "pending_approval"
+        try:
+            self._sessions.update_pending(
+                approval_id,
+                content=outcome.reply,
+                status=STATUS_PENDING_APPROVAL if chained else STATUS_FINAL,
+                next_approval_id=outcome.next_approval_id,
+            )
+        except SessionError as exc:
+            logger.error("回填审批结果失败（历史里该轮将停在待审批态）: %s", exc)
+
+    def _abandon_pending(self, approval_id: str) -> None:
+        """把一条不可能再有下文的待审批轮标为 abandoned。"""
+        if self._sessions is None:
+            return
+        try:
+            self._sessions.update_pending(
+                approval_id, content="", status=STATUS_ABANDONED
+            )
+        except SessionError as exc:
+            logger.warning("标记待审批轮作废失败 id=%s: %s", approval_id, exc)
 
     def _ensure_assistant(self) -> Assistant | None:
         """首次聊天时经工厂构建 Agent 并缓存；构建失败标记 broken 后回落。

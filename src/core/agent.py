@@ -22,6 +22,7 @@ from src.core.rule_engine import RuleEngine
 from src.interfaces.approval import ApprovalOutcome, PendingApproval
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.monitor import MonitorSource
+from src.interfaces.session import ChatReply
 from src.storage.memory import AlertStore
 from src.storage.models import AlertAck, AlertmanagerPayload
 
@@ -54,8 +55,24 @@ class OpsAgent:
 
     # -- 聊天 -----------------------------------------------------------
     def chat(self, message: str) -> str:
-        """聊天入口：Agent-first + 关键词兜底（详见 ChatService）。"""
+        """聊天入口（无会话）：Agent-first + 关键词兜底（详见 ChatService）。"""
         return self.chat_service.reply(message)
+
+    def chat_turn(self, message: str, *, session_id: str | None = None) -> ChatReply:
+        """带会话的一轮：返回回答文本 + 会话 id（`/chat` 走这里）。
+
+        传未知 session_id 抛 SessionNotFoundError（api 层转 404，**不静默重建**）。
+        """
+        return self.chat_service.reply_turn(message, session_id=session_id)
+
+    def cancel_pending(self, approval_id: str) -> bool:
+        """作废一条待审批项（会话被删除时一并作废其未决审批）。"""
+        return self.chat_service.cancel_pending(approval_id)
+
+    @property
+    def storage_healthy(self) -> bool:
+        """持久化是否正常（供 /health 暴露降级）。"""
+        return self.chat_service.storage_healthy
 
     # -- 人工审批（Agent 写命令的强制审核环节） -----------------------------
     def pending_approvals(self) -> list[PendingApproval]:

@@ -6,7 +6,7 @@ create_agent(model, tools, system_prompt) → 封装类(chat/reset) → invoke �
 
     模型     = 惰性复用根目录 init.py 的 init_chat_model（经 utils/model_loader 取用，单一入口）
     工具     = agent/tools.py 的 build_tools(monitor)（CPU/内存/磁盘/告警，注入 monitor）
-    封装类   = OpsAssistant（reply=单轮对话；chat/reset 预留多轮）
+    封装类   = OpsAssistant（reply=单轮；reply_turn=带历史的一轮，见下）
 
 与旧 ops_bot/assistant.py 的差异：
 - OpsAssistant(monitor=…)：工具绑定注入的 MonitorSource，不再 import 全局 prometheus 模块；
@@ -37,10 +37,13 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from typing import Sequence
+
 from src.interfaces.agent_action import AgentActionSource
 from src.interfaces.approval import ApprovalError, ApprovalOutcome, PendingApproval
 from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.monitor import MonitorSource
+from src.interfaces.session import ChatMessage, TurnResult
 from src.storage.approval import ApprovalStore
 from src.utils.model_loader import ModelLoadError, content_text, get_model
 
@@ -180,10 +183,13 @@ def _last_ai_content(response: dict[str, Any]) -> str:
 class OpsAssistant:
     """智能运维 Agent 封装类（对齐讲义第 9.3 节 SmartAssistant 结构）。
 
-    字段/方法均与讲义保持一致并预留扩展：
-        model / tools / system_prompt / agent / messages / chat / reset
-    区别：HTTP 服务无状态，reply() 每次传入完整上下文做单轮调用，不跨请求累积历史；
-    chat()/reset() 保留讲义原样的多轮接口，供需要记忆时扩展。
+    字段/方法：model / tools / system_prompt / agent（沿用讲义结构），
+    对话入口为 reply()（单轮）与 reply_turn(history=…)（多轮，M4 新增）。
+
+    多轮走**路线 B**：每轮 `thread_id` 都是全新的、跑完即删，历史由调用方每轮从会话表
+    取出后整段传入——checkpointer 始终只当「审批中断的临时草稿纸」，不承担记忆职责。
+    本类因此也**不持有任何历史**（讲义原样的 `messages`/`chat`/`reset` 已删，
+    单例共享列表会串味，见文件末尾注）。
     """
 
     def __init__(
@@ -263,45 +269,74 @@ class OpsAssistant:
             interrupt_on=self.interrupt_on,
             checkpointer=self.checkpointer,
         )
-        # 对话历史（预留：chat()/reset() 用；reply() 单轮不依赖它）
-        self.messages: list = []
-
-    # -- 单轮对话（HTTP 主入口） -------------------------------------------
+    # -- 对话（单轮 / 带历史） ---------------------------------------------
     def reply(self, message: str) -> str:
-        """单轮对话：把用户消息交给 Agent，返回最终回答文本。
+        """单轮对话（Assistant 契约）：等价于历史为空的一轮。"""
+        return self.reply_turn(message).text
+
+    def reply_turn(
+        self, message: str, *, history: Sequence[ChatMessage] = ()
+    ) -> TurnResult:
+        """带历史跑一轮（HistoryCapable 契约）。
+
+        history 是**可进模型窗口**的历史消息（只有 final 状态），由调用方从会话表取出；
+        本方法**不读写任何存储**——持久化是 core 的事，Agent 只负责这一轮怎么跑。
 
         模型可自主决定是否调用监控工具（cpu_usage 等）后组织回答。
 
-        有写命令时：本轮若触发写命令会**中断**，此时返回「待审批」提示文本
-        （形态仍是字符串，/chat 契约不变），命令尚未执行；待人工经 /approvals 决策。
+        有写命令时：本轮若触发写命令会**中断**，返回 status="pending_approval" 与
+        approval_id，命令尚未执行；待人工经 /approvals 决策。
+
+        **每轮仍是全新的 thread_id**（路线 B）：历史由调用方每轮重新拼进来，
+        checkpointer 只当「审批中断的临时草稿纸」，跑完即删——已实测：新 thread +
+        完整历史不会跨轮累积（见 PROJECT_HANDOVER「M4 第二批」的 spike 结论）。
         """
         if not (message or "").strip():
             raise LLMError("消息为空")
-        logger.info("Agent 收到消息: %s", message)
+        logger.info("Agent 收到消息: %s（历史 %d 条）", message, len(history))
 
         # 有 checkpointer 就必须带 thread_id：否则 create_agent 会抛 ValueError，
         # 被 ChatService 的 catch-all 吞掉 → 整条聊天静默回落关键词。
         thread_id = uuid4().hex if self.checkpointer is not None else None
         self._purge_expired()
 
+        payload = [{"role": m.role, "content": m.content} for m in history]
+        payload.append({"role": "user", "content": message})
+
         config = {"configurable": {"thread_id": thread_id}} if thread_id else None
-        response = self.agent.invoke(
-            {"messages": [{"role": "user", "content": message}]},
-            config=config,
-        )
+        response = self.agent.invoke({"messages": payload}, config=config)
 
         # **先判中断**：中断那轮的 AI 消息 content 为空，若先取文本会返回
         # 「抱歉，我暂时无法回答这个问题。」，把待审批伪装成失败。
         interrupted = _extract_interrupt(response)
         if interrupted is not None:
             approval_id = self._register_pending(thread_id, interrupted)
-            return _render_pending(approval_id, interrupted)
+            return TurnResult(
+                text=_render_pending(approval_id, interrupted),
+                status="pending_approval",
+                approval_id=approval_id,
+            )
 
         try:
-            return _last_ai_content(response)
+            return TurnResult(text=_last_ai_content(response))
         finally:
             # 本轮已跑完，线程不再需要（不删会让 InMemorySaver 随请求数无限增长）
             self._delete_thread(thread_id)
+
+    def cancel_pending(self, approval_id: str) -> bool:
+        """作废一条待审批项并清掉其线程（ApprovalCancellable 契约）。
+
+        用于会话被删除时：宁可让人重新发起，也不能让一个陈旧的写命令还挂在队列里等执行。
+        返回是否命中（未知 / 已过期 / 已被处理 → False）。
+        """
+        if self.approvals is None:
+            return False
+        record = self.approvals.remove(approval_id)
+        if record is None:
+            return False
+        self._delete_thread(record.get("thread_id"))
+        logger.warning("待审批项被作废 id=%s（其命令不会执行）", approval_id)
+        return True
 
     # -- 人工审批（ApprovalCapable） ---------------------------------------
     def pending_approvals(self) -> list[PendingApproval]:
@@ -435,14 +470,6 @@ class OpsAssistant:
         except Exception as exc:  # pragma: no cover - 清理失败不应影响主流程
             logger.debug("删除线程 %s 失败: %s", thread_id, exc)
 
-    # -- 讲义原样接口（预留多轮扩展） --------------------------------------
-    def chat(self, user_input: str) -> str:
-        """讲义第 9.3 节对话接口：维护 self.messages 历史做多轮对话。"""
-        self.messages.append({"role": "user", "content": user_input})
-        response = self.agent.invoke({"messages": self.messages})
-        self.messages = response["messages"]  # 类型: list[BaseMessage]
-        return _last_ai_content(response)
-
-    def reset(self) -> None:
-        """重置对话历史。"""
-        self.messages = []
+    # 注：讲义第 9.3 节的 chat() / reset() / self.messages（实例级共享列表）已于
+    # 2026-09-11 M4 删除。Agent 是单例，那个列表谁用谁串味，全仓无调用方；
+    # 多轮改由 reply_turn(history=…) 由调用方从会话表取历史，见 interfaces/session.py。

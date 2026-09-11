@@ -94,6 +94,22 @@ class ApprovalStore:
         self._drop(approval_id)
         return rec
 
+    def remove(self, approval_id: str) -> dict[str, Any] | None:
+        """无条件删除并返回该记录（**作废**语义，与 get/pop 的区别是不做过期判定）。
+
+        供「会话被删除 → 其未决审批一并作废」使用：宁可让人重新发起，
+        也不能让一个陈旧的写命令还挂在队列里等着被执行。
+        未知 id 返回 None。**返回整条记录**，调用方要靠其中的 thread_id 清理线程
+        （同 add 的返回值约定）。
+        """
+        # 直接查 _records 而**不走 get()**：get() 对已过期的一律返回 None，
+        # 那样过期项既删不掉、调用方也拿不到 thread_id 去清线程。这里要的就是「无论如何删掉它」。
+        record = self._records.get(approval_id)
+        if record is None:
+            return None
+        self._drop(approval_id)
+        return record
+
     def list(self) -> list[dict[str, Any]]:
         """当前待审批记录，新的在前（顺带清理已过期的）。"""
         self.purge_expired()

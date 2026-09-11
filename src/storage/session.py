@@ -22,6 +22,7 @@ from collections import OrderedDict
 from typing import Any, Callable, Collection
 
 from src.interfaces.session import (
+    DEFAULT_MESSAGE_WINDOW,
     ROLE_ASSISTANT,
     ROLE_USER,
     STATUS_ABANDONED,
@@ -40,8 +41,8 @@ logger = logging.getLogger("ops_agent.storage.session")
 
 DEFAULT_TTL_SECONDS = 72 * 3600
 DEFAULT_MAX_SESSIONS = 200
-DEFAULT_MESSAGE_WINDOW = 20
 DEFAULT_PURGE_INTERVAL_SECONDS = 60
+# 窗口默认值在 interfaces/session.py 定义，实现方与调用方共用同一个（避免两处漂移）
 
 # 会话标题取首条用户消息的前若干字符（纯展示用）
 _TITLE_MAX_CHARS = 40
@@ -243,14 +244,13 @@ class SqliteSessionStore(SessionStore):
 
     def update_pending(
         self,
-        session_id: str,
         approval_id: str,
         *,
         content: str,
         status: str = STATUS_FINAL,
         next_approval_id: str | None = None,
     ) -> bool:
-        """把 pending 行推进到最终态 / 链式下一跳 / 作废。
+        """按 approval_id 把 pending 行推进到最终态 / 链式下一跳 / 作废。
 
         命中的是**整轮**（user + assistant 两行共享 approval_id）；只有 assistant 行的
         content 被替换，user 行的原文保持不动。
@@ -260,22 +260,27 @@ class SqliteSessionStore(SessionStore):
         stored_id = next_approval_id if status == STATUS_PENDING_APPROVAL else approval_id
         try:
             with self.db.transaction() as conn:
-                cur = conn.execute(
+                row = conn.execute(
+                    "SELECT session_id FROM messages WHERE approval_id = ? AND status = ? LIMIT 1",
+                    (approval_id, STATUS_PENDING_APPROVAL),
+                ).fetchone()
+                if row is None:
+                    return False
+                session_id = row[0]
+                conn.execute(
                     "UPDATE messages SET status = ?, approval_id = ?, "
                     "content = CASE WHEN role = ? THEN ? ELSE content END "
-                    "WHERE session_id = ? AND approval_id = ? AND status = ?",
+                    "WHERE approval_id = ? AND status = ?",
                     (status, stored_id, ROLE_ASSISTANT, content,
-                     session_id, approval_id, STATUS_PENDING_APPROVAL),
+                     approval_id, STATUS_PENDING_APPROVAL),
                 )
-                hit = cur.rowcount > 0
-                if hit:
-                    conn.execute(
-                        "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-                        (stamp, session_id),
-                    )
+                conn.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+                    (stamp, session_id),
+                )
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
-        return hit
+        return True
 
     def reconcile_pending(self, live_approval_ids: Collection[str]) -> int:
         """把不在 live_approval_ids 里的 pending **轮**标为 abandoned，返回轮数。
@@ -437,28 +442,30 @@ class InMemorySessionStore(SessionStore):
 
     def update_pending(
         self,
-        session_id: str,
         approval_id: str,
         *,
         content: str,
         status: str = STATUS_FINAL,
         next_approval_id: str | None = None,
     ) -> bool:
-        msgs = self._messages.get(session_id, [])
         stored_id = next_approval_id if status == STATUS_PENDING_APPROVAL else approval_id
-        hit = False
-        for idx, msg in enumerate(msgs):
-            if msg.approval_id == approval_id and msg.status == STATUS_PENDING_APPROVAL:
-                # 命中整轮；只替换 assistant 行的 content
-                new_content = content if msg.role == ROLE_ASSISTANT else msg.content
-                msgs[idx] = ChatMessage(
-                    msg.role, new_content, msg.seq, status, stored_id, msg.created_at
-                )
-                hit = True
-        if hit:
+        for session_id, msgs in self._messages.items():
+            if not any(
+                m.approval_id == approval_id and m.status == STATUS_PENDING_APPROVAL
+                for m in msgs
+            ):
+                continue
+            for idx, msg in enumerate(msgs):
+                if msg.approval_id == approval_id and msg.status == STATUS_PENDING_APPROVAL:
+                    # 命中整轮；只替换 assistant 行的 content
+                    new_content = content if msg.role == ROLE_ASSISTANT else msg.content
+                    msgs[idx] = ChatMessage(
+                        msg.role, new_content, msg.seq, status, stored_id, msg.created_at
+                    )
             self._sessions[session_id]["updated_at"] = to_iso(self._clock())
             self._touch(session_id)
-        return hit
+            return True
+        return False
 
     def reconcile_pending(self, live_approval_ids: Collection[str]) -> int:
         live = {str(x) for x in live_approval_ids}

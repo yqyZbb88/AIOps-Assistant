@@ -338,12 +338,12 @@ python src/main.py
 
 访问 http://localhost:8000/docs 查看交互式 API。
 
-### 对外路由（请求/响应契约不变）
+### 对外路由
 
 | 方法/路径 | 说明 |
 |---|---|
-| `GET /health` | 健康检查 → `{"status": "ok"}` |
-| `POST /chat` | 请求 `{"user","message"}` → `{"reply"}` |
+| `GET /health` | 健康检查 → `{"status","storage"}`（`storage` 为 `ok`/`degraded`） |
+| `POST /chat` | 请求 `{"user","message","session_id"?}` → `{"reply","session_id"}` |
 | `POST /alert` | Alertmanager webhook 推送 → `AlertAck` |
 | `GET /alerts/recent?limit=` | 最近被动接收的告警记录 |
 | `GET /alerts/active` | 实时活动告警（监控源故障转 502） |
@@ -351,10 +351,16 @@ python src/main.py
 | `POST /approvals/{id}` | 提交 `{"action":"approve"\|"reject","reason":""}` 并续跑；未知/已用 → 404，能力未启用 → 503 |
 | `GET /sessions` | 会话列表，最近更新的在前（持久化未启用时返回空列表） |
 | `GET /sessions/{id}` | 会话元信息 + 全部消息（含 pending/abandoned）；未知 → 404，未启用 → 503 |
-| `DELETE /sessions/{id}` | 删除会话连同其消息；未知/已删 → 404（**不静默重建**），未启用 → 503 |
+| `DELETE /sessions/{id}` | 删除会话连同其消息，并**作废该会话的未决审批**；未知/已删 → 404，未启用 → 503 |
 
-> `/approvals` 与 `/sessions` 都是新增路由，原五个路由的请求/响应契约**一个字都没改**：
-> 写命令待审批时 `/chat` 仍返回 `{"reply": str}`，只是 `reply` 内容是待审批提示。
+> `/approvals` 与 `/sessions` 是**新增路由**，原有五个路由的路径与语义均未改动。
+> 唯一的**字段扩充**是 `POST /chat`：请求加可选 `session_id`、响应恒回带 `session_id`
+> （M4 第二批，属追加而非修改——不传时行为与改造前完全一致）。写命令待审批时
+> `/chat` 仍返回 `{"reply": str}`，只是 `reply` 内容是待审批提示。
+>
+> **多轮**：不传 `session_id` → 新建会话（行为同改造前，每次调用独立）；
+> 传上次回带的 `session_id` → 带上该会话的历史，Agent 接得上上句。
+> 未知 `session_id` → 404（**不静默重建**，否则 `DELETE` 形同虚设）。
 
 > ⚠️ `/sessions/*` 是**无鉴权的读接口**，会把对话原文整段吐出来（可能含主机名、报错原文、
 > 运维细节）。`server.host` 默认 127.0.0.1 是目前唯一的缓解；绑 `0.0.0.0` 前请先加鉴权。
@@ -383,7 +389,7 @@ Agent 写命令的审批链路用**真 graph + 脚本化假模型**离线验证
 **双向校验**、开库失败降级、连接确实被关闭）、`test_session_store.py`（同一组断言跑
 SQLite 与内存两套实现）、`test_api_sessions.py`（端点 + 未启用时的 503/空列表降级）。
 
-**当前基线：269 passed。**
+**当前基线：298 passed。**
 
 ---
 
@@ -443,15 +449,14 @@ SQLite 与内存两套实现）、`test_api_sessions.py`（端点 + 未启用时
 
 notifiers（钉钉/企微通知）、docker/、插件目录自动扫描发现、logging.conf（用 settings 控制日志级别）、
 配置热更新（见「路线图」）、**熔断机制（工具/模型调用次数上限）**、
-**告警·处置·AI 建议的归档**（表已建好、`/sessions` 已可用，但尚无写入方——见下）、
-**审计日志落文件**。对应占位注释与扩展位已留在相关文件中，后续按需实现即可。
-熔断机制的现状与已定设计登记在 [PROJECT_HANDOVER.md](./PROJECT_HANDOVER.md)「路线图」。
+**告警·处置·AI 建议的归档**（三张表已建好但尚无写入方）、**审计日志落文件**。
+对应占位注释与扩展位已留在相关文件中，后续按需实现即可。
+熔断机制与状态日志归档的现状、已定设计登记在 [PROJECT_HANDOVER.md](./PROJECT_HANDOVER.md)「路线图」。
 
-> 说明（M4 分两批交付，**当前处于第一批完成、第二批未开始的中间态**）：
-> - **已完成**：SQLite 底座、会话与消息两张表的读写、`/sessions` 三个端点。
-> - **未开始**：多轮接线（`/chat` 带 `session_id`、历史进模型窗口）与状态日志写入方
->   （告警/处置/AI 建议落盘、审计落文件）。
+> **对话历史维护（M4）已完成主体**：SQLite 底座、会话与消息落盘、`/chat` 多轮、
+> 审批中断落 pending 与审批后回填、`/sessions` 三个端点、孤儿审批回收。
+> **Agent 现在支持多轮对话**——传回上次的 `session_id` 即可续聊；不传则新建会话
+> （与改造前行为一致）。服务在持久化层**不再是无状态的**，但**不传 session_id 时仍无状态**。
 >
-> 因此 **Agent 目前仍是单轮对话**——`/chat` 每次调用独立、不跨请求累积上下文；
-> `/sessions` 此时是一张**可读可写但无人写入**的空表（只有直接调用存储层才有内容）。
-> 服务在持久化层面仍是**无状态**的。第二批完成后本节要整体改写。
+> 仍未做的两块是**状态日志**：告警/处置/AI 建议三张归档表建好了但**没有写入方**，
+> 审计日志也还没落文件。

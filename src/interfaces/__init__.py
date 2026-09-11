@@ -11,7 +11,11 @@ from src.interfaces.agent_action import (
     render_agent_action,
 )
 from src.interfaces.approval import ApprovalError, ApprovalOutcome, PendingApproval
-from src.interfaces.assistant import Assistant, ApprovalCapable
+from src.interfaces.assistant import (
+    Assistant,
+    ApprovalCancellable,
+    ApprovalCapable,
+)
 from src.interfaces.command import CommandSpec, ParamSpec
 from src.interfaces.diagnostic import (
     DiagnosticError,
@@ -42,6 +46,7 @@ __all__ = [
     "ActionError",
     "Assistant",
     "ApprovalCapable",
+    "ApprovalCancellable",
     "ApprovalError",
     "ApprovalOutcome",
     "PendingApproval",

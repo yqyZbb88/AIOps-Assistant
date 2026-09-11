@@ -103,7 +103,9 @@ def test_delete_session(client):
     resp = client.delete(f"/sessions/{session_id}")
 
     assert resp.status_code == 200
-    assert resp.json() == {"session_id": session_id, "deleted": True}
+    assert resp.json() == {
+        "session_id": session_id, "deleted": True, "cancelled_approvals": 0
+    }
     assert client.get(f"/sessions/{session_id}").status_code == 404
 
 
@@ -136,6 +138,74 @@ def test_disabled_does_not_create_db_file(disabled_client):
     """关闭时不得留下任何 db 文件（哪怕是空库）。"""
     disabled_client.get("/sessions")
     assert not disabled_client.path.exists()
+
+
+# -- /chat 多轮（M4 第二批接线） --------------------------------------------
+@pytest.fixture
+def chat_client(tmp_path):
+    """一个装了「支持历史」的假 Agent 的 client，用于验证 /chat 的会话接线。"""
+    from tests.test_chat_history import FakeHistoryAssistant
+
+    app = create_app(settings=_settings(tmp_path))
+    agent = FakeHistoryAssistant()
+    app.state.agent.chat_service._assistant = agent
+    with TestClient(app) as c:
+        c.agent = agent  # type: ignore[attr-defined]
+        c.store = app.state.container.sessions()  # type: ignore[attr-defined]
+    return c
+
+
+def test_chat_creates_session_and_returns_id(chat_client):
+    resp = chat_client.post("/chat", json={"user": "ops", "message": "CPU 怎么样"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {"reply", "session_id"}
+    assert body["session_id"], "不传 session_id 时应新建并在响应里回带"
+    assert [s["session_id"] for s in chat_client.get("/sessions").json()] == [body["session_id"]]
+
+
+def test_chat_with_session_id_is_multi_turn(chat_client):
+    first = chat_client.post("/chat", json={"user": "ops", "message": "第一问"}).json()
+
+    second = chat_client.post(
+        "/chat", json={"user": "ops", "message": "第二问", "session_id": first["session_id"]}
+    ).json()
+
+    assert second["session_id"] == first["session_id"], "同一会话不应换 id"
+    assert [m.content for m in chat_client.agent.seen[1]] == ["第一问", "[多轮]第一问"]
+    detail = chat_client.get(f"/sessions/{first['session_id']}").json()
+    assert [m["content"] for m in detail["messages"]] == [
+        "第一问", "[多轮]第一问", "第二问", "[多轮]第二问"
+    ]
+
+
+def test_chat_without_session_id_starts_new_each_time(chat_client):
+    a = chat_client.post("/chat", json={"user": "ops", "message": "问一"}).json()
+    b = chat_client.post("/chat", json={"user": "ops", "message": "问二"}).json()
+
+    assert a["session_id"] != b["session_id"]
+    assert len(chat_client.get("/sessions").json()) == 2
+
+
+def test_chat_with_unknown_session_id_is_404(chat_client):
+    resp = chat_client.post(
+        "/chat", json={"user": "ops", "message": "你好", "session_id": "ghost"}
+    )
+
+    assert resp.status_code == 404, "未知 id 不得静默重建（否则 DELETE 形同虚设）"
+
+
+def test_chat_works_when_storage_disabled(disabled_client):
+    """持久化关掉时 /chat 照常回答，只是 session_id 为 null。"""
+    from tests.test_chat_history import FakeHistoryAssistant
+
+    disabled_client.app.state.agent.chat_service._assistant = FakeHistoryAssistant()
+    resp = disabled_client.post("/chat", json={"user": "ops", "message": "你好"})
+
+    assert resp.status_code == 200
+    assert resp.json()["reply"] == "[多轮]你好"
+    assert resp.json()["session_id"] is None
 
 
 # -- 数据真的落盘（跨 Container 实例可读） ------------------------------------

@@ -135,7 +135,7 @@ def test_update_pending_backfills_final_answer(store):
     store.append_turn(info.session_id, user_content="重启 nginx", assistant_content="⚠️ 待审批",
                       status=STATUS_PENDING_APPROVAL, approval_id="ap1")
 
-    assert store.update_pending(info.session_id, "ap1", content="已重启完成") is True
+    assert store.update_pending("ap1", content="已重启完成") is True
 
     msgs = store.messages(info.session_id)
     assert msgs[1].content == "已重启完成"
@@ -150,7 +150,7 @@ def test_update_pending_chained_approval_swaps_id(store):
     store.append_turn(info.session_id, user_content="x", assistant_content="⚠️ 第一条",
                       status=STATUS_PENDING_APPROVAL, approval_id="ap1")
 
-    store.update_pending(info.session_id, "ap1", content="⚠️ 第二条",
+    store.update_pending("ap1", content="⚠️ 第二条",
                          status=STATUS_PENDING_APPROVAL, next_approval_id="ap2")
 
     msgs = store.messages(info.session_id)
@@ -160,7 +160,7 @@ def test_update_pending_chained_approval_swaps_id(store):
 
 def test_update_pending_unknown_approval_returns_false(store):
     info = store.create()
-    assert store.update_pending(info.session_id, "nope", content="x") is False
+    assert store.update_pending("nope", content="x") is False
 
 
 def test_update_pending_abandoned(store):
@@ -168,8 +168,7 @@ def test_update_pending_abandoned(store):
     store.append_turn(info.session_id, user_content="x", assistant_content="⚠️",
                       status=STATUS_PENDING_APPROVAL, approval_id="ap1")
 
-    assert store.update_pending(info.session_id, "ap1", content="⚠️",
-                                status=STATUS_ABANDONED) is True
+    assert store.update_pending("ap1", content="⚠️", status=STATUS_ABANDONED) is True
     assert store.messages(info.session_id)[1].status == STATUS_ABANDONED
 
 

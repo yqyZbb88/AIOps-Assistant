@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from src.interfaces.session import SessionError, SessionStore
+from src.interfaces.session import STATUS_PENDING_APPROVAL, SessionError, SessionStore
 
 logger = logging.getLogger("ops_agent.api.sessions")
 
@@ -72,13 +72,32 @@ def get_session(session_id: str, request: Request) -> dict[str, Any]:
 
 @router.delete("/sessions/{session_id}", response_model=dict[str, Any])
 def delete_session(session_id: str, request: Request) -> dict[str, Any]:
-    """删除会话连同其全部消息。已删除 / 从未存在的 id 一律 404（**不静默重建**）。"""
+    """删除会话连同其全部消息，并**作废该会话的未决审批**。
+
+    未决审批必须先作废再删会话：删完就拿不到 approval_id 了，而一个仍然挂着的
+    写命令中断是可以被批准执行的——那等于删了会话却留着一条能改系统的句柄。
+    继承 M3 的 fail-safe 取向：宁可让人重新发起。
+
+    已删除 / 从未存在的 id 一律 404（**不静默重建**）。
+    """
     store = _store(request)
+    agent = request.app.state.agent
+    try:
+        pending_ids = [
+            m.approval_id
+            for m in store.messages(session_id)
+            if m.status == STATUS_PENDING_APPROVAL and m.approval_id
+        ]
+    except SessionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    cancelled = [aid for aid in pending_ids if agent.cancel_pending(aid)]
+
     try:
         deleted = store.delete(session_id)
     except SessionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
-    logger.info("会话已删除 id=%s", session_id)
-    return {"session_id": session_id, "deleted": True}
+    logger.info("会话已删除 id=%s（作废未决审批 %d 条）", session_id, len(cancelled))
+    return {"session_id": session_id, "deleted": True, "cancelled_approvals": len(cancelled)}

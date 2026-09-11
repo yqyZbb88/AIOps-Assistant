@@ -158,6 +158,32 @@ def test_sessions_falls_back_to_memory_when_db_unusable(tmp_path):
     assert c.sessions() is store, "降级结果也要缓存，否则每个请求重试一次开库并刷 ERROR"
 
 
+def test_sessions_reconciles_orphan_pending_on_open(tmp_path):
+    """开库时把残留的「待审批」轮标为 abandoned。
+
+    新进程里任何 pending 行**必然是孤儿**：待审批项与 checkpoint 线程都在进程内存里，
+    不可能跨重启存活。不处理的话那些行会永远显示「有一条命令等你批」，
+    而 /approvals 里根本没有它——用户永远批不了。
+    """
+    from src.interfaces.session import STATUS_ABANDONED, STATUS_PENDING_APPROVAL
+    from src.storage.db import open_database
+    from src.storage.session import SqliteSessionStore
+
+    path = tmp_path / "ops.db"
+    seed = SqliteSessionStore(open_database(path))
+    info = seed.create()
+    seed.append_turn(info.session_id, user_content="重启 nginx", assistant_content="⚠️ 待审批",
+                     status=STATUS_PENDING_APPROVAL, approval_id="ap1")
+    assert seed.messages(info.session_id)[0].status == STATUS_PENDING_APPROVAL
+
+    store = Container(settings=Settings(
+        storage=StorageSettings(enabled=True, db_path=str(path))
+    )).sessions()
+
+    assert {m.status for m in store.messages(info.session_id)} == {STATUS_ABANDONED}
+    assert store.get(info.session_id).pending_approvals == 0
+
+
 # ---------------------------------------------------------------------------
 # ops_agent：完整装配
 # ---------------------------------------------------------------------------
@@ -224,7 +250,8 @@ def test_create_app_health_endpoint_responds():
     with TestClient(create_app(settings=Settings())) as client:
         resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    # storage 是 M4 追加的字段，专为让「持久化降级」可被观测（否则只能翻日志发现）
+    assert resp.json() == {"status": "ok", "storage": "ok"}
 
 
 # ---------------------------------------------------------------------------
