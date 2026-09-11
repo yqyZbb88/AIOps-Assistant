@@ -339,6 +339,22 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   （不用 header）、响应**恒回带**；不传 `session_id` 时**新建会话**。
   另定：**落盘范围四份全做**（告警记录 / 处置结果 / 审计日志落文件 / AI 建议），
   保留策略 **TTL + 容量上限**（惰性清理 + 节流），**交付分两批**（见本条目开头）。
+- **⚠️ 未做：`approval_decisions` 表是空的（M4 遗留，2026-09-11 用户已知悉并要求后续提醒）**：
+  表已在 [src/storage/db.py](src/storage/db.py) 建好，但**全仓无任何写入方**（`git grep approval_decisions src/`
+  只命中 DDL 那一行）。它对应计划里的这条：`decide()` 应在**真正 resume 之前**先落一条审批决策记录。
+
+  **风险窗口**：`OpsAssistant.decide()` 先 `pop` 掉待审批项、再 `resume` 执行命令。进程若恰好死在
+  两者之间，重启后那条消息会被 `reconcile_pending` 标成 `abandoned`（= 未执行），
+  **而命令其实可能已经执行过了**。这不是文字缺失，是**审计结论错误**，方向恰是 fail-safe 的反面。
+
+  目前唯一的补救：命令真执行时会写审计日志（`logs/audit.log`），对照它能发现矛盾——
+  但**单看会话表会被误导**。修法约 10 行（在 pop/resume 之间插一条
+  `INSERT INTO approval_decisions`，重启用它把那条消息标成「结果未知」而非「未执行」）。
+
+  另有一条**同类但更轻**的遗留：运行期被 TTL/容量淘汰的待审批项，目前只在**有人尝试审批时**
+  才标 `abandoned`（`decide` 抛 `ApprovalError` 的路径）。若无人去点它，那条消息会一直停在
+  `pending_approval` 直到下次重启。修法是在 `OpsAssistant._purge_expired()` 里按
+  `approvals.list()` 比对一次（计划里原本就是这么写的）。
 - **熔断机制（调用次数 / 成本上限）**：2026-09-10 用户提出。现状：Agent **实际上没有成本熔断**——
   LangGraph 确实有 `recursion_limit`，但实测默认值是 **10000**
   （`langgraph._internal._config.DEFAULT_RECURSION_LIMIT`，本机 langgraph 实测），
