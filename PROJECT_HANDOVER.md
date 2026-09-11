@@ -78,7 +78,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：342 passed**（2026-09-11 M4 第二批「多轮」完成后；本日共增 109 例：
+    **当前基线：371 passed**（2026-09-11 M4 第二批「多轮」完成后；本日共增 109 例：
     `test_sqlite_db.py` 15、`test_session_store.py` 43、`test_api_sessions.py` 18、
     `test_chat_history.py` 14、`test_history_capable.py` 9、既有文件 +10）。
     M3 的 79 例其中
@@ -93,7 +93,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **342**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **371**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
 
     **特别注意「两处都写了同一件事」**：README 与本文件经常重复描述同一条约束
@@ -130,6 +130,10 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   审批中断的整轮落 `pending_approval`、审批后**原地回填**最终回答；
   开库时把残留的孤儿审批轮标 `abandoned`。**零新增依赖**（stdlib `sqlite3`）。
   三级降级：配置关 → 不落库；SQLite 打不开 → 内存实现（多轮可用、重启即丢）；正常 → SQLite。
+  **会话名**（`sessions.name`，v2）：客户端可读的别名（`session_name`），**没有就按它新建**；
+  唯一性**限定在 user 内**（`UNIQUE(user, name)`，且用**部分索引** `WHERE name <> ''`
+  让空名不参与去重）。`session_id` 仍是服务端生成的 32 位随机值，不可猜。
+  **名字是能猜的**——无鉴权下别把隔离寄托在「名字别人不知道」上，README 已写明。
 - **状态日志归档 + 审计落文件**（M4 第二批，2026-09-11）：
   `POST /alert` 的处理产出（告警 / 处置结果 / AI 建议）落三张表，靠 `Alert.alert_key`
   关联（**不是裸 fingerprint**——它默认空串，做 join key 会把不同告警并成一条）；
@@ -182,6 +186,8 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | **给既有方法「加一个带默认值的 kwarg」不等于向后兼容**（2026-09-11） | `runtime_checkable` 的 Protocol **只检验方法名是否存在、不检验签名**。所以给 `Assistant.reply` 加 `history=None` 后，只实现 `reply(self, message)` 的既有假对象仍会被 `isinstance(x, HistoryCapable)` 判为 True，然后在调用处 TypeError——**守卫形同虚设**。多轮能力因此另起方法名 `reply_turn`（照 `ApprovalCapable`/`ApprovalCancellable` 的先例）。加能力一律**新方法名 + 新 Protocol**，不要改既有方法的签名。 |
 | **持久化/IO 调用不能落在 Agent 的 catch-all try 里**（2026-09-11） | `ChatService` 那条 `except Exception` 会把任何异常归类成「LLM 抖动」并回落关键词，且只 warning、无 `exc_info`。DB 读写若圈在里面，schema 写错、盘满、权限错最终都表现为「模型最近有点飘」，永远查不出来。落库必须放在 try **之外**，有自己的错误处理与可观测出口（`/health` 的 `storage` 字段）。 |
 | **模型窗口里的「控制面消息」要过滤掉**（2026-09-11） | 待审批提示（`⚠️ 待人工审批…审批 id：xxx`）是给人看的，进模型上下文会让模型在后续轮次里幻觉「还在等批准」。会话表用 `status` 区分：`history()` 只返回 `final`、`messages()` 返回全部——**同一张表两个读口**，分别服务「给模型看」与「给人看」。 |
+| **`ALTER TABLE` 之后 SQLite 会重写 `sqlite_master.sql`，新旧库的「DDL 文本」永远不可能相同**（2026-09-11 实测踩到） | 所以「迁移后的库 == 全新建的库」这条不变量**不能靠比较 SQL 文本**去验——要比**结构指纹**（表名、每表有序的列定义、索引名）。见 `tests/test_sqlite_db.py::_structure`。另外两件与迁移有关的实事：① ALTER 只能把新列加到**末尾**，所以全新建库的 DDL 也把新列写在末尾，两条路径的**列序**才对得上（否则将来有人写 `INSERT INTO sessions VALUES(...)` 会在新库上正常、在旧库上炸）；② 加在表上的**唯一索引**要在迁移里单独 `CREATE UNIQUE INDEX`（ALTER 加不了表级约束），否则升级上来的库缺这层约束而新库有。 |
+| **唯一约束遇到「多数行为空」的列要用部分索引**（2026-09-11） | 会话名只有少数会话有。直接 `UNIQUE(user, name)` 会让同一 user 的**第二个无名会话插入失败**（`'' = ''`）。写成 `CREATE UNIQUE INDEX ... ON sessions(user, name) WHERE name <> ''`——既约束了有名字的，又放过了没名字的。凡「可选标识」类字段都照此办理。 |
 | **`logging` 的 handler 是全局状态，加 handler 必须幂等**（2026-09-11） | `configure_logging` 每次 `create_app` 都会调用（测试里几十次）。无条件 `addHandler` 会让每条日志写 N 遍，且 N 个 handler 争抢同一文件——**Windows 上轮转 rename 直接 PermissionError**。按路径查重跳过。另外 `RotatingFileHandler` **不创建父目录**（`logs/` 不存在直接抛），且用 `delay=True` 避免启动即占句柄。 |
 | **`import src.main` 有副作用：模块级 `create_app()` 会按仓库真实配置挂上文件 handler**（2026-09-11 实测踩到） | 后果不只是「测试互相串」——测试里被 stub 掉的 `exec_command` 照样走 `record_execution`，于是**测试套件会往仓库的 `logs/audit.log` 写一堆假数据**（实测跑完留下 32 行 `192.168.1.1` / `h` / `boom`）。已加 `tests/conftest.py` 的 session 级 autouse fixture 摘掉文件 handler；文件落盘本身由 `test_logger.py` 用 `tmp_path` 专门覆盖。**新增任何「按真实配置打开资源」的模块级副作用时，都要同步加这样的隔离**，否则测试会悄悄污染工作区。 |
 | **`purge_interval_seconds=0` 时清理会在写入途中就跑**（2026-09-11 踩到） | 「写入时顺带清理」的设计意味着：想手动控制清理时机的测试，必须在断言前**真的关掉**自动清理。而且不能只给个大数——`_last_purge` 初值是 0、clock 是 epoch 秒（1.7e9），**任何有限大数都会在首次写入时被判为「已超间隔」**。要关就传 `float("inf")`。（两次踩到：会话存储与状态日志各一次。） |
@@ -417,6 +423,36 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ---
 
+## 会话名（2026-09-11，M4 之后）
+
+起因：用户按直觉发了 `{"user":"yqyZ","message":"cpu","session_id":"test_1"}`，得到 **404**。
+
+**这不是用错，是 API 缺了一条路**：原先 `session_id` 的语义是「引用一个已存在的会话」，
+而客户端**根本无法指定会话标识**——唯一拿到会话的方式是「不传 → 服务端给一个随机 id
+→ 下次带回来」。所以 `test_1` 这种写法在任何情况下都不可能成功。
+
+**方案（用户拍板）**：允许**自定义会话名**，但**不允许指定 session_id**。
+
+- `session_id` 保持服务端生成的 32 位随机值（不可猜）；名字只是客户端可读的别名。
+- `session_name`：**没有就按这个名字新建**（这是它区别于 `session_id` 的关键）。
+- 唯一性 **限定在 user 内** `UNIQUE(user, name)`，用**部分索引**让空名不参与去重。
+- 两个标识**同时给 → 422**：歧义比报错危险（实现会挑一个执行，调用方却以为另一个生效）。
+- 名字格式在**入参校验阶段**卡住（`^[A-Za-z0-9_.-]{1,64}$`，白名单而非黑名单），
+  非法直接 422，不让它走到存储层变 500。
+
+**必须知道的一点**：名字是**能猜的**，所以它**不等于**「客户端指定 id」在安全上的等价物。
+无鉴权下 id 不可猜曾是唯一的会话隔离手段；有了名字之后，猜到名字就能读到那段对话。
+**这是有意的取舍**：换来了客户端可用性，代价是隔离强度下降。将来加鉴权时，
+名字自动变成「(登录用户, 名字)」，这个代价就消失了——把作用域定在 `user` 上正是为此。
+
+**顺带修掉一个既有的小问题**：`sessions.user` 一直是空的——因为改造前 `reply_turn` 根本
+没接收 `user`。现在 `/chat` 会把 `user` 一路传到存储层。
+
+**schema v1 → v2**：这是本项目第一次真实迁移。它**已经在真实文件上跑过了**——
+用户库 `data/ops_agent.db` 在复现报错时被服务自动升到 v2，1 会话 / 2 消息 / 1 告警全保住。
+
+---
+
 ## M4 第二批（2026-09-11）多轮接线 + 状态日志
 
 把「对话历史」接到聊天链路上，并把四份重启即丢的数据落盘。测试 269 → 342。
@@ -554,7 +590,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 342 passed（2026-09-11 M4 第二批「多轮」后）
+python -m pytest tests -q            # 目前 371 passed（2026-09-11 M4 第二批「多轮」后）
                                      #   M4 新增：sqlite_db 15、session_store 43（两种实现
                                      #     跑同一组契约断言）、api_sessions 18、chat_history 14、
                                      #     history_capable 9（真 graph 跑多轮×审批跨模块接线）

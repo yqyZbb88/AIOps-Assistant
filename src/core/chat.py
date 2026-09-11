@@ -152,7 +152,14 @@ class ChatService:
         """单轮回复（原契约不变：不带会话、不落库）。"""
         return self.reply_turn(message).reply
 
-    def reply_turn(self, message: str, *, session_id: str | None = None) -> ChatReply:
+    def reply_turn(
+        self,
+        message: str,
+        *,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        user: str = "",
+    ) -> ChatReply:
         """带会话的一轮：Agent-first → 关键词兜底，并把这一轮写进会话表。
 
         三个刻意的结构选择：
@@ -165,7 +172,7 @@ class ChatService:
            仓库把降级部署当一等公民（有专门的 no-langchain 回归测试）。
         3. **持久化不可用时只是不落库**，聊天照常（`_sessions is None` → 全程跳过）。
         """
-        sid = self._resolve_session(session_id)
+        sid, sname = self._resolve_session(session_id, session_name, user)
         history = self._load_history(sid)
 
         turn: TurnResult | None = None
@@ -179,7 +186,12 @@ class ChatService:
             turn = self._fallback_turn(message)
 
         self._record_turn(sid, message, turn)
-        return ChatReply(reply=turn.text, session_id=sid, approval_id=turn.approval_id)
+        return ChatReply(
+            reply=turn.text,
+            session_id=sid,
+            session_name=sname or None,
+            approval_id=turn.approval_id,
+        )
 
     # ------------------------------------------------------------------
     # 会话（可选能力：存储不可用时全程跳过，行为与改造前一致）
@@ -204,26 +216,44 @@ class ChatService:
                 return TurnResult(text=rule.respond())
         return TurnResult(text=DEFAULT_REPLY)
 
-    def _resolve_session(self, session_id: str | None) -> str | None:
-        """确定本轮会话 id；存储不可用 → None（不落库）。
+    def _resolve_session(
+        self, session_id: str | None, session_name: str | None, user: str
+    ) -> tuple[str | None, str]:
+        """确定本轮用哪个会话，返回 (session_id, session_name)；存储不可用 → (None, "")。
 
-        传了未知 id 一律抛 SessionNotFoundError（api 转 404）：**不静默重建**——
-        否则 DELETE 形同虚设，删掉的会话一被引用就复活。
+        三条路径的语义**刻意不同**：
+
+        - **给了 `session_id`（服务端生成的随机 id）**：必须已存在，否则
+          `SessionNotFoundError`（api 转 404）。不静默重建，否则 `DELETE` 形同虚设。
+        - **给了 `session_name`（客户端自定义别名）**：没有就**新建**，这是它的全部意义
+          ——客户端想用一个自己起的名字，不该被迫先拿一个随机 id。
+        - **都没给**：新建一个未命名会话（与改造前行为一致）。
+
+        命名会话按 **(user, name)** 查，所以 A 的 `test_1` 与 B 的 `test_1` 互不干扰。
         """
         store = self._sessions
         if store is None:
-            return None
+            return None, ""
         try:
             if session_id:
-                if store.get(session_id) is None:
+                info = store.get(session_id)
+                if info is None:
                     raise SessionNotFoundError(f"会话不存在或已过期: {session_id}")
-                return session_id
-            return store.create().session_id
+                return info.session_id, info.name
+            if session_name:
+                existing = store.find_by_name(user, session_name)
+                if existing is not None:
+                    return existing.session_id, existing.name
+                # 并发下这里可能撞上唯一索引——store.create 会回查并复用，不会抛
+                created = store.create(user=user, name=session_name)
+                return created.session_id, created.name
+            created = store.create(user=user)
+            return created.session_id, created.name
         except SessionNotFoundError:
             raise
         except SessionError as exc:
             logger.error("会话存储不可用，本轮不落库: %s", exc)
-            return None
+            return None, ""
 
     def _load_history(self, session_id: str | None) -> list[ChatMessage]:
         """取可进模型窗口的历史；读失败降级为空历史（少记性，但不影响本轮回答）。"""

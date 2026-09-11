@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Collection, Protocol, Sequence, runtime_checkable
@@ -39,6 +40,26 @@ STATUS_ABANDONED = "abandoned"
 
 # 每轮默认重发给模型的历史消息条数上限（限 token；实现与调用方共用同一个默认值）
 DEFAULT_MESSAGE_WINDOW = 20
+
+#: 会话名（客户端自定义别名）的格式。
+#: **限制长度是硬要求**：不限的话有人会拿一兆字节当名字塞进唯一索引。
+#: 名字**不等于** session_id——id 仍是服务端生成的 32 位随机值。
+SESSION_NAME_MAX_CHARS = 64
+_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,%d}$" % SESSION_NAME_MAX_CHARS)
+
+
+def validate_session_name(name: str) -> str:
+    """校验会话名，返回原值；不合法抛 ValueError。
+
+    按 **ASCII 白名单**而不是「排除危险字符」：后者永远会漏（换行、零宽字符、
+    各种 Unicode 空白都能骗过肉眼）。白名单里放的都是 URL / 命令行 / 日志里
+    都不需要转义的字符。
+    """
+    if not isinstance(name, str) or not _SESSION_NAME_RE.match(name):
+        raise ValueError(
+            f"会话名不合法（只允许字母数字与 _ . -，长度 1~{SESSION_NAME_MAX_CHARS}）: {name!r}"
+        )
+    return name
 
 # 可以进入模型上下文的窗口状态：**只有** final。
 # pending/abandoned 是控制面信息，展示给用户看（GET /sessions/{id}），但不给模型——
@@ -87,6 +108,9 @@ class SessionInfo:
 
     session_id: str
     user: str = ""
+    #: 客户端自定义的别名（如 "test_1"）；空串 = 未命名。
+    #: 唯一性限定在 user 内，且只对非空名生效。
+    name: str = ""
     title: str = ""
     status: str = "active"
     created_at: str = ""
@@ -99,6 +123,7 @@ class SessionInfo:
         return {
             "session_id": self.session_id,
             "user": self.user,
+            "name": self.name,
             "title": self.title,
             "status": self.status,
             "created_at": self.created_at,
@@ -138,6 +163,8 @@ class ChatReply:
 
     reply: str
     session_id: str | None = None
+    #: 本次使用的会话名（客户端自定义别名）；未命名时为 None
+    session_name: str | None = None
     #: 本轮若触发写命令审批，这里是被中断那一轮的审批 id（`/approvals/{id}` 用）
     approval_id: str | None = None
 
@@ -145,6 +172,7 @@ class ChatReply:
         return {
             "reply": self.reply,
             "session_id": self.session_id,
+            "session_name": self.session_name,
             "approval_id": self.approval_id,
         }
 
@@ -171,12 +199,25 @@ class SessionStore(ABC):
 
     # -- 会话生命周期 -------------------------------------------------------
     @abstractmethod
-    def create(self, *, user: str = "", title: str = "") -> SessionInfo:
-        """新建一个会话并返回其元信息。不传 session_id，由存储层生成。"""
+    def create(self, *, user: str = "", title: str = "", name: str = "") -> SessionInfo:
+        """新建一个会话并返回其元信息。
+
+        **session_id 永远由存储层生成**（32 位随机值，不可猜）；`name` 是客户端可读的
+        别名，可为空。调用前应先 `validate_session_name(name)`。重名（同一 user 下）
+        由唯一索引兜住——实现方应捕获冲突并回查，而不是把它抛成 500。
+        """
 
     @abstractmethod
     def get(self, session_id: str) -> SessionInfo | None:
         """取会话元信息；不存在返回 None。"""
+
+    @abstractmethod
+    def find_by_name(self, user: str, name: str) -> SessionInfo | None:
+        """按 (user, name) 查找会话；没有则返回 None。
+
+        **名字不是全局唯一**：A 的 `test_1` 与 B 的 `test_1` 是两段不同对话——
+        这是「限定在 user 内」的意义，也让将来加了鉴权之后名字自动变得安全。
+        """
 
     @abstractmethod
     def list(self, *, limit: int = 50) -> list[SessionInfo]:

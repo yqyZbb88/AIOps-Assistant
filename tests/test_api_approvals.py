@@ -106,16 +106,16 @@ def test_unavailable_agent_is_503():
 
 
 def test_chat_response_shape(client):
-    """/chat 契约：`reply` 仍是 str，且**只追加**了一个可选 session_id。
+    """/chat 契约：`reply` 仍是 str，另两个会话字段都是**追加**的。
 
-    M4 第二批给 /chat 加了 `session_id`（请求与响应各一个字段）——这是对外 HTTP
-    契约**唯一**登记在案的例外，属扩充而非修改（同当初加 `/approvals` 的性质）。
-    不传 session_id 时行为与改造前完全一致。
+    M4 给 /chat 先后加了 `session_id`（引用服务端生成的会话）与 `session_name`
+    （客户端自定义别名）——这是对外 HTTP 契约**唯一**登记在案的例外，属扩充而非修改
+    （同当初加 `/approvals` 的性质）。两个都不传时行为与改造前完全一致。
     """
     resp = client.post("/chat", json={"user": "ops", "message": "你好"})
 
     assert resp.status_code == 200
-    assert set(resp.json()) == {"reply", "session_id"}
+    assert set(resp.json()) == {"reply", "session_id", "session_name"}
     assert isinstance(resp.json()["reply"], str)
 
 

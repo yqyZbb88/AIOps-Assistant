@@ -61,10 +61,107 @@ def test_sessions_columns_are_exact(tmp_path):
     注意**没有** pending_approvals 列：待审批数由 messages 状态实时统计得出。
     存成列就得在 append_turn / update_pending / reconcile_pending 三处同步维护，
     批量作废时极易漂移；实时统计则不可能算错。
+
+    `name` 是 v2 加的会话别名列（客户端可读；session_id 仍是服务端随机值）。
     """
     db = open_database(tmp_path / "ops.db")
     cols = {r["name"] for r in db.query("PRAGMA table_info(sessions)")}
-    assert cols == {"session_id", "user", "title", "status", "created_at", "updated_at"}
+    assert cols == {
+        "session_id", "user", "name", "title", "status", "created_at", "updated_at"
+    }
+
+
+# -- 迁移（v1 → v2） --------------------------------------------------------
+def _downgrade_to_v1(path) -> None:
+    """把一个 v2 库改造成 v1 的样子：去掉 name 列与它的索引，user_version 改回 1。
+
+    v2 的 sessions 就是 v1 的 sessions 加一列，所以「v2 减去 name」恰好等价于 v1 结构。
+    """
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("DROP INDEX IF EXISTS idx_sessions_user_name")
+        conn.execute("ALTER TABLE sessions DROP COLUMN name")
+        conn.execute("PRAGMA user_version = 1")
+
+
+def test_v1_file_is_migrated_to_v2(tmp_path):
+    """旧库文件必须能就地升级——**且原有数据一条不丢**。"""
+    path = tmp_path / "ops.db"
+    db = open_database(path)
+    db.execute(
+        "INSERT INTO sessions (session_id, user, name, created_at, updated_at) VALUES (?,?,?,?,?)",
+        ("s1", "ops", "old_name", "t", "t"),
+    )
+    _downgrade_to_v1(path)
+
+    migrated = open_database(path)
+
+    assert migrated is not None
+    assert _user_version(path) == SCHEMA_VERSION
+    rows = migrated.query("SELECT session_id, user, name FROM sessions")
+    assert rows == [{"session_id": "s1", "user": "ops", "name": ""}], "数据要保住，新列给默认值"
+
+
+def _structure(path):
+    """库的结构指纹：表名、每表**有序**的列定义、索引名。
+
+    刻意**不比 `sqlite_master.sql` 的文本**：ALTER TABLE 之后 SQLite 会用自己的
+    规范格式重写那段 DDL（缩进、换行全变），文本相同是不可能的。要比的是结构。
+    """
+    with sqlite3.connect(str(path)) as conn:
+        tables = sorted(
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        )
+        columns = {
+            t: [
+                (r[1], r[2], r[3], r[4])  # 名、类型、notnull、默认值（顺序即 cid 顺序）
+                for r in conn.execute(f"PRAGMA table_info({t})")
+            ]
+            for t in tables
+        }
+        indexes = sorted(
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND name NOT LIKE 'sqlite_autoindex_%'"
+            )
+        )
+    return tables, columns, indexes
+
+
+def test_migrated_db_matches_fresh_db(tmp_path):
+    """迁移出来的结构与全新建库**必须一致**——两条路径分叉是迁移最经典的翻车方式。
+
+    比结构而非文本；**列顺序也在比较范围内**（迁移用 ALTER 只能追加到末尾，
+    所以全新建库的 DDL 也把新列写在末尾，两者列序才对得上）。
+    """
+    fresh_path, migrated_path = tmp_path / "fresh.db", tmp_path / "old.db"
+    open_database(fresh_path)
+
+    open_database(migrated_path)
+    _downgrade_to_v1(migrated_path)
+    open_database(migrated_path)
+
+    assert _structure(fresh_path) == _structure(migrated_path)
+
+
+def test_migration_can_be_named_again(tmp_path):
+    """升级后唯一索引要真的生效——迁移里漏建索引的话这里会挂。"""
+    path = tmp_path / "ops.db"
+    open_database(path)
+    _downgrade_to_v1(path)
+    db = open_database(path)
+
+    db.execute(
+        "INSERT INTO sessions (session_id, user, name, created_at, updated_at) VALUES (?,?,?,?,?)",
+        ("s1", "ops", "dup", "t", "t"),
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute(
+            "INSERT INTO sessions (session_id, user, name, created_at, updated_at) "
+            "VALUES (?,?,?,?,?)",
+            ("s2", "ops", "dup", "t", "t"),
+        )
 
 
 # -- 版本双向校验 -----------------------------------------------------------

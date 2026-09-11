@@ -35,19 +35,35 @@ from typing import Any, Iterator, Sequence
 logger = logging.getLogger("ops_agent.storage.db")
 
 # 当前 schema 版本。改动 DDL 时**必须**递增，并在 _migrate 里补上追加式迁移。
-SCHEMA_VERSION = 1
+#   v1 (2026-09-11 M4 第一批)：六张表
+#   v2 (2026-09-11 M4 第二批)：sessions 加 name 列 + (user, name) 部分唯一索引
+SCHEMA_VERSION = 2
 
 # 建表语句（幂等）。顺序即执行顺序。
 _DDL: tuple[str, ...] = (
     """
+    -- `name` 刻意排在**最后**：它由 v2 的 ALTER TABLE 追加，而 ALTER 只能加在末尾。
+    -- 这样「全新建库」与「v1 迁移上来」两条路径的**列序也一致**（有测试锁结构指纹）。
+    -- 若把它插在 user 后面，两条路径的列序会不同——所有查询都显式写列名所以功能无碍，
+    -- 但将来有人写 `INSERT INTO sessions VALUES (...)` 就会在新库上正常、在旧库上炸。
     CREATE TABLE IF NOT EXISTS sessions (
         session_id TEXT PRIMARY KEY,
         user       TEXT NOT NULL DEFAULT '',
         title      TEXT NOT NULL DEFAULT '',
         status     TEXT NOT NULL DEFAULT 'active',
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        name       TEXT NOT NULL DEFAULT ''
     )
+    """,
+    # 会话名的唯一性：**限定在 user 内**（A 的 test_1 与 B 的 test_1 是两段不同对话），
+    # 且用**部分索引**排除空名——绝大多数会话没有名字，若直接 UNIQUE(user, name)，
+    # 同一 user 的第二个无名会话就会因 '' = '' 而插入失败。
+    # 建成独立索引而非表内约束，是为了让「新建库」与「v1→v2 迁移」走同一条语句
+    # （ALTER TABLE 加不了表级 UNIQUE 约束）。
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_name
+        ON sessions (user, name) WHERE name <> ''
     """,
     """
     CREATE TABLE IF NOT EXISTS messages (
@@ -224,13 +240,26 @@ def _apply_journal_mode(conn: sqlite3.Connection) -> str:
 def _migrate(conn: sqlite3.Connection, current: int) -> None:
     """把 schema 从 current 版本迁到 SCHEMA_VERSION。
 
-    当前只有 v0（全新文件）→ v1 一种迁移，即建表。后续加列时在此追加
-    `ALTER TABLE ... ADD COLUMN`（**只追加、不改名不删列**），并递增 SCHEMA_VERSION。
+    规则：**只追加、不改名不删列**。每加一版就在下面加一个 `if current < N` 分支，
+    并递增 SCHEMA_VERSION。旧分支**永不删除**——别人的 .db 文件可能停在任意旧版本。
+
+    注意新库（current=0）走的是完整 `_DDL`（它已经是最新结构），
+    旧库才逐版本补 —— 两条路径最终必须得到同一结构，有测试锁这一点。
     """
     if current == 0:
         for statement in _DDL:
             conn.execute(statement)
-    # 将来：if current < 2: conn.execute("ALTER TABLE ... ADD COLUMN ...")
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        return
+
+    if current < 2:
+        # v1 → v2：会话名（客户端可读的别名；session_id 仍是服务端生成的不可猜值）
+        conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_name "
+            "ON sessions (user, name) WHERE name <> ''"
+        )
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

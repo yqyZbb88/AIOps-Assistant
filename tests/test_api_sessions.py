@@ -160,7 +160,7 @@ def test_chat_creates_session_and_returns_id(chat_client):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body) == {"reply", "session_id"}
+    assert set(body) == {"reply", "session_id", "session_name"}
     assert body["session_id"], "不传 session_id 时应新建并在响应里回带"
     assert [s["session_id"] for s in chat_client.get("/sessions").json()] == [body["session_id"]]
 
@@ -206,6 +206,83 @@ def test_chat_works_when_storage_disabled(disabled_client):
     assert resp.status_code == 200
     assert resp.json()["reply"] == "[多轮]你好"
     assert resp.json()["session_id"] is None
+
+
+# -- /chat 会话名（客户端自定义别名） -----------------------------------------
+def test_chat_with_session_name_creates_named_session(chat_client):
+    """名字不存在就按它新建——这正是名字区别于 session_id 的地方。"""
+    body = chat_client.post(
+        "/chat", json={"user": "yqyZ", "message": "cpu", "session_name": "test_1"}
+    ).json()
+
+    assert body["session_name"] == "test_1"
+    assert body["session_id"], "内部仍用服务端生成的随机 id"
+    assert body["session_id"] != "test_1", "名字不是 id，不该混用"
+    listed = chat_client.get("/sessions").json()
+    assert [(s["name"], s["session_id"]) for s in listed] == [("test_1", body["session_id"])]
+
+
+def test_chat_with_same_name_continues_the_conversation(chat_client):
+    first = chat_client.post(
+        "/chat", json={"user": "yqyZ", "message": "第一问", "session_name": "test_1"}
+    ).json()
+
+    second = chat_client.post(
+        "/chat", json={"user": "yqyZ", "message": "第二问", "session_name": "test_1"}
+    ).json()
+
+    assert second["session_id"] == first["session_id"], "同名应续上同一段对话"
+    assert [m.content for m in chat_client.agent.seen[1]] == ["第一问", "[多轮]第一问"]
+
+
+def test_same_name_different_user_is_different_session(chat_client):
+    """名字限定在 user 内——否则所有人共用一套命名空间，会串到别人的对话。"""
+    a = chat_client.post(
+        "/chat", json={"user": "alice", "message": "hi", "session_name": "test_1"}
+    ).json()
+    b = chat_client.post(
+        "/chat", json={"user": "bob", "message": "hi", "session_name": "test_1"}
+    ).json()
+
+    assert a["session_id"] != b["session_id"]
+    assert len(chat_client.get("/sessions").json()) == 2
+
+
+def test_session_id_and_name_together_is_422(chat_client):
+    """同时给两个标识语义有歧义；歧义比报错危险，宁可拒绝。"""
+    resp = chat_client.post(
+        "/chat",
+        json={"user": "ops", "message": "hi", "session_id": "x", "session_name": "y"},
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("bad", ["含中文", "有 空格", "a" * 65, "", "斜杠/", "分号;"])
+def test_invalid_session_name_is_422(chat_client, bad):
+    """非法名字必须在**入参校验阶段**被挡住，不能一路走到存储层再变 500。"""
+    resp = chat_client.post(
+        "/chat", json={"user": "ops", "message": "hi", "session_name": bad}
+    )
+
+    assert resp.status_code == 422
+
+
+def test_session_name_absent_returns_null(chat_client):
+    """不传名字时响应里是 null，不是空串——空串会被误当成「有个名字叫空」。"""
+    body = chat_client.post("/chat", json={"user": "ops", "message": "hi"}).json()
+
+    assert body["session_name"] is None
+    assert body["session_id"]
+
+
+def test_unknown_session_id_still_404_even_with_name_support(chat_client):
+    """加了名字之后，未知 id 的语义不变：仍然 404，不静默重建。"""
+    resp = chat_client.post(
+        "/chat", json={"user": "ops", "message": "hi", "session_id": "ghost"}
+    )
+
+    assert resp.status_code == 404
 
 
 # -- 数据真的落盘（跨 Container 实例可读） ------------------------------------

@@ -348,7 +348,7 @@ python src/main.py
 | 方法/路径 | 说明 |
 |---|---|
 | `GET /health` | 健康检查 → `{"status","storage"}`（`storage` 为 `ok`/`degraded`） |
-| `POST /chat` | 请求 `{"user","message","session_id"?}` → `{"reply","session_id"}` |
+| `POST /chat` | 请求 `{"user","message","session_id"?,"session_name"?}` → `{"reply","session_id","session_name"}` |
 | `POST /alert` | Alertmanager webhook 推送 → `AlertAck` |
 | `GET /alerts/recent?limit=` | 最近被动接收的告警记录 |
 | `GET /alerts/active` | 实时活动告警（监控源故障转 502） |
@@ -364,9 +364,17 @@ python src/main.py
 > （M4 第二批，属追加而非修改——不传时行为与改造前完全一致）。写命令待审批时
 > `/chat` 仍返回 `{"reply": str}`，只是 `reply` 内容是待审批提示。
 >
-> **多轮**：不传 `session_id` → 新建会话（行为同改造前，每次调用独立）；
-> 传上次回带的 `session_id` → 带上该会话的历史，Agent 接得上上句。
-> 未知 `session_id` → 404（**不静默重建**，否则 `DELETE` 形同虚设）。
+> **多轮**：会话标识二选一，**同时给会被判 422**（歧义比报错危险）。
+>
+> | 传什么 | 语义 |
+> |---|---|
+> | 都不传 | 新建未命名会话（行为同改造前，每次调用独立） |
+> | `session_id` | 用上次回带的**服务端生成 id**。**必须已存在**，未知 → 404（不静默重建，否则 `DELETE` 形同虚设） |
+> | `session_name` | **客户端自定义别名**（字母数字与 `_ . -`，≤64 字符）。**没有就按这个名字新建**——这是它区别于 `session_id` 的全部意义 |
+>
+> **名字限定在 `user` 内**：A 的 `test_1` 与 B 的 `test_1` 是两段不同对话。
+> `session_id` 仍是服务端生成的 32 位随机值（**不可猜**）；名字只是客户端用的可读别名——
+> 注意**名字是能猜的**，本服务无鉴权，所以别把敏感内容寄托在「名字别人不知道」上。
 
 > ⚠️ `/sessions/*` 是**无鉴权的读接口**，会把对话原文整段吐出来（可能含主机名、报错原文、
 > 运维细节）。`server.host` 默认 127.0.0.1 是目前唯一的缓解；绑 `0.0.0.0` 前请先加鉴权。
@@ -393,14 +401,15 @@ Agent 写命令的审批链路用**真 graph + 脚本化假模型**离线验证
 拒绝不执行 / 审批 id 单次性 / 非法决策不毒化线程 / 只读工具不被打断」，并有一条**端到端装配**
 用例覆盖「容器 → 工厂 → OpsAssistant → 执行」整条接线。持久化与对话历史（M4）的用例同样全离线：`test_sqlite_db.py`（建表幂等、schema 版本
 **双向校验**、开库失败降级、连接确实被关闭）、`test_session_store.py`（同一组断言跑
-SQLite 与内存两套实现）、`test_api_sessions.py`（端点 + 未启用时的 503/空列表降级）、
+SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、**v1→v2 迁移**）、
+`test_api_sessions.py`（端点 + 未启用时的 503/空列表降级 + 会话名端到端与格式校验）、
 `test_chat_history.py`（历史注入、会话落库、读写失败降级）、
 `test_history_capable.py`（**真 graph** 跑多轮×审批的跨模块接线：中断落 pending、
 审批后原地回填、链式审批、作废）、`test_history_store.py`（三表归档、关联键、重投幂等、
 截断、清理）、`test_api_alerts.py`（`POST /alert` → `/alerts/history` 端到端 + 归档失败
 不影响告警接收）、`test_logger.py`（审计落盘的幂等挂载与开关语义）。
 
-**当前基线：342 passed。**
+**当前基线：371 passed。**
 
 ---
 

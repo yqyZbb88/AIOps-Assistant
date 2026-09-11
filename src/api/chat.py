@@ -9,10 +9,14 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.core.agent import OpsAgent
-from src.interfaces.session import SessionNotFoundError
+from src.interfaces.session import (
+    SESSION_NAME_MAX_CHARS,
+    SessionNotFoundError,
+    validate_session_name,
+)
 
 logger = logging.getLogger("ops_agent.api.chat")
 
@@ -20,16 +24,57 @@ router = APIRouter()
 
 
 class ChatRequest(BaseModel):
-    """/chat 请求体。"""
+    """/chat 请求体。
 
-    user: str = Field(..., description="调用方标识，如 'ops'")
+    会话标识二选一，**不能同时给**（同时给会被判 422）：
+
+    - `session_id`：服务端生成的随机 id，回传给下一轮用。**必须已存在**，未知则 404。
+      用它是拿不到「自己起的名字」的——那是 `session_name` 的用途。
+    - `session_name`：客户端自定义的别名（如 `test_1`）。**没有就用这个名字新建**，
+      这是它区别于 `session_id` 的全部意义。
+
+    注意：**不要把 `user` 当会话键**——同一人开两个话题会互相污染，多用户共用一个
+    标识（本服务无鉴权，前端常这么写）更会让所有人串进同一条对话。`user` 只用于
+    「给会话名划定作用域」（A 的 `test_1` 与 B 的 `test_1` 是两段不同对话）。
+    """
+
+    user: str = Field(..., description="调用方标识，如 'ops'；同时是会话名的作用域")
     message: str = Field(..., min_length=1, description="用户输入的消息")
-    # 可选的会话 id：**不要拿 user 当会话键**——同一人开两个话题会互相污染，多用户
-    # 共用一个标识（本服务无鉴权，前端常这么写）更会让所有人串进同一条对话。
-    # 不传则新建一个会话，并在响应里回带其 id。
     session_id: str | None = Field(
-        None, description="会话 id；不传则新建会话（响应恒回带 session_id）"
+        None, description="服务端生成的会话 id（须已存在，未知则 404）"
     )
+    session_name: str | None = Field(
+        None,
+        description=f"自定义会话名（字母数字与 _.-，最长 {SESSION_NAME_MAX_CHARS}）；"
+                    "不存在则按此名新建会话",
+    )
+
+    @field_validator("session_name")
+    @classmethod
+    def _check_name(cls, value: str | None) -> str | None:
+        """在**入参校验阶段**卡住非法名字（长度 / 字符集）。
+
+        放这里的理由与 `approval.action` 用 `Literal` 一样：非法输入应当直接 422，
+        不要让它一路走到存储层再变成一个 500。白名单而非黑名单——见
+        `interfaces/session.py::validate_session_name` 的说明。
+        """
+        if value is None:
+            return None
+        try:
+            return validate_session_name(value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @model_validator(mode="after")
+    def _reject_both(self) -> "ChatRequest":
+        """两个会话标识只能给一个。
+
+        都给的话语义有歧义（是按 id 续聊，还是按名字？）——而**歧义比报错危险**：
+        实现会挑一个执行，调用方却以为另一个生效了。宁可 422 让它显式选。
+        """
+        if self.session_id and self.session_name:
+            raise ValueError("session_id 与 session_name 只能给一个（同时给语义有歧义）")
+        return self
 
 
 class ChatResponse(BaseModel):
@@ -39,20 +84,36 @@ class ChatResponse(BaseModel):
     session_id: str | None = Field(
         None, description="本次使用的会话 id（持久化未启用时为 null）"
     )
+    session_name: str | None = Field(
+        None, description="本次使用的会话名（未命名会话为 null）"
+    )
 
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, request: Request) -> ChatResponse:
     """接收用户消息，经 OpsAgent 返回回复（Agent-first + 关键词兜底）。
 
-    持久化启用时同一 session_id 的多轮会带上历史（Agent 接得上上句）。
-    未知 session_id → 404（不静默重建，否则 DELETE 形同虚设）。
+    持久化启用时，同一 `session_id` 或 `session_name` 的多轮会带上历史。
+    未知 `session_id` → 404；`session_name` 不存在则按此名新建。
     """
     agent: OpsAgent = request.app.state.agent
-    logger.info("收到消息 from=%s session=%s: %s", req.user, req.session_id, req.message)
+    logger.info(
+        "收到消息 from=%s session_id=%s session_name=%s: %s",
+        req.user, req.session_id, req.session_name, req.message,
+    )
     try:
-        turn = agent.chat_turn(req.message, session_id=req.session_id)
+        turn = agent.chat_turn(
+            req.message,
+            session_id=req.session_id,
+            session_name=req.session_name,
+            user=req.user,
+        )
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    logger.info("回复 from=%s session=%s: %s", req.user, turn.session_id, turn.reply)
-    return ChatResponse(reply=turn.reply, session_id=turn.session_id)
+    logger.info(
+        "回复 from=%s session=%s(%s): %s",
+        req.user, turn.session_id, turn.session_name, turn.reply,
+    )
+    return ChatResponse(
+        reply=turn.reply, session_id=turn.session_id, session_name=turn.session_name
+    )
