@@ -1,11 +1,286 @@
-"""SQLite 持久化（搁置项，仅预留）。
+"""SQLite 持久化底座：连接工厂 + 建表 + 版本校验。
 
-TODO(后续阶段)：把 AlertStore 的内存缓冲落盘，支持服务重启后仍能查询历史告警。
-当前内存实现见 src/storage/memory.py（进程内有效，重启清空）。
+本模块**只是底座**，不含业务语义；各存储实现（storage/session.py、storage/history.py）
+在它之上写 SQL。分层上属叶子层，**不 import langchain**，core 也不直接用它。
 
-预留的演进方向：
-    - 告警记录表（webhook 摘要，主键 fingerprint/startsAt）
-    - 处置/审计结果归档（rule_engine + actions 输出，便于事后审计）
-    - 依赖 SQLAlchemy 或标准库 sqlite3，由 settings.yaml 控制开关与文件路径
-本文件当前无实现，仅保留占位，避免未来改动面过大。
+设计要点（每一条都对应一个踩过的坑，改动前先读）：
+
+1. **每操作新开连接**，`check_same_thread` 保持默认 True。
+   sqlite 打开成本约 0.1~0.5ms，本项目只有 /chat 与 /alert 两个低频同步路由，可忽略；
+   而共享一个连接跨线程用，风险不在性能而在**事务边界**——一个线程未提交的事务会被
+   另一个线程的 commit 带走，且必须放弃 `check_same_thread` 这层护栏。
+2. **必须 `with closing(...)` 关连接**：`with sqlite3.connect(p) as c:` 只提交/回滚事务，
+   **不关连接**。漏一个 handle，在 Windows 上就是 `database is locked`、db 文件删不掉、
+   或与 OneDrive 的同步冲突。
+3. `isolation_level=None` + 显式 `BEGIN IMMEDIATE`。默认的隐式 deferred 事务在
+   「先 SELECT 再 INSERT」时会做**读后升级写**，两个线程同时升级必有一个立刻 SQLITE_BUSY，
+   而 busy_timeout 对这种升级不可靠。
+4. **WAL 失败只回落，不关闭持久化**：仓库在 Desktop 下，OneDrive 常接管桌面，而
+   网络盘/同步盘不支持 WAL 所需的共享内存。此时回落 `journal_mode=DELETE` 并记 warning。
+5. **外键是假的**：`PRAGMA foreign_keys` 是**每连接**的且默认 OFF。本模块干脆不声明外键，
+   删除父子数据时由调用方显式同事务删除（见 storage/session.py 的 delete）。
+6. **版本双向校验**：`CREATE TABLE IF NOT EXISTS` 对「旧文件 + 新代码加列」是**静默**的
+   （表已存在就什么都不做），之后 INSERT 才报 no such column，再被上层降级吞掉。
+   所以用 `PRAGMA user_version` 主动比对：低于当前 → 迁移；**高于当前 → 拒绝使用**。
 """
+from __future__ import annotations
+
+import logging
+import sqlite3
+import threading
+from contextlib import contextmanager, closing
+from pathlib import Path
+from typing import Any, Iterator, Sequence
+
+logger = logging.getLogger("ops_agent.storage.db")
+
+# 当前 schema 版本。改动 DDL 时**必须**递增，并在 _migrate 里补上追加式迁移。
+SCHEMA_VERSION = 1
+
+# 建表语句（幂等）。顺序即执行顺序。
+_DDL: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        session_id        TEXT PRIMARY KEY,
+        user              TEXT NOT NULL DEFAULT '',
+        title             TEXT NOT NULL DEFAULT '',
+        status            TEXT NOT NULL DEFAULT 'active',
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL,
+        pending_approvals INTEGER NOT NULL DEFAULT 0
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS messages (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL,
+        seq         INTEGER NOT NULL,
+        role        TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'final',
+        approval_id TEXT,
+        created_at  TEXT NOT NULL,
+        UNIQUE (session_id, seq)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_messages_session_seq ON messages (session_id, seq)",
+    """
+    CREATE TABLE IF NOT EXISTS alerts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_key   TEXT NOT NULL,
+        alertname   TEXT NOT NULL,
+        severity    TEXT NOT NULL DEFAULT '',
+        instance    TEXT NOT NULL DEFAULT '',
+        summary     TEXT NOT NULL DEFAULT '',
+        status      TEXT NOT NULL DEFAULT 'firing',
+        starts_at   TEXT NOT NULL DEFAULT '',
+        ends_at     TEXT NOT NULL DEFAULT '',
+        received_at TEXT NOT NULL,
+        UNIQUE (alert_key, starts_at, status)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_alerts_received ON alerts (received_at)",
+    """
+    CREATE TABLE IF NOT EXISTS remediations (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_key    TEXT NOT NULL,
+        alertname    TEXT NOT NULL,
+        severity     TEXT NOT NULL DEFAULT '',
+        instance     TEXT NOT NULL DEFAULT '',
+        matched_rule TEXT NOT NULL DEFAULT '',
+        action       TEXT,
+        status       TEXT NOT NULL DEFAULT '',
+        detail       TEXT NOT NULL DEFAULT '',
+        executed_at  TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_remediations_key ON remediations (alert_key)",
+    """
+    CREATE TABLE IF NOT EXISTS ai_advice (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_key   TEXT NOT NULL,
+        alertname   TEXT NOT NULL,
+        severity    TEXT NOT NULL DEFAULT '',
+        instance    TEXT NOT NULL DEFAULT '',
+        advice      TEXT NOT NULL DEFAULT '',
+        analyzed_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_ai_advice_key ON ai_advice (alert_key)",
+    """
+    CREATE TABLE IF NOT EXISTS approval_decisions (
+        approval_id TEXT NOT NULL,
+        session_id  TEXT,
+        action      TEXT NOT NULL,
+        decided_at  TEXT NOT NULL
+    )
+    """,
+)
+
+# 建表 / 迁移的进程级锁。正常读写路径不碰它。
+_init_lock = threading.Lock()
+
+
+class DatabaseError(Exception):
+    """存储层不可用（开库失败 / 版本过新 / 迁移失败）。"""
+
+
+class Database:
+    """一个 sqlite 文件的连接工厂 + schema 管理。
+
+    实例本身很轻（只存路径），可被多个 store 共享；**不要把 Connection 存成实例属性**。
+    """
+
+    def __init__(self, path: str | Path, *, timeout: float = 5.0) -> None:
+        self.path = Path(path)
+        self.timeout = timeout
+        self.journal_mode = "unknown"
+
+    # -- 连接 ---------------------------------------------------------------
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        """开一个连接；退出时**必定关闭**（见模块 docstring 第 2 条）。
+
+        `isolation_level=None` → 关掉隐式事务，语句默认自动提交；
+        需要原子性的多语句写入请用 transaction()。
+        """
+        conn = sqlite3.connect(str(self.path), timeout=self.timeout, isolation_level=None)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 5000")
+            yield conn
+        finally:
+            conn.close()
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """显式写事务：BEGIN IMMEDIATE → 正常提交 / 异常回滚。
+
+        用 IMMEDIATE 而非默认的 deferred，避免「读后升级写」撞 SQLITE_BUSY
+        （见模块 docstring 第 3 条）。
+        """
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                conn.rollback()
+                raise
+            conn.commit()
+
+    # -- 便捷读写 -----------------------------------------------------------
+    def query(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
+        """执行查询，返回 dict 列表。"""
+        with self.connect() as conn:
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
+        """执行单条写语句（自动提交），返回受影响行数。"""
+        with self.connect() as conn:
+            return conn.execute(sql, params).rowcount
+
+    def executemany(self, sql: str, seq: Sequence[Sequence[Any]]) -> int:
+        """批量写（自动提交），返回受影响行数。"""
+        with self.connect() as conn:
+            return conn.executemany(sql, seq).rowcount
+
+    # -- 维护 ---------------------------------------------------------------
+    def checkpoint(self) -> None:
+        """把 WAL 内容合并回主库并截断 WAL。
+
+        删除行**不会**让 WAL 自动缩小，需低频调用本方法（由 purge 顺带触发）。
+        非 WAL 模式下是空操作。
+        """
+        if self.journal_mode != "wal":
+            return
+        try:
+            with self.connect() as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.Error as exc:  # 清理失败不影响主流程
+            logger.debug("WAL checkpoint 失败: %s", exc)
+
+    def __repr__(self) -> str:  # pragma: no cover - 调试用
+        return f"<Database {self.path} journal={self.journal_mode}>"
+
+
+# ---------------------------------------------------------------------------
+# 打开 / 初始化
+# ---------------------------------------------------------------------------
+def _apply_journal_mode(conn: sqlite3.Connection) -> str:
+    """尝试开启 WAL；失败则回落 DELETE（**不**让持久化整体失效）。"""
+    try:
+        mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        return str(mode).lower()
+    except sqlite3.Error as exc:
+        logger.warning(
+            "开启 WAL 失败（同步盘 / 网络盘常见），回落 journal_mode=DELETE: %s", exc
+        )
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+        except sqlite3.Error:
+            pass
+        return "delete"
+
+
+def _migrate(conn: sqlite3.Connection, current: int) -> None:
+    """把 schema 从 current 版本迁到 SCHEMA_VERSION。
+
+    当前只有 v0（全新文件）→ v1 一种迁移，即建表。后续加列时在此追加
+    `ALTER TABLE ... ADD COLUMN`（**只追加、不改名不删列**），并递增 SCHEMA_VERSION。
+    """
+    if current == 0:
+        for statement in _DDL:
+            conn.execute(statement)
+    # 将来：if current < 2: conn.execute("ALTER TABLE ... ADD COLUMN ...")
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def open_database(path: str | Path, *, timeout: float = 5.0) -> Database | None:
+    """打开（必要时初始化）数据库；**任何失败都返回 None**。
+
+    返回 None 表示持久化能力不可用，调用方应整体关闭该能力并让服务照常启动
+    ——与本项目既有的「缺 paramiko → 关闭写命令能力」是同一套降级约定。
+    """
+    db = Database(path, timeout=timeout)
+    try:
+        db.path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error("无法创建数据库目录 %s，持久化关闭: %s", db.path.parent, exc)
+        return None
+
+    try:
+        with _init_lock, closing(
+            sqlite3.connect(str(db.path), timeout=timeout, isolation_level=None)
+        ) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 5000")
+            db.journal_mode = _apply_journal_mode(conn)
+
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            if version > SCHEMA_VERSION:
+                # 文件来自更新的代码：**绝不写入**，否则可能损坏对方的数据
+                logger.error(
+                    "数据库 schema 版本 %d 高于本代码支持的 %d（文件来自更新版本的代码），"
+                    "持久化关闭以免写坏数据: %s",
+                    version, SCHEMA_VERSION, db.path,
+                )
+                return None
+
+            # 建表 + 迁移 + 写版本号作为一个原子事务。
+            # 注意 isolation_level=None 下 `with conn:` 是空操作（不自动开事务），
+            # 必须显式 BEGIN —— 否则建表成功但写版本号失败会留下「有表、版本仍是 0」的半成品。
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                _migrate(conn, version)
+            except BaseException:
+                conn.rollback()
+                raise
+            conn.commit()
+    except sqlite3.Error as exc:
+        logger.error("打开数据库失败，持久化关闭: %s（%s）", db.path, exc)
+        return None
+
+    logger.info(
+        "持久化已启用: %s（journal=%s, schema v%d）", db.path, db.journal_mode, SCHEMA_VERSION
+    )
+    return db

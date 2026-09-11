@@ -22,3 +22,10 @@ __pycache__/
 # 其它
 logs/
 *.log
+
+# SQLite 持久化产物（storage.db_path 默认落在 data/）
+# 务必连 -wal / -shm 一起排除：`*.db` 匹配不到这两个旁文件，而它们同样含会话原文
+data/
+*.db
+*.db-wal
+*.db-shm

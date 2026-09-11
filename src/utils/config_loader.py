@@ -82,6 +82,25 @@ class AlertSettings:
 
 
 @dataclass(frozen=True)
+class StorageSettings:
+    """SQLite 持久化配置。
+
+    `enabled` 的 dataclass 默认值是 **False**：测试里 `Settings()` 被直接构造多次
+    （create_app(settings=Settings())），默认打开会让用例写真实 db 文件、跨用例串数据。
+    出厂是否打开只由 config/settings.yaml 决定。
+    """
+
+    enabled: bool = False
+    db_path: str = "data/ops_agent.db"
+    session_ttl_hours: int = 72
+    max_sessions: int = 200
+    message_window: int = 20
+    history_ttl_hours: int = 168
+    max_history_rows: int = 5000
+    purge_interval_seconds: int = 60
+
+
+@dataclass(frozen=True)
 class LoggingSettings:
     level: str = "INFO"
     audit: bool = True
@@ -98,6 +117,7 @@ class Settings:
     llm: LLMSettings = LLMSettings()
     agent: AgentSettings = AgentSettings()
     alert: AlertSettings = AlertSettings()
+    storage: StorageSettings = StorageSettings()
     logging: LoggingSettings = LoggingSettings()
 
 
@@ -110,6 +130,7 @@ _SUB_MODELS: dict[str, type] = {
     "llm": LLMSettings,
     "agent": AgentSettings,
     "alert": AlertSettings,
+    "storage": StorageSettings,
     "logging": LoggingSettings,
 }
 

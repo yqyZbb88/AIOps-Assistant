@@ -34,6 +34,19 @@ alert:
   trend_minutes: 60        # 告警 AI 分析时取的实例历史趋势窗口（分钟）
   trend_step: "5m"         # 趋势采点步长
 
+storage:
+  # SQLite 持久化总开关。关闭 / 打不开（磁盘满、无写权限、文件版本过新）
+  # → 服务照常启动，只是退化回「不落盘」：会话、告警归档、AI 建议均不保存。
+  # 注意：代码里的 dataclass 默认值是 false，本文件的 true 才是「出厂打开」。
+  enabled: true
+  db_path: "data/ops_agent.db"   # 相对仓库根；WAL 会在同目录生成 -wal / -shm 两个旁文件
+  session_ttl_hours: 72          # 会话过期时长（小时），过期连同其消息一并清理
+  max_sessions: 200              # 会话数上限，超出按最旧淘汰
+  message_window: 20             # 每轮重发给模型的历史消息条数上限（限 token）
+  history_ttl_hours: 168         # 告警 / 处置 / AI 建议归档的过期时长（小时）
+  max_history_rows: 5000         # 上述三张归档表各自的行数上限
+  purge_interval_seconds: 60     # 清理节流间隔（秒），避免每次写都全表扫
+
 logging:
   level: INFO              # 日志级别（DEBUG / INFO / WARNING / ERROR）
   audit: true              # 是否启用动作审计日志（ops_agent.audit）
