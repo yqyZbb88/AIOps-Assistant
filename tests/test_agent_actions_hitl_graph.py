@@ -416,3 +416,74 @@ def test_container_wiring_injects_write_addendum(monkeypatch, tmp_path):
     enabled = Container(settings=Settings())._assistant_factory()
     assert WRITE_TOOLS_ADDENDUM in enabled.system_prompt
     assert enabled.checkpointer is not None
+
+
+# ---------------------------------------------------------------------------
+# 回归：本轮回答的取法（多轮的前置条件）
+# ---------------------------------------------------------------------------
+def test_last_ai_content_ignores_history(monkeypatch, fake_actions):
+    """回归：传了历史后，本轮 AI content 为空时**不得**返回上一轮的旧回答。
+
+    实测确认 `response["messages"]` 是**整条线程的累积 state**（输入 3 条 → 返回 4 条，
+    且首条就是输入首条），所以无脑反向扫全部消息会捞到历史里的 AI 文本返回给用户——
+    静默串味，比返回兜底文案更糟，因为它看起来像个正常答案。
+    修复前本用例返回「第一轮的旧回答：CPU 45%」。
+    """
+    from langchain_core.messages import AIMessage as _AI, HumanMessage as _Human
+
+    from src.agent.assistant import _last_ai_content
+
+    agent = _build_assistant(
+        monkeypatch, [AIMessage(content="")], fake_actions=fake_actions
+    )
+    response = agent.agent.invoke(
+        {"messages": [
+            _Human("第一轮：CPU 怎么样"),
+            _AI("第一轮的旧回答：CPU 45%"),
+            _Human("第二轮：那内存呢"),
+        ]},
+        config={"configurable": {"thread_id": "t-history"}},
+    )
+
+    assert _last_ai_content(response) == "抱歉，我暂时无法回答这个问题。"
+
+
+def test_last_ai_content_still_reads_current_turn(monkeypatch, fake_actions):
+    """止步于 human 不能把本轮回答也挡掉——这是上一条的对照组。"""
+    from langchain_core.messages import AIMessage as _AI, HumanMessage as _Human
+
+    from src.agent.assistant import _last_ai_content
+
+    agent = _build_assistant(
+        monkeypatch, [AIMessage(content="本轮的新回答")], fake_actions=fake_actions
+    )
+    response = agent.agent.invoke(
+        {"messages": [_Human("旧问题"), _AI("旧的回答"), _Human("新问题")]},
+        config={"configurable": {"thread_id": "t-history-2"}},
+    )
+
+    assert _last_ai_content(response) == "本轮的新回答"
+
+
+def test_pending_eviction_deletes_evicted_thread(monkeypatch, fake_actions):
+    """回归：待审批队列满而淘汰最旧一条时，必须连同它的 checkpoint 线程一起删。
+
+    否则 InMemorySaver 会随中断次数无限增长（线程泄漏）；被淘汰那条已不可能被续跑，
+    留着只有害处。`ApprovalStore.add()` 的返回值就是为调用方清理而设计的。
+    """
+    approvals = ApprovalStore(maxlen=1)
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"})],
+        fake_actions=fake_actions,
+        approvals=approvals,
+    )
+    deleted: list[str] = []
+    monkeypatch.setattr(agent, "_delete_thread", lambda tid: deleted.append(tid))
+
+    agent.reply("重启 nginx")
+    first_thread = approvals.list()[0]["thread_id"]
+    agent.reply("再重启一次")  # 容量 1 → 淘汰第一条
+
+    assert first_thread in deleted, "被淘汰的待审批项其线程未清理（泄漏）"
+    assert len(approvals.list()) == 1, "容量上限仍应生效（新的那条在）"

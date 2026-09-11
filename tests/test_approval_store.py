@@ -62,6 +62,21 @@ def test_maxlen_evicts_oldest_and_returns_it():
     assert len(store) == 2
 
 
+def test_evicted_record_carries_thread_id():
+    """回归：淘汰时返回的必须是**整条记录**，调用方要靠 thread_id 删 checkpoint 线程。
+
+    原先只返回 {"approval_id": ...}，调用方拿到后 `_delete_thread(None)` 静默无操作，
+    线程照旧泄漏——docstring 承诺的「返回是为了让调用方 delete_thread」根本没兑现。
+    """
+    store = ApprovalStore(maxlen=1)
+    store.add(_rec("a"))
+
+    evicted = store.add(_rec("b"))
+
+    assert evicted is not None
+    assert evicted["thread_id"] == "t-a", "缺 thread_id 则调用方无法清理其线程"
+
+
 def test_purge_expired_returns_records_and_drops_them():
     clock = FakeClock()
     store = ApprovalStore(ttl_seconds=60, clock=clock)

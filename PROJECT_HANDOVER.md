@@ -78,7 +78,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：264 passed**（2026-09-11 M4 第一批后；M4-1 新增 60 例：
+    **当前基线：269 passed**（2026-09-11 M4 第一批后；M4-1 新增 60 例：
     `test_sqlite_db.py` 15、`test_session_store.py` 43、`test_api_sessions.py` 13、
     container +4，减去重排的 15。M3 的 79 例其中
     `test_agent_actions_hitl_graph.py` 用**真 graph + 脚本化假模型**验证审批语义，
@@ -92,7 +92,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **264**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **269**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
 
     **特别注意「两处都写了同一件事」**：README 与本文件经常重复描述同一条约束
@@ -167,6 +167,9 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | **WAL 在网络盘 / 同步盘上开不起来**（2026-09-11 M4） | 仓库在 `Desktop` 下，OneDrive 常接管桌面，而同步盘不支持 WAL 所需的共享内存。开 WAL 失败要**回落 `journal_mode=DELETE` 并只记 warning**，不能整体关闭持久化——否则「能不能用历史」取决于一个无关的同步客户端。另：`PRAGMA user_version` 版本**高于**当前代码时（文件来自更新的代码）必须记 ERROR 并拒绝使用，**绝不写入**。 |
 | **TTL 靠字符串比较，时间戳格式必须逐字一致**（2026-09-11 M4） | 清理是 `WHERE created_at < cutoff` 的字典序比较，只有同为 UTC + `timespec="seconds"` 时才等价于时间序。写成别的精度或本地时区 → 比较恒为「未过期」，清理**静默失效**且不报错。格式原先在 6 个文件各写一遍，已收敛到 [src/utils/time.py](src/utils/time.py)，**别再写第 7 份**。 |
 | **审批中断要标「整轮」，不能只标 assistant 那行**（2026-09-11 M4） | 一轮 = user + assistant 两行。若只有 assistant 行是 `pending_approval`、user 行仍是 `final`，下一轮的历史窗口里就会出现一条**没有回答的提问**，模型会把旧问题当新问题再答一遍。两行必须共享同一个 `status` / `approval_id`（见 `SessionStore.append_turn`）。 |
+| **`invoke` 返回的 `messages` 是「整条线程的累积 state」，含你传进去的历史**（2026-09-11 实测） | 输入 3 条 → 返回 4 条，且**首条就是输入首条**。因此 `_last_ai_content` 若反向扫全部消息，本轮 AI 的 content 为空时（模型没给文本 / 中断轮）会捞到**上一轮的旧回答**返回给用户——静默串味，看起来像个正常答案，比返回兜底文案危险得多。规矩：取本轮回答要**止步于最后一条 human 消息**（见 `_last_ai_content`）。回归用例 `test_last_ai_content_ignores_history`。 |
+| **存储层「返回被淘汰的记录」必须返回整条，不能只回 id**（2026-09-11 修） | `ApprovalStore.add()` 原返回 `{"approval_id": …}`，而 docstring 声称「返回是为了让调用方 delete_thread」——调用方拿到后只能 `_delete_thread(None)`，静默无操作，**线程照旧泄漏**。契约与实现不符时，最危险的不是报错而是「看起来做了」。凡返回值声称供调用方清理/续作用途的，必须带上它真正需要的字段。 |
+| **单例服务里的惰性构建必须加锁**（2026-09-11 修） | `ChatService` 是单例、路由跑在线程池，`_ensure_assistant` 无锁时并发首聊会各建一个 Agent——**连带各建一份 `ApprovalStore` 与 `InMemorySaver`**，于是待审批项与 checkpoint 线程分散到两个实例，表现为「刚批准的命令找不到线程」。修法是持锁 + 双检（锁只护首次构建）。加任何新的惰性单例时照此办理。 |
 
 ### 既定决策记录（勿推翻）
 
@@ -378,6 +381,23 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ---
 
+## M4 前置修复（2026-09-11）三个既有 bug
+
+在开第二批（多轮接线）之前先修掉的三个**已存在**的问题。第一个是多轮的**阻塞项**
+（不修则带历史的一轮必现故障），后两个不修也能跑，但分别导致「同一会话两个 store 实例」
+与「checkpoint 线程泄漏」。测试 264 → 269。
+
+1. **`_last_ai_content` 扫全量消息 → 捞历史**（[assistant.py](src/agent/assistant.py)）：
+   先写 spike 脚本实测确认了前提（`invoke` 返回的 `messages` **含输入历史**），再改。
+   修法**不是**原计划的「传 skip 下标」——`decide()` 的续跑路径拿不到那个下标；
+   改为**止步于最后一条 human 消息**，在多轮 / 续跑 / 中断重入三种情形下都恰好是本轮产出。
+2. **`ApprovalStore.add()` 返回值缺 `thread_id`**：docstring 说返回值供调用方
+   `delete_thread`，实际只回 `{"approval_id": …}`，调用方无从删线程 → 泄漏照旧。
+   这是**根因在存储层**、而最初的修复只动调用方（`_register_pending`）时被回归测试当场抓出来的。
+3. **`_ensure_assistant` 无锁竞态**（[core/chat.py](src/core/chat.py)）：加锁 + 双检。
+
+---
+
 ## M4 第一批（2026-09-11）持久化底座 + 会话表
 
 「对话历史维护 + 状态日志持久化」五阶段里的**前两阶段**。设计见「路线图」，
@@ -445,7 +465,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 264 passed（2026-09-11 M4 第一批后）
+python -m pytest tests -q            # 目前 269 passed（2026-09-11 M4 第一批后）
                                      #   M4-1 新增：sqlite_db 15、session_store 43（两种实现
                                      #     跑同一组契约断言）、api_sessions 13、container +4
                                      #   M3 相关：agent_actions_catalog 16、agent_action_source 12、

@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Callable
 
 from src.core import capabilities
@@ -96,6 +97,8 @@ class ChatService:
         self._assistant_factory = assistant_factory
         self._assistant: Assistant | None = None
         self._agent_broken = assistant_factory is None
+        # 只护「首次构建」，见 _ensure_assistant 的 docstring
+        self._assistant_lock = threading.Lock()
         # 规则按优先级从高到低排列，第一条命中生效；动态 handler 与 Agent 工具转发
         # 同一批 capabilities 纯函数（src/core/capabilities.py），无 LLM 时产出同款规范文案
         self._rules = [
@@ -170,14 +173,27 @@ class ChatService:
         return assistant.decide(approval_id, action=action, reason=reason)
 
     def _ensure_assistant(self) -> Assistant | None:
-        """首次聊天时经工厂构建 Agent 并缓存；构建失败标记 broken 后回落。"""
+        """首次聊天时经工厂构建 Agent 并缓存；构建失败标记 broken 后回落。
+
+        **必须持锁 + 双检**：ChatService 是单例，而 FastAPI 的同步路由跑在线程池里，
+        两个并发请求会同时看到 `_assistant is None` 各建一个 Agent——那不只是多建一个
+        对象：工厂里还会各建一份 `ApprovalStore` 与 `InMemorySaver`，于是**待审批项与
+        checkpoint 线程会分散到两个实例里**，表现为「刚批准的命令找不到线程」。
+        锁只护首次构建，构建完成后走无锁快路径。
+        """
         if self._assistant is not None:
             return self._assistant
         if self._agent_broken or self._assistant_factory is None:
             return None
-        try:
-            self._assistant = self._assistant_factory()
-        except Exception as exc:  # 未装 langchain / .env 缺 key / init 失败等
-            self._agent_broken = True
-            logger.warning("Agent 构建不可用，回落关键词引擎: %s", exc)
-        return self._assistant
+        with self._assistant_lock:
+            # 双检：等锁期间可能已被别的线程建好了
+            if self._assistant is not None:
+                return self._assistant
+            if self._agent_broken:
+                return None
+            try:
+                self._assistant = self._assistant_factory()
+            except Exception as exc:  # 未装 langchain / .env 缺 key / init 失败等
+                self._agent_broken = True
+                logger.warning("Agent 构建不可用，回落关键词引擎: %s", exc)
+            return self._assistant

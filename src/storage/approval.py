@@ -51,9 +51,12 @@ class ApprovalStore:
 
     # -- 写入 --------------------------------------------------------------
     def add(self, record: dict[str, Any]) -> dict[str, Any] | None:
-        """存入一条待审批记录（须含 approval_id）；超容量时返回被淘汰的记录，否则 None。
+        """存入一条待审批记录（须含 approval_id）；超容量时返回**被淘汰的整条记录**，否则 None。
 
-        返回被淘汰记录是为了让调用方 delete_thread —— 不返回就等于泄漏线程。
+        返回被淘汰记录是为了让调用方 `delete_thread` —— 不返回就等于泄漏 checkpoint 线程。
+        **必须返回完整记录而非只有 approval_id**：调用方要的是 `thread_id`，
+        只给 id 等于没给（2026-09-11 修：原先只回 `{"approval_id": …}`，调用方拿到后
+        无从删除线程，`_delete_thread(None)` 静默无操作，泄漏照旧发生）。
         """
         approval_id = record["approval_id"]
         record.setdefault("created_at", _now_iso())
@@ -62,10 +65,11 @@ class ApprovalStore:
         evicted: dict[str, Any] | None = None
         while len(self._order) >= self.maxlen:
             oldest = self._order.popleft()
-            self._records.pop(oldest, None)
+            dropped = self._records.pop(oldest, None)
             logger.warning("待审批队列已满，淘汰最旧的一条: %s（该写命令不会执行）", oldest)
             if evicted is None:
-                evicted = {"approval_id": oldest}
+                # 兜底：记录已被别处移除时至少给出 id，避免返回 None 让调用方以为没淘汰
+                evicted = dropped if dropped is not None else {"approval_id": oldest}
         self._records[approval_id] = record
         self._order.append(approval_id)
         return evicted

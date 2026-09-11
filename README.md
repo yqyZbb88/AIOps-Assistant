@@ -383,7 +383,7 @@ Agent 写命令的审批链路用**真 graph + 脚本化假模型**离线验证
 **双向校验**、开库失败降级、连接确实被关闭）、`test_session_store.py`（同一组断言跑
 SQLite 与内存两套实现）、`test_api_sessions.py`（端点 + 未启用时的 503/空列表降级）。
 
-**当前基线：264 passed。**
+**当前基线：269 passed。**
 
 ---
 

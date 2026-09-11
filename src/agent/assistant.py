@@ -156,9 +156,21 @@ def _render_pending(approval_id: str, interrupt_value: dict) -> str:
 
 
 def _last_ai_content(response: dict[str, Any]) -> str:
-    """从 agent.invoke 返回的 response 中取最后一条有内容的 AI 消息文本。"""
-    messages = response.get("messages", [])
-    for msg in reversed(messages):
+    """取**本轮**最后一条有内容的 AI 消息文本。
+
+    **反向扫必须止步于本轮的用户消息。** `response["messages"]` 是**整条线程的累积
+    state**（含历史——已实测：输入 3 条 → 返回 4 条，且首条就是输入首条），无脑扫全部
+    消息时，本轮 AI 的 content 若为空（模型没给文本 / 中断轮），就会捞到**上一轮的旧回答**
+    返回给用户——静默串味，比返回兜底文案更糟，因为它看起来像个正常答案。
+    回归见 tests/test_agent_actions_hitl_graph.py::test_last_ai_content_ignores_history。
+
+    止步于 human 而不是「跳过前 N 条」：decide() 的续跑路径拿不到「本轮输入条数」
+    （resume 不新增用户消息，response 是整条线程 state），而「最后一条 human 之后」
+    在多轮、续跑、中断重入三种情形下都恰好是本轮产出。
+    """
+    for msg in reversed(response.get("messages", [])):
+        if getattr(msg, "type", "") == "human":
+            break  # 本轮起点：再往前都是历史
         # msg.type == "ai" 且 content 非空才算最终回答（工具调用轮 content 常为空）
         if getattr(msg, "type", "") == "ai" and msg.content:
             return content_text(msg.content)
@@ -383,7 +395,10 @@ class OpsAssistant:
             raise ApprovalError("写命令中断但缺少审批存储或线程信息，无法登记")
         approval_id = uuid4().hex[:12]
         actions = tuple(interrupt_value.get("action_requests") or ())
-        self.approvals.add(
+        # add() 的返回值是**被容量上限淘汰掉的那条**（没淘汰则为 None）。
+        # 它再也不可能被续跑了，必须连同其 checkpoint 线程一起清掉——否则 InMemorySaver
+        # 会随中断次数无限增长（线程泄漏）。这个返回值就是为调用方清理而设计的。
+        evicted = self.approvals.add(
             {
                 "approval_id": approval_id,
                 "thread_id": thread_id,
@@ -392,6 +407,12 @@ class OpsAssistant:
                 "created_at": _now_iso(),
             }
         )
+        if evicted is not None:
+            self._delete_thread(evicted.get("thread_id"))
+            logger.warning(
+                "待审批队列已满，淘汰最旧一条 id=%s（其命令将永不执行）",
+                evicted.get("approval_id"),
+            )
         logger.warning(
             "写命令待人工审批 id=%s 工具=%s（未批准前不会执行）",
             approval_id, [a.get("name") for a in actions],

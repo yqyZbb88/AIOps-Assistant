@@ -1,6 +1,9 @@
 """ChatService / OpsAgent：Agent-first 回落、关键词兜底、告警编排（离线）。"""
 from __future__ import annotations
 
+import threading
+import time
+
 from src.core.agent import OpsAgent
 from src.core.analysis import AlertAnalyzer
 from src.core.chat import ChatService, DEFAULT_REPLY
@@ -47,6 +50,39 @@ def test_chat_fallback_disk_and_alerts_and_status(fakemonitor):
 def test_chat_unmatched_message_returns_default(fakemonitor):
     svc = ChatService(fakemonitor)
     assert svc.reply("讲个笑话") == DEFAULT_REPLY
+
+
+def test_ensure_assistant_builds_once_under_concurrency(fakemonitor):
+    """并发首聊只能构建一次 Agent（ChatService 是单例，路由跑在线程池里）。
+
+    构建两次的后果**不只是**多一个对象：工厂里还会各建一份 ApprovalStore 与
+    InMemorySaver，于是待审批项与 checkpoint 线程分散到两个实例——表现为
+    「刚批准的命令找不到线程」。修复前本用例会稳定失败。
+    """
+    built: list[int] = []
+
+    class FakeAssistant:
+        def reply(self, message: str) -> str:
+            return f"[Agent]{message}"
+
+    def factory():
+        built.append(1)
+        time.sleep(0.05)  # 放大竞态窗口：没有锁时 8 个线程会全部挤进来
+        return FakeAssistant()
+
+    svc = ChatService(fakemonitor, assistant_factory=factory)
+    results: list[str] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(svc.reply("hi")))
+        for _ in range(8)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(built) == 1, f"工厂被调用了 {len(built)} 次（应为 1）"
+    assert results == ["[Agent]hi"] * 8
 
 
 def test_chat_agent_first_then_fallback(fakemonitor):
