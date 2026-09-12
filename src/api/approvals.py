@@ -3,13 +3,19 @@
 Agent 的写命令（config/agent_actions.yaml）在执行前会中断，等人工在这里决策。
 这是**唯一**能让写命令真正执行的入口。
 
-安全提示（残余风险，部署前须知晓）：
-本服务当前没有任何鉴权；/approvals/* 是一个「能执行白名单写命令」的句柄。
+鉴权（config/settings.yaml 的 auth 段）：
+启用后本组路由要求 `Authorization: Bearer <密钥>`（见 src/api/deps.py）。
+
+**注意 /approvals/* 没有「归属」维度**：审批记录是全局的（uuid4 键），
+`PendingApproval` 不带用户，因此**任何持有效密钥的人都能列出并批准所有人的待执行
+写命令**。多身份部署下这是个已知缺口，已登记在 PROJECT_HANDOVER 路线图。
+
+未启用 auth 时仍是**无鉴权**状态；/approvals/* 是一个「能执行白名单写命令」的句柄。
 缓解措施：审批 id 为随机不可枚举值、server.host 默认仅 127.0.0.1、白名单固定。
 **注意：原设计还有一条「出厂 agent_actions.enabled=false」的缓解，但 2026-09-10 起本仓库
 已把该能力打开，这条不再成立**——写通道现在是活的。
-**若要把服务绑到 0.0.0.0，请先自行加一层鉴权（如共享密钥头），否则任何能访问端口的人
-都可能批准写命令。** 详见 README「安全说明」与 PROJECT_HANDOVER 路线图。
+**绑到 0.0.0.0 之前请务必打开 auth**，否则任何能访问端口的人都可能批准写命令。
+详见 README「安全说明」。
 """
 from __future__ import annotations
 

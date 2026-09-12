@@ -1,4 +1,17 @@
-"""告警路由：POST /alert 接收、GET /alerts/recent、GET /alerts/active、GET /alerts/history。"""
+"""告警路由：POST /alert 接收、GET /alerts/recent、GET /alerts/active、GET /alerts/history。
+
+鉴权（config/settings.yaml 的 auth 段）：
+启用后本组路由要求 `Authorization: Bearer <密钥>`，**POST /alert 也不例外**。
+
+⚠️ 因此打开 auth 之后，**必须在 Alertmanager 侧同步配置**，否则告警会被静默 401：
+在 receiver 的 `webhook_configs` 里给它加 `http_config.authorization`
+（`type: Bearer` + 密钥），具体键名以你所用的 Alertmanager 版本文档为准。
+漏配的表现是「服务侧一条告警都收不到」，而 Alertmanager 那边的日志才看得到 401。
+
+为什么不豁免 /alert：这条路径能让 RuleEngine 按 rules.yaml 执行白名单写命令
+（core/agent.py 的 process_alert），留一条无鉴权入口等于把写命令暴露给任何能访问
+端口的人。详见 README「安全说明」。
+"""
 from __future__ import annotations
 
 import logging

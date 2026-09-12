@@ -53,3 +53,16 @@ logging:
   audit_file: "logs/audit.log"   # 审计落盘路径（相对仓库根）；留空 = 只进 console
   audit_max_bytes: 5242880       # 单个文件上限（5 MiB），超出轮转
   audit_backup_count: 3          # 保留的轮转份数（audit.log.1 / .2 / .3）
+
+auth:
+  # 共享密钥鉴权：身份由密钥推断（服务端事实），不再采信请求体里自报的用户名。
+  # 关闭时服务行为与改造前完全一致——无身份，因此也不做会话所有者校验。
+  # 代码里的 dataclass 默认值同样是 false，与 storage.enabled 同理：测试里
+  # Settings() 被直接构造多次，默认打开会让既有用例集体 401。出厂值只由本文件决定。
+  enabled: false
+
+  # 「密钥 → 身份」的 JSON 映射，例：{"k-alice-9f3a":"alice","k-bob-71cd":"bob"}
+  # 真实值走 .env 的 OPS_API_TOKENS（config/ 下不落任何明文密钥）。
+  # 单引号不能省：不加引号时，变量为空会解析成 null、变量有值会被 YAML 当成
+  # 流式映射解析成 dict；两者都会让启动校验失败。
+  tokens: '${OPS_API_TOKENS:-}'

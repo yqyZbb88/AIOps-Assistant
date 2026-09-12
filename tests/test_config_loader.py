@@ -69,3 +69,30 @@ def test_default_settings():
     s = Settings()
     assert s.server.port == 8000
     assert s.alert.trend_step == "5m"
+
+
+def test_auth_is_disabled_by_default():
+    """鉴权必须默认关：`create_app(settings=Settings())` 在测试里被调多次，
+    默认打开会让既有用例集体 401。出厂是否打开只由 config/settings.yaml 决定
+    （与 storage.enabled 同一条纪律）。"""
+    s = Settings()
+    assert s.auth.enabled is False
+    assert s.auth.tokens == ""
+
+
+def test_auth_section_is_parsed_from_yaml(tmp_path, monkeypatch):
+    """yaml 里的占位符**必须用单引号包住**，否则变量有值时会被 YAML 解析成流式映射
+    （dict），`_as_scalar` 再 `str()` 一下就成了单引号 repr，JSON 解析必炸。"""
+    monkeypatch.setenv("OPS_API_TOKENS_TEST", '{"k-alice": "alice"}')
+    cfg = tmp_path / "settings.yaml"
+    cfg.write_text(
+        "\n".join(["auth:", "  enabled: true", "  tokens: '${OPS_API_TOKENS_TEST:-}'", ""]),
+        encoding="utf-8",
+    )
+
+    settings = load_settings(cfg)
+
+    assert settings.auth.enabled is True
+    assert settings.auth.tokens == '{"k-alice": "alice"}'
+    # 关键：拿到的是**字符串**而不是被 YAML 解出来的 dict
+    assert isinstance(settings.auth.tokens, str)

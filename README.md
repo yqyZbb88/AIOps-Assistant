@@ -42,6 +42,7 @@ Assitant/
 ├── src/
 │   ├── main.py                # create_app()：装配 container → include api routers
 │   ├── api/                   # 薄 HTTP 层（依赖注入取 OpsAgent，无业务逻辑）
+│   │   ├── deps.py            #   ★ require_auth：共享密钥 → 身份（router 级依赖，fail-closed）
 │   │   ├── chat.py            #   POST /chat
 │   │   ├── alert.py           #   POST /alert、GET /alerts/recent、/alerts/active、/alerts/history
 │   │   ├── approvals.py       #   GET /approvals、POST /approvals/{id}（写命令人工审批）
@@ -100,6 +101,7 @@ Assitant/
 │       ├── config_loader.py   #   settings.yaml 解析 + 环境插值 + 默认兜底（ROOT_DIR）
 │       ├── logger.py          #   日志级别控制 + 审计 logger（ops_agent.audit）
 │       ├── time.py            #   ★ 统一时间戳格式（TTL 靠字符串比较，格式必须逐字一致）
+│       ├── auth.py            #   ★ 鉴权纯逻辑：密钥→身份 JSON 解析 + 常数时间比对（无 FastAPI）
 │       ├── security.py        #   敏感打码 redact_sensitive
 │       └── model_loader.py    #   ★ 模型单一入口：惰性复用 init.py + 进程内单例缓存
 └── tests/                     # 离线单测（conftest 提供 FakeMonitor / FakeLLM / FakeDiagnostics）
@@ -164,6 +166,7 @@ pip install -r requirements.txt
 | 动作审计日志 | settings.yaml · `logging.audit` | `true` | `false` → **只记失败**，成功执行静默（**非完全关闭**） |
 | 审计落盘 | settings.yaml · `logging.audit_file` | `logs/audit.log` | 留空则只进 console（重启即丢；审计的用处恰是事后追查） |
 | SQLite 持久化 | settings.yaml · `storage.enabled` | `true`（**yaml 里**） | 代码里 dataclass 默认 `false`，看出厂值以本文件为准；`false`/打不开 → 服务照常起，只是不落盘 |
+| **API 鉴权** | settings.yaml · `auth.enabled` | **`false`（关闭）** | 关闭 = 无身份、不做会话归属校验，行为与改造前一致；**绑 `0.0.0.0` 前必须打开**（见「安全说明」）。`true` 却没配密钥会**拒绝启动** |
 | 对外监听地址 | settings.yaml · `server.host` | `127.0.0.1` | 仅本机可访问；改 `0.0.0.0` 前先读「安全说明」的残余风险 |
 
 **rules.yaml 出厂 4 条规则，全部 `auto_execute: false`**——也就是说**当前没有任何无人值守的写路径**：
@@ -205,6 +208,8 @@ pip install -r requirements.txt
 | `logging.level/audit` | 日志级别 / 动作审计开关 |
 | `logging.audit_file` | 审计落盘路径（默认 `logs/audit.log`；留空 = 只进 console） |
 | `logging.audit_max_bytes/audit_backup_count` | 审计文件轮转上限（5 MiB）与保留份数（3） |
+| `auth.enabled` | 共享密钥鉴权开关（代码里 dataclass 默认 `false`，本文件才是出厂值） |
+| `auth.tokens` | 「密钥 → 身份」的 **JSON 映射**，形如 `{"k-alice-9f3a":"alice"}`；真实值走 `.env` 的 `OPS_API_TOKENS`。**yaml 里的占位符必须用单引号包住**（`'${OPS_API_TOKENS:-}'`），否则变量有值时会被 YAML 当成流式映射解析成 dict |
 
 ### config/actions.yaml（写命令目录，WRITE 边界）
 
@@ -336,6 +341,8 @@ commands:
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek 模型（init.py 读取） |
 | `PROMETHEUS_URL` | Prometheus 地址（缺省 localhost:9090） |
 | `SSH_PASSWORD_192_168_20_128` | 目标主机 root 密码：规则 SSH 动作、只读诊断、Agent 写命令三处共用 |
+| `OPS_API_TOKENS` | **API 共享密钥 → 身份** 的 JSON 映射，如 `{"k-alice-9f3a":"alice"}`。配合 `settings.yaml` 的 `auth.enabled`；用随机值生成（`python -c "import secrets;print(secrets.token_urlsafe(32))"`）。留空且 `auth.enabled: true` → **拒绝启动** |
+| `LANGSMITH_*`（4 个） | LangChain 链路追踪（`TRACING` / `ENDPOINT` / `API_KEY` / `PROJECT`）；由 langchain 直接读取，本仓库代码不引用，不配则只是不追踪 |
 
 ---
 
@@ -369,6 +376,9 @@ python src/main.py
 | `GET /sessions/{id}` | 会话元信息 + 全部消息（含 pending/abandoned）；未知 → 404，未启用 → 503 |
 | `DELETE /sessions/{id}` | 删除会话连同其消息，并**作废该会话的未决审批**；未知/已删 → 404，未启用 → 503 |
 
+> **鉴权**：`auth.enabled` 打开后，上表除 `GET /health` 外**全部**要求
+> `Authorization: Bearer <密钥>`（含 `POST /alert`，记得同步改 Alertmanager）。详见「安全说明」。
+>
 > `/approvals` 与 `/sessions` 是**新增路由**，原有五个路由的路径与语义均未改动。
 > 唯一的**字段扩充**是 `POST /chat`：请求加可选 `session_id`、响应恒回带 `session_id`
 > （M4 第二批，属追加而非修改——不传时行为与改造前完全一致）。写命令待审批时
@@ -441,12 +451,27 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
 截断、清理）、`test_api_alerts.py`（`POST /alert` → `/alerts/history` 端到端 + 归档失败
 不影响告警接收）、`test_logger.py`（审计落盘的幂等挂载与开关语义）。
 
-**当前基线：411 passed。**
+鉴权的用例也全离线：`test_utils_auth.py`（配置解析、**常数时间全量比对**、非 ASCII 凭据、
+启动期校验）、`test_api_auth.py`（逐路由 401、`/health` 与文档路由豁免、**枚举 `app.routes`
+兜底「没有路由漏挂」**、`enabled` 却无密钥时拒绝启动、配了密钥却没启用时的反向告警）。
+
+**当前基线：442 passed。**
 
 ---
 
 ## 安全说明
 
+- **API 鉴权（`settings.yaml` 的 `auth` 段，出厂关闭）**：启用后除 `GET /health`（探针豁免）
+  外**所有**接口都要求 `Authorization: Bearer <密钥>`，**身份由密钥推出**（服务端事实）——
+  请求体里自报的用户名一律不采信。密钥 → 身份 的映射走 `.env` 的 `OPS_API_TOKENS`。
+  `auth.enabled: true` 却解析不出任何密钥会**拒绝启动**（绝不「空密钥 = 放行」）。
+  **关闭时下面列的所有残余风险全部成立**，`server.host` 默认仅 127.0.0.1 是唯一的缓解。
+  ⚠️ **打开后必须同步配置 Alertmanager**：`POST /alert` 也挂了鉴权，要在 receiver 的
+  `webhook_configs` 里加 `http_config.authorization`（Bearer），否则告警会静默 401——
+  服务侧一条都收不到，只有 Alertmanager 的日志看得到。
+- **⚠️ `/sessions/*` 会吐出对话原文**：可能含主机名、报错原文、运维细节与写命令的参数。
+  未启用 `auth` 时 `GET /sessions` 会把**所有**会话的 id 直接列出来，任何能访问该端口的人
+  都能读到全部对话。启用 `auth` 后按身份过滤（只能看到自己的）。
 - **密钥只进 .env / 环境变量**：代码、`config/`、文档均不落明文。规则密码以
   `${SSH_PASSWORD_192_168_20_128}` 占位，加载时插值；变量未设置时插值为空，不会误连。
 - **动作审计**：写命令执行器（`CatalogCommandExecutor`）经 `plugins/common/audit.py` 统一向
@@ -465,12 +490,14 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
   sudo 只按目录逐条声明。调用后由 `HumanInTheLoopMiddleware` **在执行前中断**，
   经 `/approvals` 人工批准后才执行；写工具与审批策略在代码里**成对产出**
   （`WriteToolBundle`），结构上无法只取工具而不启用审批。
-- **⚠️ `/approvals/*` 目前没有鉴权**：任何能访问该端口且知道审批 id 的人都能批准写命令。
-  现有缓解：审批 id 为随机不可枚举值、`server.host` 默认仅 `127.0.0.1`、白名单固定且命令由管理员声明。
+- **⚠️ `/approvals/*` 是一条「能执行白名单写命令」的句柄**：未启用 `auth` 时，任何能访问该
+  端口且知道审批 id 的人都能批准写命令。启用 `auth` 后可挡住外部调用者，但**它没有「归属」
+  维度**——审批记录是全局的，**任何持有效密钥的人都能列出并批准所有人的待执行写命令**
+  （多身份部署下的已知缺口，已登记路线图）。
+  其他缓解：审批 id 为随机不可枚举值、`server.host` 默认仅 `127.0.0.1`、白名单固定且命令由管理员声明。
   **注意：原设计里还有一条「出厂 `enabled: false`」的缓解，但 2026-09-10 起本仓库已把该能力打开，
-  这条保护不再成立**——写通道现在是活的，只剩「只监听本机」这一层兜着。
-  **若要把服务绑到 `0.0.0.0` 或暴露到局域网，请先自行加鉴权（如共享密钥头），
-  或把 `agent_actions.yaml` 的 `enabled` 改回 `false`。**
+  这条保护不再成立**——写通道现在是活的。
+  **绑 `0.0.0.0` 前必须先打开 `auth`**，或把 `agent_actions.yaml` 的 `enabled` 改回 `false`。
 - **SSH host key**：演示环境使用 `AutoAddPolicy`；生产建议核对 known_hosts 后改用 RejectPolicy。
 - **提交前**：`.env` 与含密钥文件不要进版本库。仓库已于 2026-09-10 完成 `git init`，
   `.gitignore` 已忽略 `.env` / `__pycache__` / `.pytest_cache` / `.venv` / `参考/` /

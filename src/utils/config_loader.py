@@ -101,6 +101,24 @@ class StorageSettings:
 
 
 @dataclass(frozen=True)
+class AuthSettings:
+    """共享密钥鉴权配置。
+
+    `enabled` 的 dataclass 默认值是 **False**：与 StorageSettings.enabled 同理——
+    测试里 `Settings()` 被直接构造多次（`create_app(settings=Settings())`），
+    默认打开会让既有用例集体 401。出厂是否打开只由 config/settings.yaml 决定。
+
+    `tokens` 是「密钥 → 身份」的 **JSON 字符串原文**，解析在 `utils/auth.py`。
+    这里保持成字符串，是因为 yaml 的插值结果本就是字符串，而本模块只做类型规约
+    （见 `_as_scalar`）——不放 dict 字段，避免 `dict(value)` 那条路径把
+    单引号 repr 当成合法 JSON。
+    """
+
+    enabled: bool = False
+    tokens: str = ""
+
+
+@dataclass(frozen=True)
 class LoggingSettings:
     level: str = "INFO"
     audit: bool = True
@@ -124,6 +142,7 @@ class Settings:
     alert: AlertSettings = AlertSettings()
     storage: StorageSettings = StorageSettings()
     logging: LoggingSettings = LoggingSettings()
+    auth: AuthSettings = AuthSettings()
 
 
 # 顶层字段 → 子 dataclass 的映射
@@ -137,6 +156,7 @@ _SUB_MODELS: dict[str, type] = {
     "alert": AlertSettings,
     "storage": StorageSettings,
     "logging": LoggingSettings,
+    "auth": AuthSettings,
 }
 
 

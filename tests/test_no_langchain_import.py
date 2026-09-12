@@ -45,6 +45,9 @@ from src.storage import session as storage_session  # noqa: F401
 from src.storage import history as storage_history  # noqa: F401
 from src.utils import time as utils_time  # noqa: F401
 from src.api import sessions as sessions_api  # noqa: F401
+# 鉴权：纯逻辑只依赖 stdlib，FastAPI 接线也不能在 import 期读配置 / 拉重量依赖
+from src.utils import auth as utils_auth  # noqa: F401
+from src.api import deps as api_deps  # noqa: F401
 
 # 2) FakeMonitor + 聊天回落断言
 class FakeMonitor:
