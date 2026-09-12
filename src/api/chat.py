@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from src.core.agent import OpsAgent
 from src.interfaces.session import (
@@ -26,31 +26,33 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     """/chat 请求体。
 
-    会话标识二选一，**不能同时给**（同时给会被判 422）：
+    会话规则只有一条：**有 `session_id` 就用它续聊，没有就新建一段对话。**
 
-    - `session_id`：服务端生成的随机 id，回传给下一轮用。**必须已存在**，未知则 404。
-      用它是拿不到「自己起的名字」的——那是 `session_name` 的用途。
-    - `session_name`：客户端自定义的别名（如 `test_1`）。**没有就用这个名字新建**，
-      这是它区别于 `session_id` 的全部意义。
+    - `session_id`：服务端生成的随机 id，**选中会话的唯一方式**。须已存在，未知则 404。
+    - `session_name`：给新会话起个**给人识别的名字**（标签）。它**不参与选中会话**——
+      传名字永远不会接到旧对话上；想让某段对话接得上，把它的 `session_id` 带回来。
+      同时给了 `session_id` 和名字时，**名字被忽略**。
+
+    名字**不要求唯一**，同一个人可以有两段都叫「生产排查」的对话——这也是为什么
+    `GET /sessions` 里除了名字还要看 id/时间/标题来区分。
 
     注意：**不要把 `user` 当会话键**——同一人开两个话题会互相污染，多用户共用一个
-    标识（本服务无鉴权，前端常这么写）更会让所有人串进同一条对话。`user` 只用于
-    「给会话名划定作用域」（A 的 `test_1` 与 B 的 `test_1` 是两段不同对话）。
+    标识（本服务无鉴权，前端常这么写）更会让所有人串进同一条对话。
 
     **空串与纯空白视同「未提供」**（两个会话字段都是）：它们本就是可选字段，
     而「我把输入框清空了」的意图就是「我没填」。把 `""` 当成「填了一个空名字」
     而拒绝，会让 Swagger UI 里清空输入框这种最常见的操作直接 422。
     """
 
-    user: str = Field(..., description="调用方标识，如 'ops'；同时是会话名的作用域")
+    user: str = Field(..., description="调用方标识，如 'ops'")
     message: str = Field(..., min_length=1, description="用户输入的消息")
     session_id: str | None = Field(
         None, description="服务端生成的会话 id（须已存在，未知则 404）；空串视同未提供"
     )
     session_name: str | None = Field(
         None,
-        description=f"自定义会话名（任意可见字符，最长 {SESSION_NAME_MAX_CHARS}）；"
-                    "不存在则按此名新建会话；空串视同未提供",
+        description=f"给**新会话**起的标签（任意可见字符，最长 {SESSION_NAME_MAX_CHARS}）；"
+                    "不参与选中会话，传 id 时被忽略；空串视同未提供",
     )
 
     @field_validator("session_id")
@@ -93,18 +95,6 @@ class ChatRequest(BaseModel):
             return normalize_session_name(value)
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
-
-    @model_validator(mode="after")
-    def _reject_both(self) -> "ChatRequest":
-        """两个会话标识只能给一个。
-
-        都给的话语义有歧义（是按 id 续聊，还是按名字？）——而**歧义比报错危险**：
-        实现会挑一个执行，调用方却以为另一个生效了。宁可 422 让它显式选。
-        """
-        if self.session_id and self.session_name:
-            raise ValueError("session_id 与 session_name 只能给一个（同时给语义有歧义）")
-        return self
-
 
 class ChatResponse(BaseModel):
     """/chat 响应体。"""

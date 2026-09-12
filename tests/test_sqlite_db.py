@@ -145,23 +145,61 @@ def test_migrated_db_matches_fresh_db(tmp_path):
     assert _structure(fresh_path) == _structure(migrated_path)
 
 
-def test_migration_can_be_named_again(tmp_path):
-    """升级后唯一索引要真的生效——迁移里漏建索引的话这里会挂。"""
+def _name_index_names(path) -> set[str]:
+    with sqlite3.connect(str(path)) as conn:
+        return {
+            r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+
+
+def test_v3_allows_duplicate_session_names(tmp_path):
+    """v3 撤掉了 (user, name) 唯一索引——名字降级为纯标签，允许重名。"""
+    path = tmp_path / "ops.db"
+    db = open_database(path)
+
+    sql = "INSERT INTO sessions (session_id, user, name, created_at, updated_at) VALUES (?,?,?,?,?)"
+    db.execute(sql, ("s1", "ops", "dup", "t", "t"))
+    db.execute(sql, ("s2", "ops", "dup", "t", "t"))  # 不该再冲突
+
+    assert len(db.query("SELECT 1 FROM sessions")) == 2
+
+
+def test_v1_migration_ends_without_the_unique_index(tmp_path):
+    """从 v1 一路升到最新：中间那个 v2 分支建的索引，必须被 v3 分支撤掉。
+
+    这条专测「每个历史分支都按序执行」——若 v1→v3 时跳过了 v2 分支，
+    索引压根不会存在（测不出来）；若执行了 v2 却漏了 v3，这里就会挂。
+    """
     path = tmp_path / "ops.db"
     open_database(path)
     _downgrade_to_v1(path)
+    open_database(path)  # v1 → v3
+
+    assert "idx_sessions_user_name" not in _name_index_names(path)
+
+
+def test_v2_migration_drops_the_index(tmp_path):
+    """v2 → v3：一个**带**唯一索引的 v2 库，升上来之后索引要被撤掉。"""
+    path = tmp_path / "ops.db"
+    open_database(path)
+    _downgrade_to_v1(path)
+    # 手工造一个 v2 状态的库：加回名字列与那个索引，版本号写 2
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_sessions_user_name ON sessions (user, name) "
+            "WHERE name <> ''"
+        )
+        conn.execute("PRAGMA user_version = 2")
+    assert "idx_sessions_user_name" in _name_index_names(path)
+
     db = open_database(path)
 
-    db.execute(
-        "INSERT INTO sessions (session_id, user, name, created_at, updated_at) VALUES (?,?,?,?,?)",
-        ("s1", "ops", "dup", "t", "t"),
-    )
-    with pytest.raises(sqlite3.IntegrityError):
-        db.execute(
-            "INSERT INTO sessions (session_id, user, name, created_at, updated_at) "
-            "VALUES (?,?,?,?,?)",
-            ("s2", "ops", "dup", "t", "t"),
-        )
+    assert _user_version(path) == SCHEMA_VERSION
+    assert "idx_sessions_user_name" not in _name_index_names(path)
+    sql = "INSERT INTO sessions (session_id, user, name, created_at, updated_at) VALUES (?,?,?,?,?)"
+    db.execute(sql, ("s1", "ops", "dup", "t", "t"))
+    db.execute(sql, ("s2", "ops", "dup", "t", "t"))  # 重名不再冲突
 
 
 # -- 版本双向校验 -----------------------------------------------------------

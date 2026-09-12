@@ -70,62 +70,60 @@ def test_delete_unknown_returns_false(store):
     assert store.delete("nope") is False
 
 
-# -- 会话名（客户端别名） -----------------------------------------------------
-def test_create_with_name_and_find_it(store):
-    info = store.create(user="ops", name="test_1")
+# -- 会话名（**纯标签**，不参与选中会话） ---------------------------------------
+def test_create_with_name_stores_it_as_label(store):
+    info = store.create(user="ops", name="生产排查")
 
-    found = store.find_by_name("ops", "test_1")
-    assert found is not None and found.session_id == info.session_id
-    assert found.name == "test_1"
+    assert info.name == "生产排查"
+    assert store.get(info.session_id).name == "生产排查"
+    assert [s.name for s in store.list()] == ["生产排查"]
 
 
 def test_unnamed_session_has_empty_name(store):
-    info = store.create(user="ops")
-    assert info.name == ""
-    assert store.find_by_name("ops", "") is None, "空名不是有效别名"
+    assert store.create(user="ops").name == ""
 
 
-def test_name_is_scoped_by_user(store):
-    """A 的 test_1 与 B 的 test_1 是两段不同对话。"""
+def test_duplicate_names_are_allowed(store):
+    """名字**不唯一**：它只是给人看的标签，不参与选中会话。
+
+    强制唯一只会让人想开第二段同名对话时被迫改名。
+    """
+    a = store.create(user="ops", name="生产排查")
+    b = store.create(user="ops", name="生产排查")
+
+    assert a.session_id != b.session_id
+    assert len(store.list()) == 2
+    assert {s.name for s in store.list()} == {"生产排查"}
+
+
+def test_same_name_different_user_is_also_allowed(store):
     a = store.create(user="alice", name="test_1")
     b = store.create(user="bob", name="test_1")
 
     assert a.session_id != b.session_id
-    assert store.find_by_name("alice", "test_1").session_id == a.session_id
-    assert store.find_by_name("bob", "test_1").session_id == b.session_id
 
 
-def test_same_user_two_sessions_can_both_be_unnamed(store):
-    """部分唯一索引的意义：空名不参与去重，否则第二个无名会话会插不进去。"""
-    a = store.create(user="ops")
-    b = store.create(user="ops")
+def test_create_never_reuses_an_existing_session(store):
+    """**关键**：同名不会复用已有会话。
 
-    assert a.session_id != b.session_id
+    曾经（v2）名字是「别名」，重名会接回旧会话。降级为标签后必须**每次都是新会话**——
+    否则调用方以为开了一段新对话、实际接到了旧的，那正是这次要消除的意外。
+    """
+    first = store.create(user="ops", name="test_1")
+    second = store.create(user="ops", name="test_1")
+
+    assert second.session_id != first.session_id
     assert len(store.list()) == 2
 
 
-def test_create_with_existing_name_reuses_session(store):
-    """同名再建 → 复用已有会话（并发下两个请求同时「查不到 → 新建」的兜底）。"""
-    first = store.create(user="ops", name="test_1")
-
-    again = store.create(user="ops", name="test_1")
-
-    assert again.session_id == first.session_id
-    assert len(store.list()) == 1
-
-
-def test_unknown_name_returns_none(store):
-    assert store.find_by_name("ops", "nope") is None
-
-
-def test_name_survives_delete_and_recreate(store):
-    """删掉后同名可以重新建一个**全新**会话（名字不是永久占用）。"""
+def test_name_can_be_reused_after_delete(store):
     first = store.create(user="ops", name="test_1")
     store.delete(first.session_id)
 
     second = store.create(user="ops", name="test_1")
 
     assert second.session_id != first.session_id
+    assert store.get(second.session_id).name == "test_1"
 
 
 # -- 消息 -------------------------------------------------------------------

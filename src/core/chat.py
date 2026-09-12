@@ -221,15 +221,17 @@ class ChatService:
     ) -> tuple[str | None, str]:
         """确定本轮用哪个会话，返回 (session_id, session_name)；存储不可用 → (None, "")。
 
-        三条路径的语义**刻意不同**：
+        **规则只有一条：有 `session_id` 就用它，没有就新建。**
 
-        - **给了 `session_id`（服务端生成的随机 id）**：必须已存在，否则
-          `SessionNotFoundError`（api 转 404）。不静默重建，否则 `DELETE` 形同虚设。
-        - **给了 `session_name`（客户端自定义别名）**：没有就**新建**，这是它的全部意义
-          ——客户端想用一个自己起的名字，不该被迫先拿一个随机 id。
-        - **都没给**：新建一个未命名会话（与改造前行为一致）。
-
-        命名会话按 **(user, name)** 查，所以 A 的 `test_1` 与 B 的 `test_1` 互不干扰。
+        - `session_id` 必须已存在，否则 `SessionNotFoundError`（api 转 404）。
+          不静默重建，否则 `DELETE` 形同虚设。
+        - **`session_name` 是标签，不参与选中会话**——它只在**新建**时给新会话起个
+          供人识别的名字。所以传名字**永远不会**接到旧对话上，同名请求两次会得到
+          两段新对话。选中会话只认 id（这一点很重要：名字可猜，id 不可猜，
+          将来加了鉴权后名字才可能安全地变回选择器）。
+        - **同时给了 id 和名字**：名字被**忽略**，不产生任何副作用。
+          `/chat` 只管聊天；给已有会话改名应当走专门的操作（如 `PATCH /sessions/{id}`），
+          不该让「发一句话」顺带改掉标签。
         """
         store = self._sessions
         if store is None:
@@ -240,14 +242,7 @@ class ChatService:
                 if info is None:
                     raise SessionNotFoundError(f"会话不存在或已过期: {session_id}")
                 return info.session_id, info.name
-            if session_name:
-                existing = store.find_by_name(user, session_name)
-                if existing is not None:
-                    return existing.session_id, existing.name
-                # 并发下这里可能撞上唯一索引——store.create 会回查并复用，不会抛
-                created = store.create(user=user, name=session_name)
-                return created.session_id, created.name
-            created = store.create(user=user)
+            created = store.create(user=user, name=session_name or "")
             return created.session_id, created.name
         except SessionNotFoundError:
             raise

@@ -208,54 +208,63 @@ def test_chat_works_when_storage_disabled(disabled_client):
     assert resp.json()["session_id"] is None
 
 
-# -- /chat 会话名（客户端自定义别名） -----------------------------------------
-def test_chat_with_session_name_creates_named_session(chat_client):
-    """名字不存在就按它新建——这正是名字区别于 session_id 的地方。"""
+# -- /chat 会话名（**纯标签**，不参与选中会话） --------------------------------
+def test_chat_with_session_name_labels_the_new_session(chat_client):
+    """没有 id 时新建一段对话，名字作为标签记下来，供人在 /sessions 里识别。"""
     body = chat_client.post(
-        "/chat", json={"user": "yqyZ", "message": "cpu", "session_name": "test_1"}
+        "/chat", json={"user": "yqyZ", "message": "cpu", "session_name": "生产排查"}
     ).json()
 
-    assert body["session_name"] == "test_1"
-    assert body["session_id"], "内部仍用服务端生成的随机 id"
-    assert body["session_id"] != "test_1", "名字不是 id，不该混用"
+    assert body["session_name"] == "生产排查"
+    assert body["session_id"], "选中会话仍靠服务端生成的随机 id"
+    assert body["session_id"] != "生产排查", "名字不是 id，不该混用"
     listed = chat_client.get("/sessions").json()
-    assert [(s["name"], s["session_id"]) for s in listed] == [("test_1", body["session_id"])]
+    assert [(s["name"], s["session_id"]) for s in listed] == [
+        ("生产排查", body["session_id"])
+    ]
 
 
-def test_chat_with_same_name_continues_the_conversation(chat_client):
+def test_same_name_twice_creates_two_sessions(chat_client):
+    """**这是方案变更的核心后果**：名字不参与选中，同名请求两次 = 两段新对话。
+
+    旧行为（名字是别名）会接回同一段对话。改成标签后，续聊**只能**靠 id——
+    否则调用方以为开了一段新对话、实际接到了旧的，那正是要消除的意外。
+    """
     first = chat_client.post(
-        "/chat", json={"user": "yqyZ", "message": "第一问", "session_name": "test_1"}
+        "/chat", json={"user": "yqyZ", "message": "第一问", "session_name": "生产排查"}
     ).json()
 
     second = chat_client.post(
-        "/chat", json={"user": "yqyZ", "message": "第二问", "session_name": "test_1"}
+        "/chat", json={"user": "yqyZ", "message": "第二问", "session_name": "生产排查"}
     ).json()
 
-    assert second["session_id"] == first["session_id"], "同名应续上同一段对话"
-    assert [m.content for m in chat_client.agent.seen[1]] == ["第一问", "[多轮]第一问"]
-
-
-def test_same_name_different_user_is_different_session(chat_client):
-    """名字限定在 user 内——否则所有人共用一套命名空间，会串到别人的对话。"""
-    a = chat_client.post(
-        "/chat", json={"user": "alice", "message": "hi", "session_name": "test_1"}
-    ).json()
-    b = chat_client.post(
-        "/chat", json={"user": "bob", "message": "hi", "session_name": "test_1"}
-    ).json()
-
-    assert a["session_id"] != b["session_id"]
+    assert second["session_id"] != first["session_id"]
+    assert chat_client.agent.seen[1] == [], "新会话不该带上另一段的上下文"
     assert len(chat_client.get("/sessions").json()) == 2
+    assert [s["name"] for s in chat_client.get("/sessions").json()] == ["生产排查"] * 2
 
 
-def test_session_id_and_name_together_is_422(chat_client):
-    """同时给两个标识语义有歧义；歧义比报错危险，宁可拒绝。"""
-    resp = chat_client.post(
+def test_name_is_ignored_when_session_id_is_given(chat_client):
+    """同时给了 id 和名字 → **名字被忽略**，不产生任何副作用。
+
+    `/chat` 只管聊天；给已有会话改名应当走专门的操作，
+    不该让「发一句话」顺带改掉标签。
+    """
+    first = chat_client.post(
+        "/chat", json={"user": "ops", "message": "一", "session_name": "原名"}
+    ).json()
+
+    again = chat_client.post(
         "/chat",
-        json={"user": "ops", "message": "hi", "session_id": "x", "session_name": "y"},
+        json={"user": "ops", "message": "二", "session_id": first["session_id"],
+              "session_name": "想改成这个"},
     )
 
-    assert resp.status_code == 422
+    assert again.status_code == 200, "不该再因为「两个都给」报错"
+    assert again.json()["session_id"] == first["session_id"]
+    assert again.json()["session_name"] == "原名", "标签没被这次请求改掉"
+    detail = chat_client.get(f"/sessions/{first['session_id']}").json()
+    assert detail["name"] == "原名"
 
 
 @pytest.mark.parametrize(
@@ -320,37 +329,26 @@ def test_any_visible_text_is_accepted(chat_client, good):
         " test 1 ",                      # 首尾空格
     ],
 )
-def test_space_variants_hit_the_same_session(chat_client, variant):
-    """**这是整个归一化设计的核心**：空格有四种肉眼无法区分的编码。
+def test_space_variants_normalize_to_the_same_label(chat_client, variant):
+    """空格有四种肉眼无法区分的编码，**归一化后落到同一个标签**。
 
-    不归一化的话，用户以为在续聊同一段对话，服务端却当成一个全新的名字——
-    而他看这两行数据长得一模一样，没有任何线索可查。
+    名字不再用于选中会话，所以归一化的价值从「别开成两段对话」变成了
+    「别在 `/sessions` 里看到两个**看起来一模一样**的标签、却没线索区分」。
     """
-    first = chat_client.post(
-        "/chat", json={"user": "ops", "message": "一", "session_name": "test 1"}
+    body = chat_client.post(
+        "/chat", json={"user": "ops", "message": "一", "session_name": variant}
     ).json()
 
-    again = chat_client.post(
-        "/chat", json={"user": "ops", "message": "二", "session_name": variant}
-    ).json()
-
-    assert again["session_id"] == first["session_id"], f"{variant!r} 应归一到同一段对话"
-    assert again["session_name"] == "test 1", "回带的是归一化后的名字"
-    assert len(chat_client.get("/sessions").json()) == 1
+    assert body["session_name"] == "test 1", f"{variant!r} 应归一到同一个标签"
 
 
 def test_fullwidth_letters_normalize_to_halfwidth(chat_client):
-    """用中文输入法打出的全角字母与半角是同一段对话。"""
-    first = chat_client.post(
-        "/chat", json={"user": "ops", "message": "一", "session_name": "test1"}
+    """用中文输入法打出的全角字母与半角归一成同一个标签。"""
+    body = chat_client.post(
+        "/chat", json={"user": "ops", "message": "一", "session_name": "ｔｅｓｔ１"}
     ).json()
 
-    again = chat_client.post(
-        "/chat", json={"user": "ops", "message": "二", "session_name": "ｔｅｓｔ１"}
-    ).json()
-
-    assert again["session_id"] == first["session_id"]
-    assert again["session_name"] == "test1"
+    assert body["session_name"] == "test1"
 
 
 def test_session_name_absent_returns_null(chat_client):
@@ -421,8 +419,8 @@ def test_session_id_surrounding_whitespace_is_trimmed(chat_client):
     assert resp.json()["session_id"] == sid
 
 
-def test_blank_name_does_not_satisfy_mutual_exclusion(chat_client):
-    """`session_id` 非空 + `session_name` 为空白 → 不算「两个都给」，应正常续聊。"""
+def test_blank_name_with_session_id_is_fine(chat_client):
+    """`session_id` + 空白名字 → 正常续聊（空白视同未提供，且名字本来就被忽略）。"""
     sid = _new_session(chat_client)
 
     resp = chat_client.post(
@@ -430,6 +428,7 @@ def test_blank_name_does_not_satisfy_mutual_exclusion(chat_client):
     )
 
     assert resp.status_code == 200
+    assert resp.json()["session_id"] == sid
 
 
 # -- 归一化函数本身（直接单测，不绕 HTTP） ------------------------------------

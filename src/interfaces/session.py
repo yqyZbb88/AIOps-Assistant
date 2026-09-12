@@ -153,8 +153,8 @@ class SessionInfo:
 
     session_id: str
     user: str = ""
-    #: 客户端自定义的别名（如 "test_1"）；空串 = 未命名。
-    #: 唯一性限定在 user 内，且只对非空名生效。
+    #: 客户端自定义的**标签**（如 "生产排查"）；空串 = 未命名。
+    #: 纯给人识别用——**不唯一、不参与选中会话**（选中只认 session_id）。
     name: str = ""
     title: str = ""
     status: str = "active"
@@ -247,22 +247,17 @@ class SessionStore(ABC):
     def create(self, *, user: str = "", title: str = "", name: str = "") -> SessionInfo:
         """新建一个会话并返回其元信息。
 
-        **session_id 永远由存储层生成**（32 位随机值，不可猜）；`name` 是客户端可读的
-        别名，可为空。调用前应先 `validate_session_name(name)`。重名（同一 user 下）
-        由唯一索引兜住——实现方应捕获冲突并回查，而不是把它抛成 500。
+        **session_id 永远由存储层生成**——它是选中会话的**唯一**方式。
+
+        `name` 是**给人看的标签**（用于在 `GET /sessions` 里认出是哪段对话），
+        **不参与选中会话、不要求唯一**：同一个人可以有两段都叫「生产排查」的对话。
+        别把它做成「按名字复用已有会话」——那等于把名字变回选择器，
+        与「id 是唯一选择器」的设计冲突（调用方以为开了一段新对话，实际接到了旧的）。
         """
 
     @abstractmethod
     def get(self, session_id: str) -> SessionInfo | None:
         """取会话元信息；不存在返回 None。"""
-
-    @abstractmethod
-    def find_by_name(self, user: str, name: str) -> SessionInfo | None:
-        """按 (user, name) 查找会话；没有则返回 None。
-
-        **名字不是全局唯一**：A 的 `test_1` 与 B 的 `test_1` 是两段不同对话——
-        这是「限定在 user 内」的意义，也让将来加了鉴权之后名字自动变得安全。
-        """
 
     @abstractmethod
     def list(self, *, limit: int = 50) -> list[SessionInfo]:

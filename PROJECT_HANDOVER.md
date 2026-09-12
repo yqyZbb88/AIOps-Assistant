@@ -80,7 +80,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：403 passed**（2026-09-11 M4 第二批「多轮」完成后；本日共增 109 例：
+    **当前基线：402 passed**（2026-09-11 M4 第二批「多轮」完成后；本日共增 109 例：
     `test_sqlite_db.py` 15、`test_session_store.py` 43、`test_api_sessions.py` 18、
     `test_chat_history.py` 14、`test_history_capable.py` 9、既有文件 +10）。
     M3 的 79 例其中
@@ -95,7 +95,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **403**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **402**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
     | [docs/database.md](docs/database.md) | **改表结构 / 加字段 / 改字段语义 / 改清理策略时必须同步**——它是库结构的逐字段说明。迁移那节的两条硬性约束（结构指纹一致、新列加末尾）也在那里 |
 
@@ -133,10 +133,10 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   审批中断的整轮落 `pending_approval`、审批后**原地回填**最终回答；
   开库时把残留的孤儿审批轮标 `abandoned`。**零新增依赖**（stdlib `sqlite3`）。
   三级降级：配置关 → 不落库；SQLite 打不开 → 内存实现（多轮可用、重启即丢）；正常 → SQLite。
-  **会话名**（`sessions.name`，v2）：客户端可读的别名（`session_name`），**没有就按它新建**；
-  唯一性**限定在 user 内**（`UNIQUE(user, name)`，且用**部分索引** `WHERE name <> ''`
-  让空名不参与去重）。`session_id` 仍是服务端生成的 32 位随机值，不可猜。
-  **名字是能猜的**——无鉴权下别把隔离寄托在「名字别人不知道」上，README 已写明。
+  **会话名**（`sessions.name`，v2 引入 / **v3 定位修订**）：**选中会话只认 `session_id`**；
+  `session_name` 是**给新会话打的标签**，供人在 `/sessions` 里识别，**不参与选中会话、
+  不要求唯一**（同名请求两次 = 两段新对话）。id 与名字同时给时**名字被忽略**。
+  **见下方「会话名定位修订」——旧的「别名」行为已废弃。**
 - **状态日志归档 + 审计落文件**（M4 第二批，2026-09-11）：
   `POST /alert` 的处理产出（告警 / 处置结果 / AI 建议）落三张表，靠 `Alert.alert_key`
   关联（**不是裸 fingerprint**——它默认空串，做 join key 会把不同告警并成一条）；
@@ -428,7 +428,43 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ---
 
-## 会话名（2026-09-11，M4 之后）
+## ⚠️ 会话名定位修订（2026-09-12）：从「别名」降为「纯标签」
+
+**这是对前一小节设计的修订，以此为准。**
+
+用户提出：**重心搞错了**——应该「以 `session_id` 优先，name 填不填无所谓」，
+并且名字只用于「让用户查找到对应对话以及识别」。
+
+于是规则**塌缩成一条**：**有 `session_id` 就用它续聊，没有就新建一段对话。**
+
+| 方面 | 旧（别名） | 新（纯标签） |
+|---|---|---|
+| `session_name` 的作用 | 能**直接选中**会话 | 只给新会话**打个标签**，供人识别 |
+| 同名请求两次 | 接到**同一段**对话 | 得到**两段新对话** |
+| 唯一性 | `UNIQUE(user, name)` | **不要求唯一**（v3 撤掉了那个索引） |
+| id + 名字同时给 | **422**（歧义） | **名字被忽略**，200 |
+| 存储 | `sessions.name` 列 | 不变（列已经够用，映射表没有存在理由） |
+
+**顺带删掉的复杂度**：互斥检查、`find_by_name`、重名复用逻辑、唯一索引与它的迁移。
+今天那一串关于名字的坑（互斥 422、重名复用、作用域）**大半随之消失**。
+
+**关于「映射表」**：用户最初提过要用独立映射表。**在纯标签方案下它没有存在理由**——
+那张表的全部价值是「把客户端的标识空间与存储键解耦」，而这个需求随「名字不再选中会话」
+一起消失了。列比表简单：一次查询无 join，删会话时标签跟着消失，
+结构上不可能出现「标签指向已不存在的会话」的孤儿。**若将来要「一名多会话」或「改名历史」，
+那时再换成表。**
+
+**必须澄清的一个误解**：用户当时认为「用随机 id 切换对话安全性更高」。
+**实测这个前提不成立**——`GET /sessions` 无鉴权且直接列出所有会话的 `session_id`，
+所以「id 不可猜」这层保护**本来就不存在**（README 早写明该端点会把对话原文吐出来）。
+改方案的理由是**简单**（规则塌缩、删掉一堆校验），不是安全。
+**真正的安全性只能来自鉴权**，这一点已在 README 里写得更醒目。
+> 因此也**不要**因为「名字可能被猜到」而增加限制——那防不住任何东西，
+> 能访问端口的人不需要猜名字。
+
+---
+
+## 会话名（2026-09-11，M4 之后；**定位已于 09-12 修订，见上一节**）
 
 起因：用户按直觉发了 `{"user":"yqyZ","message":"cpu","session_id":"test_1"}`，得到 **404**。
 
@@ -608,7 +644,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 403 passed（2026-09-11 M4 第二批「多轮」后）
+python -m pytest tests -q            # 目前 402 passed（2026-09-11 M4 第二批「多轮」后）
                                      #   M4 新增：sqlite_db 15、session_store 43（两种实现
                                      #     跑同一组契约断言）、api_sessions 18、chat_history 14、
                                      #     history_capable 9（真 graph 跑多轮×审批跨模块接线）

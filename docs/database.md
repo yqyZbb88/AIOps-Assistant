@@ -16,7 +16,7 @@
 | 位置 | 默认 `data/ops_agent.db`（相对仓库根，由 `storage.db_path` 配置） |
 | 伴生文件 | WAL 模式下同目录会有 `ops_agent.db-wal` 与 `ops_agent.db-shm`（**同样是运行时产物，不要提交**） |
 | 日志模式 | `wal`（同步盘/网络盘上开不起来时自动回落 `delete`，不影响使用） |
-| schema 版本 | 当前 **v2**，记在 `PRAGMA user_version` 里 |
+| schema 版本 | 当前 **v3**，记在 `PRAGMA user_version` 里 |
 | 总开关 | `storage.enabled`。关掉 / 打不开 → **服务照常启动**，只是不落盘，行为与引入本功能前完全一致 |
 | 清理 | TTL + 容量上限，**惰性 + 节流**触发（写入时顺带，默认 60 秒最多一次），无后台线程 |
 
@@ -89,25 +89,24 @@ alert_key = fingerprint（若告警带了）否则 "告警名|实例|开始时�
 |---|---|---|
 | `session_id` | TEXT 主键 | **服务端生成的 32 位随机十六进制**，不可猜。`/chat` 返回给你、下次带回来的就是它 |
 | `user` | TEXT | 调用方标识（`/chat` 请求里的 `user`）。**只用于给会话名划定作用域**，不当作会话键 |
-| `name` | TEXT | **客户端自定义的会话别名**（`session_name`），如 `test_1`、`生产环境 排查`、`🚀 部署排查`。空串 = 未命名 |
+| `name` | TEXT | **给人识别用的标签**（`session_name`），如 `生产排查`、`🚀 部署排查`。空串 = 未命名 |
 
+> **它只是标签，不参与选中会话**——选中只认 `session_id`。因此：
+> **没有唯一索引**（v3 撤掉了 v2 那个），同一个人可以有多段同名对话。
+>
 > **写入前会被归一化并过滤**（[interfaces/session.py](../src/interfaces/session.py) 的
 > `normalize_session_name`）：NFKC 规范化（全角字母→半角、四种空格→普通空格）+
 > 折叠空白 + 去首尾，再**按 Unicode 类别拒绝** `Cc`（控制字符）与 `Cf`（格式字符，
 > 如零宽空格 / BOM / RTL 覆盖），最长 64。**不限制用哪些文字**。
 > 所以**存进来的值可能与客户端发的不同**——需要原始输入的话得在别处留。
+> 归一化的目的是让 `/sessions` 里不会出现两个**看起来一模一样**的标签。
 | `title` | TEXT | 自动取**首条用户消息**的前 40 字，纯展示用 |
 | `status` | TEXT | 目前恒为 `active`（保留字段，为将来的归档态留位） |
 | `created_at` | TEXT | 创建时间（UTC，秒级，ISO-8601） |
 | `updated_at` | TEXT | 最后活动时间。**TTL 清理看的是它，不是 `created_at`** ——活跃会话不会因为建得早被清掉 |
 
-**唯一索引** `idx_sessions_user_name ON sessions(user, name) WHERE name <> ''`
-
-两个要点：
-
-- **作用域是 `user`**：A 的 `test_1` 与 B 的 `test_1` 是两段不同对话，不冲突。
-- **`WHERE name <> ''` 是必须的**：绝大多数会话没有名字，若直接 `UNIQUE(user, name)`，
-  同一 user 的**第二个无名会话会因为 `'' = ''` 而插入失败**。这叫部分索引——只约束有名字的。
+**没有唯一索引**（v3 撤掉了 v2 的 `idx_sessions_user_name`）。原因见 `name` 字段的说明：
+名字降级为标签后不再有条目需要唯一，而强制唯一只会让人想开第二段同名对话时被迫改名。
 
 > **`name` 为什么排在字段列表最后**：它由 v2 迁移的 `ALTER TABLE` 追加，而 ALTER 只能加在末尾。
 > 全新建库的 DDL 也把新列写在末尾，两条路径的**列序**才对得上——否则将来有人写
@@ -256,9 +255,17 @@ UPDATE 成最终回答（`status` 变 `final`），`seq` 不变。追加新行�
 ## 五、常见查询
 
 ```sql
--- 最近 20 段对话（含命名）
+-- 最近 20 段对话（名字是给你认的，续聊要用 id）
 SELECT session_id, user, name, title, updated_at
 FROM sessions ORDER BY updated_at DESC LIMIT 20;
+
+-- 按名字找会话（名字不唯一，可能返回多条；拿到 id 后用它续聊）
+SELECT session_id, user, name, created_at FROM sessions
+WHERE name LIKE '%生产%' ORDER BY updated_at DESC;
+
+-- 找重名的会话（名字允许重复，靠 id/时间区分）
+SELECT name, COUNT(*) FROM sessions WHERE name <> ''
+GROUP BY name HAVING COUNT(*) > 1;
 
 -- 某段对话的完整往来（给人看，含待审批行）
 SELECT seq, role, status, content FROM messages

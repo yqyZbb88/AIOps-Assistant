@@ -152,15 +152,6 @@ class SqliteSessionStore(SessionStore):
                 "VALUES (?, ?, ?, ?, 'active', ?, ?)",
                 (session_id, user, name, title, stamp, stamp),
             )
-        except sqlite3.IntegrityError:
-            # (user, name) 唯一索引冲突 = 同一 user 下这个别名已被占用。
-            # 两个并发请求同时「查不到 → 新建」时就会走到这里，正确反应是**回查并复用**，
-            # 而不是把它当故障抛出去（那会让并发下偶发 500）。
-            if name:
-                existing = self.find_by_name(user, name)
-                if existing is not None:
-                    return existing
-            raise self._fail(SessionError(f"会话名已被占用: {user}/{name}")) from None
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
 
@@ -176,14 +167,6 @@ class SqliteSessionStore(SessionStore):
         )
         return _row_to_session(rows[0]) if rows else None
 
-    def find_by_name(self, user: str, name: str) -> SessionInfo | None:
-        if not name:
-            return None  # 空名不是有效的别名，直接当作「没找到」
-        rows = self._query(
-            f"SELECT {_SESSION_COLUMNS} FROM sessions s WHERE s.user = ? AND s.name = ? LIMIT 1",
-            (user, name),
-        )
-        return _row_to_session(rows[0]) if rows else None
 
     def list(self, *, limit: int = 50) -> list[SessionInfo]:
         # 次键 rowid 不可省：时间戳是秒级精度，同一秒内建的两个会话 updated_at 完全相同，
@@ -395,12 +378,6 @@ class InMemorySessionStore(SessionStore):
         self._sessions.move_to_end(session_id)
 
     def create(self, *, user: str = "", title: str = "", name: str = "") -> SessionInfo:
-        # 重名 → 复用已有会话（与 SQLite 版撞唯一索引后回查的行为一致）。
-        # 两套实现必须同语义，否则那组契约测试就失去意义了。
-        if name:
-            existing = self.find_by_name(user, name)
-            if existing is not None:
-                return existing
         session_id = uuid.uuid4().hex
         stamp = to_iso(self._clock())
         self._sessions[session_id] = {
@@ -410,14 +387,6 @@ class InMemorySessionStore(SessionStore):
         self._messages[session_id] = []
         self.purge_expired()
         return self.get(session_id)  # type: ignore[return-value]
-
-    def find_by_name(self, user: str, name: str) -> SessionInfo | None:
-        if not name:
-            return None
-        for session_id, row in reversed(self._sessions.items()):  # 新的在前
-            if row["user"] == user and row["name"] == name:
-                return self._info(session_id)
-        return None
 
     def _info(self, session_id: str) -> SessionInfo | None:
         row = self._sessions.get(session_id)

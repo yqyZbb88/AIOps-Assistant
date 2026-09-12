@@ -37,7 +37,9 @@ logger = logging.getLogger("ops_agent.storage.db")
 # 当前 schema 版本。改动 DDL 时**必须**递增，并在 _migrate 里补上追加式迁移。
 #   v1 (2026-09-11 M4 第一批)：六张表
 #   v2 (2026-09-11 M4 第二批)：sessions 加 name 列 + (user, name) 部分唯一索引
-SCHEMA_VERSION = 2
+#   v3 (2026-09-12)：**撤掉**那个唯一索引——session_name 从「别名」降为「纯标签」，
+#                    不再参与选中会话，因此没有唯一性需求（允许重名）
+SCHEMA_VERSION = 3
 
 # 建表语句（幂等）。顺序即执行顺序。
 _DDL: tuple[str, ...] = (
@@ -56,15 +58,9 @@ _DDL: tuple[str, ...] = (
         name       TEXT NOT NULL DEFAULT ''
     )
     """,
-    # 会话名的唯一性：**限定在 user 内**（A 的 test_1 与 B 的 test_1 是两段不同对话），
-    # 且用**部分索引**排除空名——绝大多数会话没有名字，若直接 UNIQUE(user, name)，
-    # 同一 user 的第二个无名会话就会因 '' = '' 而插入失败。
-    # 建成独立索引而非表内约束，是为了让「新建库」与「v1→v2 迁移」走同一条语句
-    # （ALTER TABLE 加不了表级 UNIQUE 约束）。
-    """
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_name
-        ON sessions (user, name) WHERE name <> ''
-    """,
+    # 注：sessions.name **没有**唯一索引——它是给人看的标签，不参与选中会话
+    # （选中只认 session_id），因此允许重名。v2 曾有过一个 (user, name) 的部分唯一索引，
+    # v3 已撤掉，见 _migrate。
     """
     CREATE TABLE IF NOT EXISTS messages (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,12 +249,20 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
         return
 
     if current < 2:
-        # v1 → v2：会话名（客户端可读的别名；session_id 仍是服务端生成的不可猜值）
+        # v1 → v2：会话名（当时是「别名」，能直接选中会话）
         conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_user_name "
             "ON sessions (user, name) WHERE name <> ''"
         )
+
+    if current < 3:
+        # v2 → v3：撤掉唯一索引。名字降级为「纯标签」后不再有唯一性需求——
+        # 它不参与选中会话，而强制唯一只会让人开第二段同名对话时被迫改名。
+        # 注意 v1 直接升到 v3 时这里也会跑（上面那个索引刚建出来就被撤掉）：
+        # **每个历史分支都得保留、按序执行**，这样任意旧版本都能升到最新，
+        # 且「全新建库」与「逐级迁移」得到同一结构（有测试锁结构指纹）。
+        conn.execute("DROP INDEX IF EXISTS idx_sessions_user_name")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
