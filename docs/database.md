@@ -89,7 +89,13 @@ alert_key = fingerprint（若告警带了）否则 "告警名|实例|开始时�
 |---|---|---|
 | `session_id` | TEXT 主键 | **服务端生成的 32 位随机十六进制**，不可猜。`/chat` 返回给你、下次带回来的就是它 |
 | `user` | TEXT | 调用方标识（`/chat` 请求里的 `user`）。**只用于给会话名划定作用域**，不当作会话键 |
-| `name` | TEXT | **客户端自定义的会话别名**（`session_name`），如 `test_1`、`生产环境 排查`。空串 = 未命名 |
+| `name` | TEXT | **客户端自定义的会话别名**（`session_name`），如 `test_1`、`生产环境 排查`、`🚀 部署排查`。空串 = 未命名 |
+
+> **写入前会被归一化并过滤**（[interfaces/session.py](../src/interfaces/session.py) 的
+> `normalize_session_name`）：NFKC 规范化（全角字母→半角、四种空格→普通空格）+
+> 折叠空白 + 去首尾，再**按 Unicode 类别拒绝** `Cc`（控制字符）与 `Cf`（格式字符，
+> 如零宽空格 / BOM / RTL 覆盖），最长 64。**不限制用哪些文字**。
+> 所以**存进来的值可能与客户端发的不同**——需要原始输入的话得在别处留。
 | `title` | TEXT | 自动取**首条用户消息**的前 40 字，纯展示用 |
 | `status` | TEXT | 目前恒为 `active`（保留字段，为将来的归档态留位） |
 | `created_at` | TEXT | 创建时间（UTC，秒级，ISO-8601） |

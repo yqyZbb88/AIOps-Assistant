@@ -45,7 +45,7 @@ class ChatRequest(BaseModel):
     )
     session_name: str | None = Field(
         None,
-        description=f"自定义会话名（字母数字 _ . - 空格与汉字，最长 {SESSION_NAME_MAX_CHARS} 字符）；"
+        description=f"自定义会话名（任意可见字符，最长 {SESSION_NAME_MAX_CHARS}）；"
                     "不存在则按此名新建会话",
     )
 

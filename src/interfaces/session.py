@@ -47,9 +47,15 @@ DEFAULT_MESSAGE_WINDOW = 20
 #: 名字**不等于** session_id——id 仍是服务端生成的 32 位随机值。
 SESSION_NAME_MAX_CHARS = 64
 
-#: 允许的字符：ASCII 字母数字 + `_ . -` + 普通空格 + 汉字。
-#: 空格能被放行，是因为**归一化先把它折叠成唯一的 U+0020**（见下）。
-_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_.\- 㐀-䶿一-鿿]+$")
+#: 会话名**拒绝**的 Unicode 类别（而不是「只允许某几种文字」）：
+#:   Cc 控制字符（NUL、ESC、换行…）——会污染日志、能注入终端转义
+#:   Cf 格式字符（零宽空格 U+200B、BOM U+FEFF、RTL 覆盖 U+202E、软连字符…）——**肉眼看不见**
+#: 其余**一律放行**：假名、重音字母、中文标点、emoji、阿拉伯文……都行。
+#:
+#: 为什么是「按类别拒」而不是「按字符白名单放行」：这两条是**有明确边界的类别**，
+#: 排除它们是完备的，不会漏；而枚举「危险的字符」才会漏。白名单会顺带误伤
+#: 大量完全正常的可见字符，却换不来额外的安全。
+_SESSION_NAME_BANNED_CATEGORIES = frozenset({"Cc", "Cf"})
 
 #: 连续空白（含换行/制表/不换行空格/全角空格）→ 单个普通空格
 _WHITESPACE_RUN = re.compile(r"\s+")
@@ -60,23 +66,25 @@ def normalize_session_name(name: str) -> str:
 
     **返回值可能与入参不同，调用方必须使用返回值**（响应里回带的也是它）。
 
-    两步：
+    三步：
 
     1. **NFKC 规范化 + 折叠空白**：`ｔｅｓｔ１` → `test1`、全角空格 `U+3000` /
        不换行空格 `U+00A0` / 换行 / 制表符 → 普通空格 `U+0020`，连续空白折成一个并去首尾。
-    2. **白名单校验**：只放行字母数字 `_ . -`、空格与汉字。
+    2. **拒绝 `Cc` / `Cf` 两类字符**（控制字符与格式字符）。
+    3. **限长** 1~64（按码点算）。
 
     为什么必须归一化：**空格有四种肉眼无法区分的编码**（普通 / 不换行 / 全角 / 零宽），
     而中文输入法下按空格键很可能打出全角空格 `U+3000`。不归一化的话，用户以为在续聊
     同一段对话，服务端却当成一个全新的名字；更糟的是他看这两行数据**长得一模一样**，
     没有任何线索可查。全角/半角字母同理。
 
-    为什么归一化之后还要白名单：NFKC **消不掉零宽空格 `U+200B` 与 BOM `U+FEFF`**
-    ——它们不是空白的变体，而是各自独立的字符，`\\s` 也不匹配它们。用白名单而不是
-    「排除危险字符」是因为后者永远会漏：Unicode 十几万字符且持续新增，穷举不可能穷尽。
+    为什么归一化之后还要拒 `Cf`：**NFKC 消不掉零宽空格 `U+200B` 与 BOM `U+FEFF`**
+    ——它们不是空白的变体，而是各自独立的字符，`\\s` 也不匹配它们。它们恰好是归一化
+    **唯一治不了**的那类问题（真实场景：从聊天记录/网页里复制一个名字，很容易带上
+    不可见字符，于是「复制粘贴的那次」与「手打的那次」落到两段不同的对话）。
+    所以必须在这一层挡掉。
 
-    已知边界（按需再放）：不含汉字以外的非 ASCII 文字（日文假名、重音拉丁字母等），
-    也不含中文标点——它们都在归一化后落在白名单外。
+    **不限制可以用哪些文字**：只按类别排除，其余一律放行。
     """
     if not isinstance(name, str):
         raise ValueError(f"会话名必须是字符串: {name!r}")
@@ -88,12 +96,13 @@ def normalize_session_name(name: str) -> str:
         raise ValueError(
             f"会话名过长（{len(normalized)} > {SESSION_NAME_MAX_CHARS}）: {normalized[:20]!r}…"
         )
-    if not _SESSION_NAME_RE.match(normalized):
-        # 报出具体字符的码点——零宽空格这类字符**肉眼看不见**，不给出码点用户无从排查
-        bad = sorted({c for c in normalized if not _SESSION_NAME_RE.match(c)})
-        shown = "、".join(f"{c!r}(U+{ord(c):04X})" for c in bad[:5])
+
+    bad = sorted({c for c in normalized if unicodedata.category(c) in _SESSION_NAME_BANNED_CATEGORIES})
+    if bad:
+        # 报出**码点**：零宽空格这类字符肉眼看不见，不给出码点用户根本无从排查
+        shown = "、".join(f"U+{ord(c):04X}({unicodedata.name(c, '?')})" for c in bad[:5])
         raise ValueError(
-            f"会话名含不允许的字符: {shown}（只允许字母数字 _ . - 空格与汉字）"
+            f"会话名含不可见/控制字符: {shown}（可能来自复制粘贴，请重新输入）"
         )
     return normalized
 

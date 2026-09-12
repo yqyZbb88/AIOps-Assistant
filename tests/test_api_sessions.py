@@ -261,19 +261,22 @@ def test_session_id_and_name_together_is_422(chat_client):
 @pytest.mark.parametrize(
     "bad",
     [
-        "a" * 65,          # 超长
-        "",                # 空串
-        "   ",             # 全是空白（归一化后为空）
-        "斜杠/",            # 白名单外
-        "分号;",
-        "テスト",           # 日文假名（已知边界：只放行汉字，不放行其它非 ASCII 文字）
-        "café",            # 重音拉丁字母
-        "a​b",        # 零宽空格——**肉眼完全看不见**，NFKC 也消不掉
-        "a﻿b",        # BOM
+        "a" * 65,                        # 超长
+        "",                              # 空串
+        "   ",                           # 全是空白（归一化后为空）
+        "a" + chr(0x200B) + "b",         # 零宽空格——肉眼完全看不见，NFKC 也消不掉
+        "a" + chr(0xFEFF) + "b",         # BOM
+        "a" + chr(0x00) + "b",           # NUL 控制字符
+        "a" + chr(0x1B) + "b",           # ESC（能注入终端转义）
+        "a" + chr(0x202E) + "b",         # RTL 覆盖：能伪造视觉顺序
     ],
 )
 def test_invalid_session_name_is_422(chat_client, bad):
-    """非法名字必须在**入参校验阶段**被挡住，不能一路走到存储层再变 500。"""
+    """非法名字必须在**入参校验阶段**被挡住，不能一路走到存储层再变 500。
+
+    被拒的**只有** Cc（控制字符）与 Cf（格式字符）两类——它们的共同点是
+    **肉眼看不见**（或能伪造视觉顺序），而不是「属于某种文字」。
+    """
     resp = chat_client.post(
         "/chat", json={"user": "ops", "message": "hi", "session_name": bad}
     )
@@ -281,24 +284,42 @@ def test_invalid_session_name_is_422(chat_client, bad):
     assert resp.status_code == 422
 
 
-def test_chinese_and_space_names_are_accepted(chat_client):
+@pytest.mark.parametrize(
+    "good",
+    [
+        "test_1",
+        "生产环境 排查",   # 汉字 + 空格
+        "テスト",          # 日文假名
+        "café",           # 重音拉丁字母
+        "生产。排查",       # 中文标点（NFKC 不动它）
+        "🚀 部署排查",      # emoji
+        "مرحبا",          # 阿拉伯文
+        "a/b;c",          # 符号
+    ],
+)
+def test_any_visible_text_is_accepted(chat_client, good):
+    """**不限制用哪些文字**：只按 Unicode 类别排除看不见的字符，其余一律放行。
+
+    早先版本只允许 ASCII 加汉字，把假名、重音字母、中文标点、emoji 全误伤了，
+    而拒掉这些没有任何技术依据（用户直接问「为什么中文不行」）。
+    """
     body = chat_client.post(
-        "/chat", json={"user": "ops", "message": "hi", "session_name": "生产环境 排查"}
+        "/chat", json={"user": "ops", "message": "hi", "session_name": good}
     ).json()
 
-    assert body["session_name"] == "生产环境 排查"
+    assert body["session_name"] == good
 
 
 @pytest.mark.parametrize(
     "variant",
     [
-        "test 1",       # 普通空格
-        "test 1",  # 不换行空格 NBSP
-        "test　1",  # 全角空格（中文输入法下按空格很容易打出来）
-        "test\n1",      # 换行
-        "test\t1",      # 制表符
-        "test  1",      # 连续空格
-        " test 1 ",     # 首尾空格
+        "test 1",                        # 普通空格 U+0020
+        "test" + chr(0xA0) + "1",        # 不换行空格 NBSP
+        "test" + chr(0x3000) + "1",      # 全角空格（中文输入法下按空格很容易打出来）
+        "test" + chr(10) + "1",          # 换行
+        "test" + chr(9) + "1",           # 制表符
+        "test  1",                       # 连续空格
+        " test 1 ",                      # 首尾空格
     ],
 )
 def test_space_variants_hit_the_same_session(chat_client, variant):
@@ -363,7 +384,17 @@ def test_normalize_session_name_contract():
 
 
 @pytest.mark.parametrize(
-    "bad", ["", "   ", "a" * 65, "a​b", "a﻿b", "日本語のテスト", "café", "x/y"]
+    "bad",
+    [
+        "",
+        "   ",
+        "a" * 65,
+        "a" + chr(0x200B) + "b",   # 零宽空格（肉眼看不见）
+        "a" + chr(0xFEFF) + "b",   # BOM
+        "a" + chr(0x00) + "b",     # NUL
+        "a" + chr(0x1B) + "b",     # ESC
+        "a" + chr(0x202E) + "b",   # RTL 覆盖
+    ],
 )
 def test_normalize_session_name_rejects(bad):
     import pytest as _pytest
@@ -381,7 +412,7 @@ def test_invisible_char_error_shows_codepoint():
     from src.interfaces.session import normalize_session_name as norm
 
     with _pytest.raises(ValueError) as exc:
-        norm("a​b")
+        norm("a\u200bb")
 
     assert "U+200B" in str(exc.value)
 
