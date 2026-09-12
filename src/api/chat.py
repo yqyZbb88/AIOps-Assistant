@@ -36,23 +36,43 @@ class ChatRequest(BaseModel):
     注意：**不要把 `user` 当会话键**——同一人开两个话题会互相污染，多用户共用一个
     标识（本服务无鉴权，前端常这么写）更会让所有人串进同一条对话。`user` 只用于
     「给会话名划定作用域」（A 的 `test_1` 与 B 的 `test_1` 是两段不同对话）。
+
+    **空串与纯空白视同「未提供」**（两个会话字段都是）：它们本就是可选字段，
+    而「我把输入框清空了」的意图就是「我没填」。把 `""` 当成「填了一个空名字」
+    而拒绝，会让 Swagger UI 里清空输入框这种最常见的操作直接 422。
     """
 
     user: str = Field(..., description="调用方标识，如 'ops'；同时是会话名的作用域")
     message: str = Field(..., min_length=1, description="用户输入的消息")
     session_id: str | None = Field(
-        None, description="服务端生成的会话 id（须已存在，未知则 404）"
+        None, description="服务端生成的会话 id（须已存在，未知则 404）；空串视同未提供"
     )
     session_name: str | None = Field(
         None,
         description=f"自定义会话名（任意可见字符，最长 {SESSION_NAME_MAX_CHARS}）；"
-                    "不存在则按此名新建会话",
+                    "不存在则按此名新建会话；空串视同未提供",
     )
+
+    @field_validator("session_id")
+    @classmethod
+    def _blank_id_is_absent(cls, value: str | None) -> str | None:
+        """空串 / 纯空白 → None（视同没给 id）。
+
+        不加这个的话，`session_id: ""` 会一路走到「按 id 续聊」分支并被判为假值，
+        落到「都没给 → 新建会话」——**结果虽然一样，但它走的是一条说得通的路径，
+        而不是「把一个空串当成了某个 id」**。顺手 `strip()`：id 是服务端生成的十六进制，
+        绝不含空格，所以去掉首尾空白只会救回「复制粘贴多带了空格」这种情况。
+        """
+        if value is None:
+            return None
+        if not isinstance(value, str):  # 交给 pydantic 原本的类型校验去报错
+            return value
+        return value.strip() or None
 
     @field_validator("session_name")
     @classmethod
     def _normalize_name(cls, value: str | None) -> str | None:
-        """在**入参校验阶段**归一化并卡住非法名字。
+        """空串 → None；否则在**入参校验阶段**归一化并卡住非法名字。
 
         放这里的理由与 `approval.action` 用 `Literal` 一样：非法输入应当直接 422，
         不要让它一路走到存储层再变成一个 500。
@@ -62,6 +82,12 @@ class ChatRequest(BaseModel):
         见 `interfaces/session.py::normalize_session_name` 的说明）。
         """
         if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        # 纯空白先在这里拦掉：否则 normalize_session_name 会以「名字不能为空」拒绝它，
+        # 而用户的意图明明只是「没填」
+        if not value.strip():
             return None
         try:
             return normalize_session_name(value)

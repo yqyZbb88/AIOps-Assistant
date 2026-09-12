@@ -262,8 +262,6 @@ def test_session_id_and_name_together_is_422(chat_client):
     "bad",
     [
         "a" * 65,                        # 超长
-        "",                              # 空串
-        "   ",                           # 全是空白（归一化后为空）
         "a" + chr(0x200B) + "b",         # 零宽空格——肉眼完全看不见，NFKC 也消不掉
         "a" + chr(0xFEFF) + "b",         # BOM
         "a" + chr(0x00) + "b",           # NUL 控制字符
@@ -372,6 +370,68 @@ def test_unknown_session_id_still_404_even_with_name_support(chat_client):
     assert resp.status_code == 404
 
 
+# -- 空串 / 纯空白视同「未提供」 ---------------------------------------------
+def _new_session(chat_client) -> str:
+    return chat_client.post("/chat", json={"user": "ops", "message": "开始"}).json()["session_id"]
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t", None])
+def test_blank_session_name_means_absent(chat_client, blank):
+    """`session_name` 为空时按「没填」处理，而不是拿它去校验。
+
+    这是修一个真实 bug：Swagger UI 会把**所有**字段都填进示例请求体，
+    用户把 `session_name` 那栏**清空**（而不是删掉）时发出去的就是 `""`，
+    原先会被判成「名字不能为空」→ 422。而用户的意图明明只是「我没填名字」。
+    """
+    sid = _new_session(chat_client)
+
+    resp = chat_client.post(
+        "/chat", json={"user": "ops", "message": "hi", "session_id": sid, "session_name": blank}
+    )
+
+    assert resp.status_code == 200, f"blank={blank!r} 应视同未提供"
+    assert resp.json()["session_id"] == sid, "应继续用 session_id 指定的会话"
+    assert resp.json()["session_name"] is None
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_session_id_means_absent(chat_client, blank):
+    """`session_id` 为空 → 视同没给 → 走「都没给 → 新建会话」这条明确路径。
+
+    （行为结果与修复前一样，区别在于它现在是一条说得通的路径，
+    而不是「把一个空串当成了某个 id」。且不能报错——Swagger 清空输入框就会产生空串。）
+    """
+    resp = chat_client.post(
+        "/chat", json={"user": "ops", "message": "hi", "session_id": blank}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["session_id"], "应新建一个会话"
+
+
+def test_session_id_surrounding_whitespace_is_trimmed(chat_client):
+    """id 是服务端生成的十六进制，绝不含空格——去掉首尾空白只会救回复制粘贴多带空格。"""
+    sid = _new_session(chat_client)
+
+    resp = chat_client.post(
+        "/chat", json={"user": "ops", "message": "hi", "session_id": f"  {sid}  "}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["session_id"] == sid
+
+
+def test_blank_name_does_not_satisfy_mutual_exclusion(chat_client):
+    """`session_id` 非空 + `session_name` 为空白 → 不算「两个都给」，应正常续聊。"""
+    sid = _new_session(chat_client)
+
+    resp = chat_client.post(
+        "/chat", json={"user": "ops", "message": "hi", "session_id": sid, "session_name": "  "}
+    )
+
+    assert resp.status_code == 200
+
+
 # -- 归一化函数本身（直接单测，不绕 HTTP） ------------------------------------
 def test_normalize_session_name_contract():
     from src.interfaces.session import normalize_session_name as norm
@@ -386,8 +446,6 @@ def test_normalize_session_name_contract():
 @pytest.mark.parametrize(
     "bad",
     [
-        "",
-        "   ",
         "a" * 65,
         "a" + chr(0x200B) + "b",   # 零宽空格（肉眼看不见）
         "a" + chr(0xFEFF) + "b",   # BOM
