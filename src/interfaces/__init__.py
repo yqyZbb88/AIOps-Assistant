@@ -37,6 +37,7 @@ from src.interfaces.session import (
     SessionNotFoundError,
     SessionStore,
     TurnResult,
+    is_owner,
 )
 
 __all__ = [
@@ -59,6 +60,7 @@ __all__ = [
     "SessionInfo",
     "TurnResult",
     "HistoryCapable",
+    "is_owner",
     "ROLE_USER",
     "ROLE_ASSISTANT",
     "STATUS_FINAL",

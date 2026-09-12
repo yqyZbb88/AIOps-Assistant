@@ -46,7 +46,7 @@ Assitant/
 │   │   ├── chat.py            #   POST /chat
 │   │   ├── alert.py           #   POST /alert、GET /alerts/recent、/alerts/active、/alerts/history
 │   │   ├── approvals.py       #   GET /approvals、POST /approvals/{id}（写命令人工审批）
-│   │   ├── sessions.py        #   GET /sessions、GET/DELETE /sessions/{id}（对话历史）
+│   │   ├── sessions.py        #   POST /sessions、GET /sessions、GET/PATCH/DELETE /sessions/{id}
 │   │   └── health.py          #   GET /health
 │   ├── core/                  # 业务核心（只依赖 interfaces 抽象与注入组件）
 │   │   ├── agent.py           #   OpsAgent 主控制器（chat/process_alert/recent/active_alerts）
@@ -365,36 +365,44 @@ python src/main.py
 | 方法/路径 | 说明 |
 |---|---|
 | `GET /health` | 健康检查 → `{"status","storage"}`（`storage` 为 `ok`/`degraded`） |
-| `POST /chat` | 请求 `{"user","message","session_id"?,"session_name"?}` → `{"reply","session_id","session_name"}` |
+| `POST /chat` | 请求 `{"message","session_id"}`（**`session_id` 必填**）→ `{"reply","session_id","session_name"}` |
 | `POST /alert` | Alertmanager webhook 推送 → `AlertAck` |
 | `GET /alerts/recent?limit=` | 最近被动接收的告警记录 |
 | `GET /alerts/active` | 实时活动告警（监控源故障转 502） |
 | `GET /alerts/history` | **落盘归档**：告警 + 处置结果 + AI 建议（持久化未启用时三者均为空） |
 | `GET /approvals` | 待人工审批的写命令调用（不可用时返回空列表） |
 | `POST /approvals/{id}` | 提交 `{"action":"approve"\|"reject","reason":""}` 并续跑；未知/已用 → 404，能力未启用 → 503 |
-| `GET /sessions` | 会话列表，最近更新的在前（持久化未启用时返回空列表） |
-| `GET /sessions/{id}` | 会话元信息 + 全部消息（含 pending/abandoned）；未知 → 404，未启用 → 503 |
-| `DELETE /sessions/{id}` | 删除会话连同其消息，并**作废该会话的未决审批**；未知/已删 → 404，未启用 → 503 |
+| `POST /sessions` | **新建会话** `{"name"?}` → `201` + 会话元信息（含 `session_id`）。创建者取自密钥，**不可指定** |
+| `GET /sessions` | 会话列表，最近更新的在前（鉴权开启时**只列自己的**；持久化未启用时返回空列表） |
+| `GET /sessions/{id}` | 会话元信息 + 全部消息（含 pending/abandoned）；未知 / 不属于你 → 404，未启用 → 503 |
+| `PATCH /sessions/{id}` | 改标签 `{"name"}`（空串 = 清除标签）；未知 / 不属于你 → 404 |
+| `DELETE /sessions/{id}` | 删除会话连同其消息，并**作废该会话的未决审批**；未知 / 已删 / 不属于你 → 404，未启用 → 503 |
 
 > **鉴权**：`auth.enabled` 打开后，上表除 `GET /health` 外**全部**要求
 > `Authorization: Bearer <密钥>`（含 `POST /alert`，记得同步改 Alertmanager）。详见「安全说明」。
 >
-> `/approvals` 与 `/sessions` 是**新增路由**，原有五个路由的路径与语义均未改动。
-> 唯一的**字段扩充**是 `POST /chat`：请求加可选 `session_id`、响应恒回带 `session_id`
-> （M4 第二批，属追加而非修改——不传时行为与改造前完全一致）。写命令待审批时
-> `/chat` 仍返回 `{"reply": str}`，只是 `reply` 内容是待审批提示。
+> **会话归属**：身份由密钥推出，`/sessions/*` 只能看到 / 改 / 删**自己的**会话。
+> 别人的会话一律 **404**（不是 403）——与「未知 id」同形，不泄露「这个 id 存在，只是不是你的」。
 >
-> **多轮**：规则只有一条——**有 `session_id` 就用它续聊，没有就新建一段对话。**
+> ### 会话：两段式（2026-09-12 起）
 >
-> | 传什么 | 语义 |
+> **先建会话拿 id，之后每轮都带上它。** `/chat` 不再兼职建会话。
+>
+> ```
+> 1) POST /sessions  {"name": "生产排查"}          →  {"session_id": "a50a3e…", ...}
+> 2) POST /chat      {"message": "...", "session_id": "a50a3e…"}
+> ```
+>
+> | 端点 | 说明 |
 > |---|---|
-> | 都不传 | 新建未命名会话（行为同改造前，每次调用独立） |
-> | `session_id` | 用上次回带的**服务端生成 id**，**选中会话的唯一方式**。必须已存在，未知 → 404（不静默重建，否则 `DELETE` 形同虚设） |
-> | `session_name` | 给**新会话**起个**给人识别的标签**（任意可见字符，≤64）。**不参与选中会话**——传名字永远不会接到旧对话上 |
-> | 两个都给 | **名字被忽略**（`/chat` 只管聊天，不给已有会话改名） |
+> | `POST /sessions` | 建会话的**唯一**入口。`name` 是可选的**给人识别的标签**（任意可见字符，≤64），不填则未命名 |
+> | `POST /chat` | `session_id` **必填**。未知 / 不属于你 → 404（不静默重建，否则 `DELETE` 形同虚设）；空串或纯空白 → **422**（绝不静默新建一段会话） |
+> | `PATCH /sessions/{id}` | 改名。空串 = 清除标签——既然能建未命名会话，就该能退回未命名 |
 >
-> **所以续聊只能靠 id**：同名请求两次会得到**两段新对话**。名字**不要求唯一**——
-> 同一个人可以有两段都叫「生产排查」的对话，靠 `GET /sessions` 里的 id / 时间 / 标题区分。
+> **标签（`name`）不参与选中会话**：选中只认 `session_id`。所以**同名两次 = 两段独立对话**，
+> 名字**不要求唯一**——同一个人可以有两段都叫「生产排查」的对话，靠 `GET /sessions` 里的
+> id / 时间 / 标题区分。改名**不更新**会话的 `updated_at`（它表示「最后一句话是什么时候说的」，
+> 不该被一次纯标签操作刷新）。
 >
 > **标签的处理规则**（三步）：
 >
@@ -409,10 +417,44 @@ python src/main.py
 > 而复制粘贴时很容易带上——那会让你在 `/sessions` 里看到两个**看起来完全一样**的标签、
 > 却没有任何线索区分。响应里回带的是归一化后的标签。
 >
-> **空串与纯空白视同「未提供」**（两个会话字段都是）：它们本就是可选的，而「我把输入框
-> 清空了」的意图就是「我没填」。特别地——**Swagger UI 会把所有字段都填进示例请求体**，
-> 把某一栏清空时发出去的是 `""` 而不是省略该字段；不这样处理的话，这个最常见的操作会直接 422。
-> `session_id` 还会顺带去掉首尾空白（id 是十六进制，绝不含空格，去掉只会救回多带空格的复制粘贴）。
+> **空串与纯空白在「建会话 / 改名」里视同「没填」**：**Swagger UI 会把所有字段都填进示例
+> 请求体**，把某一栏清空时发出去的是 `""` 而不是省略该字段；不这样处理的话，这个最常见的
+> 操作会直接 422。（`/chat` 的 `session_id` 是例外——那里空白必须 422，见上表。）
+>
+> ### ⚠️ 破坏性变更（2026-09-12，本项目第一次）
+>
+> `POST /chat` 的**请求体**改了，**响应体三键不变**（`reply` / `session_id` /
+> `session_name`，其中 `session_name` 改为只读回带会话标签）：
+>
+> | 字段 | 变更 |
+> |---|---|
+> | `user` | **删除**。身份改由 `Authorization` 密钥推出——自报的用户名无从核实，基于它的校验只是装饰 |
+> | `session_name` | **删除**。名字搬到了 `POST /sessions`（建会话时给），改名走 `PATCH` |
+> | `session_id` | **可选 → 必填** |
+>
+> 客户端若仍带着 `user` / `session_name`，会被**静默忽略**（pydantic 默认 `extra="ignore"`），
+> 不会报 422——它们不再是可信输入，为它们报错只会让既有调用方困惑。
+
+### 升级须知（开启鉴权前必读）
+
+**存量会话的 `user` 若不在密钥映射里，开启鉴权后会立刻访问不到。** 归属校验取
+「一律拒绝」：`user` 与身份**精确匹配**才算你的，`user` 为空的行任何人都不匹配。
+
+本仓库 `data/ops_agent.db` 里实测有两类历史值：`user='yqyZ'`（真实对话）与
+`user='string'`（Swagger 示例值留下的垃圾）。**要保住某段对话，把一条密钥映射到它
+原本的 `user` 值上即可**：
+
+```jsonc
+// .env —— 这样 yqyZ 那段历史重新可见，"string" 那两条丢掉无妨
+OPS_API_TOKENS={"k-你的随机值": "yqyZ"}
+```
+
+另外两条同源的坑：
+
+- `auth.enabled: true` 却解析不出任何密钥 → **服务拒绝启动**（绝不「空密钥 = 放行」）。
+  错配的表现是进程起不来，而不是静默地无鉴权运行。
+- 打开鉴权后 **`POST /alert` 也会要求密钥**，必须在 Alertmanager 侧同步配置，
+  否则告警静默 401。详见「安全说明」。
 >
 > ⚠️ **名字不提供任何访问保护**：它既不可靠（能猜）也不参与选中会话。真正的隔离只能靠
 > 鉴权——在加鉴权之前 `GET /sessions` 会把所有会话的 id 直接列出来，**任何能访问端口的人
@@ -451,11 +493,13 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
 截断、清理）、`test_api_alerts.py`（`POST /alert` → `/alerts/history` 端到端 + 归档失败
 不影响告警接收）、`test_logger.py`（审计落盘的幂等挂载与开关语义）。
 
-鉴权的用例也全离线：`test_utils_auth.py`（配置解析、**常数时间全量比对**、非 ASCII 凭据、
-启动期校验）、`test_api_auth.py`（逐路由 401、`/health` 与文档路由豁免、**枚举 `app.routes`
-兜底「没有路由漏挂」**、`enabled` 却无密钥时拒绝启动、配了密钥却没启用时的反向告警）。
+鉴权与会话归属的用例也全离线：`test_utils_auth.py`（配置解析、**常数时间全量比对**、
+非 ASCII 凭据、启动期校验）、`test_api_auth.py`（逐路由 401、`/health` 与文档路由豁免、
+**枚举 `app.routes` 兜底「没有路由漏挂」**、`enabled` 却无密钥时拒绝启动、配了密钥却没启用
+时的反向告警；以及**跨身份的会话隔离**：别人读/聊/改/删一律 404、`GET /sessions` 只看得到
+自己的、**非 owner 的 DELETE 不得作废别人的待审批写命令**、存量 `user` 的可见性规则）。
 
-**当前基线：442 passed。**
+**当前基线：487 passed。**
 
 ---
 

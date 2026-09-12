@@ -45,6 +45,7 @@ from src.interfaces.session import (
     SessionNotFoundError,
     SessionStore,
     TurnResult,
+    is_owner,
 )
 
 logger = logging.getLogger("ops_agent.chat")
@@ -57,8 +58,11 @@ HELP_TEXT = (
     "  - 告警：查询当前 pending / firing 状态的告警\n"
     "  - 帮助：显示本帮助信息\n"
     "\n（提示：LLM 不可用时会回落到关键词模式，仅支持固定命令）\n"
-    "\n示例：\n"
-    '  {"user": "ops", "message": "帮我看看现在系统负载高不高？"}'
+    "\n用法（两段式：先建会话拿到 id，之后每轮都带上它）：\n"
+    '  1) POST /sessions  {"name": "生产排查"}          →  {"session_id": "..."}\n'
+    '  2) POST /chat      {"message": "...", "session_id": "<上一步的 id>"}\n'
+    "\n调用者的身份由 Authorization 头里的密钥推断（见 config/settings.yaml 的 auth 段），"
+    "不再由请求体里的字段指定。"
 )
 
 # 兜底回复：LLM 不可用时的最终兜底
@@ -157,10 +161,13 @@ class ChatService:
         message: str,
         *,
         session_id: str | None = None,
-        session_name: str | None = None,
-        user: str = "",
+        user: str | None = None,
     ) -> ChatReply:
         """带会话的一轮：Agent-first → 关键词兜底，并把这一轮写进会话表。
+
+        `user` 是**调用者的身份**，由上层从密钥推出（鉴权关闭时为 `None`）——它只用于
+        (a) 新建会话时记归属、(b) 校验 `session_id` 是不是自己的，**绝不参与选中会话**
+        （选中只认 id；把身份当会话键会让同一个人开两个话题时互相污染）。
 
         三个刻意的结构选择：
 
@@ -172,7 +179,7 @@ class ChatService:
            仓库把降级部署当一等公民（有专门的 no-langchain 回归测试）。
         3. **持久化不可用时只是不落库**，聊天照常（`_sessions is None` → 全程跳过）。
         """
-        sid, sname = self._resolve_session(session_id, session_name, user)
+        sid, sname = self._resolve_session(session_id, user)
         history = self._load_history(sid)
 
         turn: TurnResult | None = None
@@ -217,21 +224,22 @@ class ChatService:
         return TurnResult(text=DEFAULT_REPLY)
 
     def _resolve_session(
-        self, session_id: str | None, session_name: str | None, user: str
+        self, session_id: str | None, user: str | None
     ) -> tuple[str | None, str]:
         """确定本轮用哪个会话，返回 (session_id, session_name)；存储不可用 → (None, "")。
 
-        **规则只有一条：有 `session_id` 就用它，没有就新建。**
+        **给了 `session_id`：必须已存在且属于调用者。**
 
-        - `session_id` 必须已存在，否则 `SessionNotFoundError`（api 转 404）。
-          不静默重建，否则 `DELETE` 形同虚设。
-        - **`session_name` 是标签，不参与选中会话**——它只在**新建**时给新会话起个
-          供人识别的名字。所以传名字**永远不会**接到旧对话上，同名请求两次会得到
-          两段新对话。选中会话只认 id（这一点很重要：名字可猜，id 不可猜，
-          将来加了鉴权后名字才可能安全地变回选择器）。
-        - **同时给了 id 和名字**：名字被**忽略**，不产生任何副作用。
-          `/chat` 只管聊天；给已有会话改名应当走专门的操作（如 `PATCH /sessions/{id}`），
-          不该让「发一句话」顺带改掉标签。
+        - 不存在 → `SessionNotFoundError`（api 转 404）。不静默重建，否则 `DELETE` 形同虚设。
+        - **归属不匹配也一律 404**（不是 403）：与「未知 id」同形，不泄露
+          「这个 id 存在，只是不属于你」。判定用 `interfaces.is_owner`——那是唯一的
+          归属实现，api 层的 `/sessions/*` 用的是同一个。
+        - `user is None`（鉴权关闭）→ 不校验归属，行为与改造前一致。
+
+        **没给 `session_id`：建一段新会话。** 这条路径**不是** `/chat` 走的——那边
+        `session_id` 是必填字段、建会话只认 `POST /sessions`。它服务的是**旧的单轮入口**
+        （`OpsAgent.chat()` / `ChatService.reply()`，降级部署与既有调用方还在用），
+        保留是为了不让那批调用方凭空失去落盘能力。
         """
         store = self._sessions
         if store is None:
@@ -239,10 +247,10 @@ class ChatService:
         try:
             if session_id:
                 info = store.get(session_id)
-                if info is None:
+                if info is None or not is_owner(info, user):
                     raise SessionNotFoundError(f"会话不存在或已过期: {session_id}")
                 return info.session_id, info.name
-            created = store.create(user=user, name=session_name or "")
+            created = store.create(user=user)
             return created.session_id, created.name
         except SessionNotFoundError:
             raise

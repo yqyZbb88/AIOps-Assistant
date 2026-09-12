@@ -175,7 +175,13 @@ class SqliteSessionStore(SessionStore):
         self._ok()
 
     # -- 会话生命周期 -------------------------------------------------------
-    def create(self, *, user: str = "", title: str = "", name: str = "") -> SessionInfo:
+    def create(
+        self, *, user: str | None = "", title: str = "", name: str = ""
+    ) -> SessionInfo:
+        # 归一 None → ""：鉴权关闭时调用方给的就是 None。不归一的话会 INSERT 成 NULL，
+        # 并构造出 SessionInfo(user=None)，而读路径 _row_to_session 有 `or ""` 兜底——
+        # 同一个字段两条路径两种类型。
+        user = user or ""
         session_id = uuid.uuid4().hex
         stamp = to_iso(self._clock())
         self._execute(
@@ -198,23 +204,53 @@ class SqliteSessionStore(SessionStore):
         return _row_to_session(rows[0]) if rows else None
 
 
-    def list(self, *, limit: int = 50) -> list[SessionInfo]:
+    def list(self, *, user: str | None = None, limit: int = 50) -> list[SessionInfo]:
         # 次键 rowid 不可省：时间戳是秒级精度，同一秒内建的两个会话 updated_at 完全相同，
         # 只按 updated_at 排序时顺序不确定（测试会随机翻车）。
+        #
+        # user 条件写进 SQL 而不是取回来再过滤：先取 limit 条再筛会让「最近 50 条」
+        # 其实不是最近的 50 条。
+        where, params = "", []
+        if user is not None:
+            where, params = "WHERE s.user = ? ", [user]
         rows = self._query(
             f"SELECT {_SESSION_COLUMNS} FROM sessions s "
+            f"{where}"
             "ORDER BY s.updated_at DESC, s.rowid DESC LIMIT ?",
-            (max(1, int(limit)),),
+            (*params, max(1, int(limit))),
         )
         return [_row_to_session(r) for r in rows]
 
-    def delete(self, session_id: str) -> bool:
-        """删会话连同其消息（同事务，不依赖外键）。"""
+    def delete(self, session_id: str, *, user: str | None = None) -> bool:
+        """删会话连同其消息（同事务，不依赖外键）。
+
+        归属守卫必须在**任何写之前**、在同一事务内判定：先删 messages 再判归属，
+        一次未授权的删除就会抹掉别人的对话正文，而会话行还在。
+        """
         with self._tx() as conn:
+            row = conn.execute(
+                "SELECT user FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            if user is not None and (row["user"] or "") != user:
+                return False  # 什么都不写
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             cur = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
             deleted = cur.rowcount > 0
         return deleted
+
+    def rename(self, session_id: str, *, name: str, user: str | None = None) -> bool:
+        """改会话标签；**不碰 `updated_at`**（见 ABC 的说明）。
+
+        单条 UPDATE 本身就是原子的，不需要显式事务。
+        """
+        sql = "UPDATE sessions SET name = ? WHERE session_id = ?"
+        params: tuple = (name, session_id)
+        if user is not None:
+            sql += " AND user = ?"
+            params += (user,)
+        return self._execute(sql, params) > 0
 
     # -- 消息 ---------------------------------------------------------------
     def history(self, session_id: str, *, limit: int = DEFAULT_MESSAGE_WINDOW) -> list[ChatMessage]:
@@ -392,7 +428,10 @@ class InMemorySessionStore(SessionStore):
         """把会话标记为最近使用（OrderedDict 尾部 = 最新）。"""
         self._sessions.move_to_end(session_id)
 
-    def create(self, *, user: str = "", title: str = "", name: str = "") -> SessionInfo:
+    def create(
+        self, *, user: str | None = "", title: str = "", name: str = ""
+    ) -> SessionInfo:
+        user = user or ""  # 归一 None → ""，与 SQLite 版一致（见 ABC 的说明）
         session_id = uuid.uuid4().hex
         stamp = to_iso(self._clock())
         self._sessions[session_id] = {
@@ -421,13 +460,35 @@ class InMemorySessionStore(SessionStore):
     def get(self, session_id: str) -> SessionInfo | None:
         return self._info(session_id)
 
-    def list(self, *, limit: int = 50) -> list[SessionInfo]:
-        infos = [self._info(sid) for sid in reversed(self._sessions)]
+    def list(self, *, user: str | None = None, limit: int = 50) -> list[SessionInfo]:
+        # OrderedDict 尾部 = 最新，故 reversed 即「最近更新的在前」。
+        # 过滤放在切片**之前**，与 SQLite 版把条件写进 WHERE（而非取回来再筛）同理：
+        # 否则「最近 50 条」会少于 50 条。
+        rows = list(reversed(self._sessions.items()))
+        if user is not None:
+            rows = [(sid, row) for sid, row in rows if row.get("user", "") == user]
+        infos = [self._info(sid) for sid, _ in rows]
         return [i for i in infos if i is not None][: max(1, int(limit))]
 
-    def delete(self, session_id: str) -> bool:
+    def delete(self, session_id: str, *, user: str | None = None) -> bool:
+        row = self._sessions.get(session_id)
+        if row is None:
+            return False
+        if user is not None and row.get("user", "") != user:
+            return False  # 什么都不删
         self._messages.pop(session_id, None)
-        return self._sessions.pop(session_id, None) is not None
+        self._sessions.pop(session_id, None)
+        return True
+
+    def rename(self, session_id: str, *, name: str, user: str | None = None) -> bool:
+        """改标签；**不碰 `created_at`/`updated_at`**（顺序即 updated_at，见 ABC 的说明）。"""
+        row = self._sessions.get(session_id)
+        if row is None:
+            return False
+        if user is not None and row.get("user", "") != user:
+            return False
+        row["name"] = name
+        return True
 
     def history(self, session_id: str, *, limit: int = DEFAULT_MESSAGE_WINDOW) -> list[ChatMessage]:
         visible = [m for m in self._messages.get(session_id, []) if m.status in WINDOW_STATUSES]

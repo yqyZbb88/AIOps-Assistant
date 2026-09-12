@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from src.interfaces.session import STATUS_PENDING_APPROVAL
 from src.main import create_app
 from src.utils.config_loader import AuthSettings, Settings, StorageSettings
 
@@ -20,12 +21,21 @@ _EXEMPT_PATHS = {"/health", "/openapi.json", "/docs", "/docs/oauth2-redirect", "
 _PARAM = re.compile(r"\{[^}]+\}")
 
 
-def _make_app(*, enabled: bool = True, tokens: str = _TOKENS) -> FastAPI:
+def _as(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _make_app(
+    *, enabled: bool = True, tokens: str = _TOKENS, db_path=None
+) -> FastAPI:
+    """默认不落盘（测试不写真实 db）；给了 `db_path` 才打开持久化。"""
+    storage = (
+        StorageSettings(enabled=False)
+        if db_path is None
+        else StorageSettings(enabled=True, db_path=str(db_path))
+    )
     return create_app(
-        settings=Settings(
-            storage=StorageSettings(enabled=False),  # 不落盘：测试不写真实 db
-            auth=AuthSettings(enabled=enabled, tokens=tokens),
-        )
+        settings=Settings(storage=storage, auth=AuthSettings(enabled=enabled, tokens=tokens))
     )
 
 
@@ -147,3 +157,135 @@ def test_disabled_auth_needs_no_credentials():
     with TestClient(app) as c:
         assert c.get("/sessions").status_code == 200
         assert c.get("/approvals").status_code == 200
+
+
+# -- 会话归属：身份由密钥推出，所以隔离是真的 --------------------------------
+@pytest.fixture
+def owned(tmp_path):
+    """鉴权开 + 持久化开的 client，外加它的 store（供直接造数据）。"""
+    app = _make_app(db_path=tmp_path / "ops.db")
+    with TestClient(app) as c:
+        c.store = app.state.container.sessions()  # type: ignore[attr-defined]
+        yield c
+
+
+def _alice_session(c) -> str:
+    return c.post("/sessions", json={"name": "生产排查"}, headers=_as("k-alice")).json()[
+        "session_id"
+    ]
+
+
+def test_create_session_records_the_identity_from_the_key(owned):
+    """**创建者由密钥推出**，客户端无从指定——这正是归属校验有意义的前提。"""
+    sid = _alice_session(owned)
+
+    assert owned.store.get(sid).user == "alice"
+
+
+def test_list_shows_only_your_own_sessions(owned):
+    _alice_session(owned)
+    owned.post("/sessions", json={"name": "bob 的"}, headers=_as("k-bob"))
+
+    alice_view = owned.get("/sessions", headers=_as("k-alice")).json()
+    bob_view = owned.get("/sessions", headers=_as("k-bob")).json()
+
+    assert [s["user"] for s in alice_view] == ["alice"]
+    assert [s["user"] for s in bob_view] == ["bob"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        ("get", None),
+        ("delete", None),
+        ("patch", {"name": "改成我的"}),
+        ("post", None),  # /chat
+    ],
+)
+def test_other_users_session_is_404(owned, call):
+    """别人的会话一律 404（**不是 403**）：与「未知 id」同形，不泄露 id 是否存在。"""
+    method, body = call
+    sid = _alice_session(owned)
+    if method == "post":
+        resp = owned.post(
+            "/chat", json={"message": "偷看", "session_id": sid}, headers=_as("k-bob")
+        )
+    elif method in ("get", "delete"):
+        resp = getattr(owned, method)(f"/sessions/{sid}", headers=_as("k-bob"))
+    else:
+        resp = owned.patch(f"/sessions/{sid}", json=body, headers=_as("k-bob"))
+
+    assert resp.status_code == 404
+
+
+def test_owner_can_still_reach_their_own_session(owned):
+    """反向：别把校验做成「谁也进不去」。"""
+    sid = _alice_session(owned)
+
+    owned.post("/chat", json={"message": "你好", "session_id": sid}, headers=_as("k-alice"))
+
+    assert owned.get(f"/sessions/{sid}", headers=_as("k-alice")).status_code == 200
+    assert owned.patch(
+        f"/sessions/{sid}", json={"name": "改名了"}, headers=_as("k-alice")
+    ).status_code == 200
+
+
+def test_delete_by_non_owner_does_not_cancel_pending_approvals(owned):
+    """**归属检查必须排在作废审批之前。**
+
+    `cancel_pending` 不可逆（把那一轮永久标成 `abandoned`）。若先作废再发现「不是你的
+    会话」，等于白废掉别人一条待执行的写命令——一次越权 DELETE 就能让别人的写命令
+    永远执行不了，而攻击者拿到的只是一个 404。
+    """
+    sid = _alice_session(owned)
+    owned.store.append_turn(
+        sid, user_content="重启 nginx", assistant_content="⚠️ 待审批",
+        status=STATUS_PENDING_APPROVAL, approval_id="ap-alice",
+    )
+    calls: list[str] = []
+    owned.app.state.agent.cancel_pending = lambda aid: (calls.append(aid), True)[1]
+
+    resp = owned.delete(f"/sessions/{sid}", headers=_as("k-bob"))
+
+    assert resp.status_code == 404
+    assert calls == [], "不得碰别人的待审批句柄"
+    assert owned.store.get(sid) is not None, "会话也不能被删"
+    assert owned.store.messages(sid)[1].status == STATUS_PENDING_APPROVAL
+
+
+def test_legacy_row_is_invisible_until_a_key_maps_to_its_user(owned):
+    """**升级须知**：开启鉴权后，存量会话的 `user` 若不在密钥映射里，就访问不到了。
+
+    库里实测有 `user='yqyZ'` 与 `user='string'`（Swagger 示例值留下的垃圾）两类。
+    要保住某段对话，把一条密钥映射到它原本的 `user` 值上即可——这条用例把那个
+    逃生通道钉死，免得用户以为老数据「被删了」。
+    """
+    legacy = owned.store.create(user="yqyZ").session_id
+
+    for token in ("k-alice", "k-bob"):
+        assert owned.get(f"/sessions/{legacy}", headers=_as(token)).status_code == 404
+
+    app2 = _make_app(
+        tokens='{"k-yqyz": "yqyZ", "k-alice": "alice"}',
+        db_path=owned.app.state.settings.storage.db_path,
+    )
+    with TestClient(app2) as c2:
+        assert c2.get(f"/sessions/{legacy}", headers=_as("k-yqyz")).status_code == 200
+
+
+def test_unowned_legacy_row_is_invisible_to_every_identity(owned):
+    """`user` **为空**的存量行，任何身份都不匹配（用户选的「一律拒绝」）。"""
+    unowned = owned.store.create().session_id  # user=""
+
+    for token in ("k-alice", "k-bob"):
+        assert owned.get(f"/sessions/{unowned}", headers=_as(token)).status_code == 404
+
+
+def test_auth_off_sees_everything_again(owned):
+    """关掉鉴权 → 无身份 → 不校验归属，行为与改造前一致（残余风险也一并回来）。"""
+    sid = _alice_session(owned)
+
+    app2 = _make_app(enabled=False, tokens="", db_path=owned.app.state.settings.storage.db_path)
+    with TestClient(app2) as c2:
+        assert c2.get(f"/sessions/{sid}").status_code == 200
+        assert len(c2.get("/sessions").json()) == 1

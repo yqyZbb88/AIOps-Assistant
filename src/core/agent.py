@@ -74,17 +74,15 @@ class OpsAgent:
         message: str,
         *,
         session_id: str | None = None,
-        session_name: str | None = None,
-        user: str = "",
+        user: str | None = None,
     ) -> ChatReply:
         """带会话的一轮：返回回答文本 + 会话 id / 会话名（`/chat` 走这里）。
 
-        传未知 `session_id` 抛 SessionNotFoundError（api 层转 404，**不静默重建**）；
-        传 `session_name` 则是「按名字继续，没有就用这个名字新建」。
+        `user` 是调用者身份，由 API 层从密钥推出（鉴权关闭时为 `None`）。
+        `session_id` 未知**或不属于 `user`** 一律抛 SessionNotFoundError（api 层转 404，
+        不静默重建、也不区分「不存在」与「不是你的」）。
         """
-        return self.chat_service.reply_turn(
-            message, session_id=session_id, session_name=session_name, user=user
-        )
+        return self.chat_service.reply_turn(message, session_id=session_id, user=user)
 
     def cancel_pending(self, approval_id: str) -> bool:
         """作废一条待审批项（会话被删除时一并作废其未决审批）。"""

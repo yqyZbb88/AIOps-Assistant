@@ -80,8 +80,9 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：442 passed**（2026-09-12 鉴权骨架完成后；M4 第二批「多轮」时为 411，
-    09-12 增 31 例：`test_api_auth.py` 16、`test_utils_auth.py` 14、既有文件 +1。
+    **当前基线：487 passed**（2026-09-12 鉴权 + 会话接口改造完成后；当日从 411 起共增 76：
+    鉴权骨架 31 + 会话改造 45）。鉴权骨架批次的 31 例 = `test_api_auth.py` 16、
+    `test_utils_auth.py` 14、既有文件 +1。
     M4 当日共增 109 例：
     `test_sqlite_db.py` 15、`test_session_store.py` 43、`test_api_sessions.py` 18、
     `test_chat_history.py` 14、`test_history_capable.py` 9、既有文件 +10）。
@@ -97,7 +98,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **442**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **487**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
     | [docs/database.md](docs/database.md) | **改表结构 / 加字段 / 改字段语义 / 改清理策略时必须同步**——它是库结构的逐字段说明。迁移那节的两条硬性约束（结构指纹一致、新列加末尾）也在那里 |
 
@@ -135,10 +136,11 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   审批中断的整轮落 `pending_approval`、审批后**原地回填**最终回答；
   开库时把残留的孤儿审批轮标 `abandoned`。**零新增依赖**（stdlib `sqlite3`）。
   三级降级：配置关 → 不落库；SQLite 打不开 → 内存实现（多轮可用、重启即丢）；正常 → SQLite。
-  **会话名**（`sessions.name`，v2 引入 / **v3 定位修订**）：**选中会话只认 `session_id`**；
-  `session_name` 是**给新会话打的标签**，供人在 `/sessions` 里识别，**不参与选中会话、
-  不要求唯一**（同名请求两次 = 两段新对话）。id 与名字同时给时**名字被忽略**。
-  **见下方「会话名定位修订」——旧的「别名」行为已废弃。**
+  **会话名**（`sessions.name`，v2 引入 / **v3 定位修订** / **09-12 再收尾**）：
+  **选中会话只认 `session_id`**；名字是**给人识别的标签**，**不参与选中会话、不要求唯一**
+  （同名两次 = 两段新对话）。**建会话时给**（`POST /sessions` 的 `name`），
+  **改名走 `PATCH /sessions/{id}`**（空串 = 清除标签）——`/chat` 已无此字段。
+  **见下方「会话名定位修订」及其「后续修订」。**
 - **状态日志归档 + 审计落文件**（M4 第二批，2026-09-11）：
   `POST /alert` 的处理产出（告警 / 处置结果 / AI 建议）落三张表，靠 `Alert.alert_key`
   关联（**不是裸 fingerprint**——它默认空串，做 join key 会把不同告警并成一条）；
@@ -155,6 +157,14 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   `auth.enabled` 的 dataclass 默认是 **false**（同 `storage.enabled`：
   `create_app(settings=Settings())` 在测试里被调多次）；yaml 出厂也是 false。
   `enabled: true` 却解析不出任何密钥 → **拒绝启动**（绝不「空密钥 = 放行」）。
+- **会话归属（用户之间真正隔离）**（2026-09-12）：判定只有一处实现——
+  [src/interfaces/session.py](src/interfaces/session.py) 的 `is_owner(info, identity)`：
+  `identity is None`（鉴权关闭）不校验，否则要求 `user` **精确匹配**（取「一律拒绝」，
+  空 `user` 的存量行任何身份都不匹配）。api 层（`/sessions/*`）与 core 层
+  （`/chat` 的 `_resolve_session`）**共用**它——两处各写一遍必然漂移。
+  不匹配一律 **404**（不是 403），不泄露「这个 id 存在，只是不是你的」。
+  建会话只认 `POST /sessions`（`/chat` 的 `session_id` 是必填字段），改名走 `PATCH`，
+  删除时**归属检查排在作废审批之前**（`cancel_pending` 不可逆）。
 
 ### 分层边界（一句话版；完整目录树见 [README.md](./README.md)）
 
@@ -216,6 +226,8 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | **`hmac.compare_digest` 收 `str` 且含非 ASCII 会抛 `TypeError` → 500 而不是 401**（2026-09-12 实测） | 常数时间比对有两个容易一起漏掉的点：① **先 `.encode()` 再比**，否则一个含中文的 Authorization 头会把「凭据无效」（401）变成服务端异常（500）；② **遍历全部密钥、不提前 return**，命中第一个也走完，否则响应时间泄露「第几个密钥匹配上了」＝泄露「猜的密钥前缀对不对」。密钥数量是个位数，全遍历的代价可以忽略。见 [src/utils/auth.py](src/utils/auth.py) 的 `resolve_identity`。 |
 | **鉴权挂在哪，决定了「漏挂」是哪个方向**（2026-09-12） | 三条路只有一条是 fail-closed：① `@app.middleware("http")` 在**路由匹配之前**跑，拿不到「这条路由要不要鉴权」，只能手工维护路径白名单——**漏掉新路由 = 新路由默认敞开**；② `APIRouter(dependencies=...)` 要改每个 api 模块，将来新增 router 容易忘；③ **`include_router(..., dependencies=[Depends(...)])`**（本仓库采用）：`src/main.py` 是唯一的挂载点，一屏看完，**要豁免必须显式写出来**（只有 `health_api.router` 那行没加）。配套：`/docs`、`/redoc`、`/openapi.json` 是 **app 级**路由、不在任何 router 里，因此不会被拦——不用为它们开后门。兜底测试 `test_api_auth.py` 直接**枚举 `app.routes`** 断言「除豁免外每个都 401」，将来新增路由会被自动覆盖。 |
 | **`HTTPBearer(auto_error=True)` 缺头时返回 403，不是 401**（2026-09-12） | FastAPI 的已知行为。「没带凭据」语义上是 401（且必须带 `WWW-Authenticate: Bearer` 质询头，否则 Swagger/客户端走不了标准流程），403 是「认证过了但没权限」。故一律 `HTTPBearer(auto_error=False)` 自己抛 401。顺带：`auto_error=False` 时 `credentials` 为 `None` **同时覆盖了**「没带 Authorization 头」与「带了但不是 Bearer scheme」两种情况。 |
+| **必填字段的 `after` 校验器返回 `None` 会**真的**得到 `None`——pydantic v2 不重校验返回值**（2026-09-12 实测） | 写 `session_id: str = Field(...)` + 一个「空白就返回 `None`」的校验器，模型里会实实在在存进 `None`（不是报错、也不会回落到默认值）。后果是下游 `if session_id:` 为假 → 走到「没给 id」的分支 → **白开一段会话**，还顺带把 `DELETE` 的语义架空。**规矩**：必填字段的校验器**只能抛 `ValueError`（→422），绝不能用「返回 None」表达「没填」**。只有**可选**字段才可以把空白折成 `None`（那时候类型本来就是 `str | None`）。两种语义不能混用——`session_name` 可选所以折成 None，`session_id` 必填所以必须 422。 |
+| **删除是最容易做错顺序的操作：一次未授权的 DELETE 能造成两种不可逆副作用**（2026-09-12，加了归属校验才发现） | 两个都必须堵：① `SqliteSessionStore.delete` 原先**先删 messages 再删 sessions**（同事务）——守卫若只加在 sessions 那条 SQL 上，未授权的删除会**抹掉别人的对话正文**而会话行还在。守卫必须在同一事务内、在**任何写之前**判定。② `api/sessions.py` 原先**先 `cancel_pending` 再 `delete`**——`cancel_pending` 把那一轮永久标成 `abandoned` 且**不可逆**，所以「不是你的会话 → 404」是在白废掉别人一条待执行的写命令之后才返回的。**规矩：任何「有副作用的删除」都要问一句——副作用里有没有不可逆的？有的话，权限判定必须排在它前面。** 回归用例 `test_delete_by_non_owner_does_not_cancel_pending_approvals`。 |
 
 ### 既定决策记录（勿推翻）
 
@@ -446,6 +458,14 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   （`{"reply"}` → `{"reply","session_id"}`）与 README 路由表，两处不再对不上。
   **鉴权不算契约改动**（2026-09-12）：`auth.enabled` 出厂 `false`，关闭时逐字与改造前一致；
   开启后是**多了一层准入要求**（无凭据 401），请求/响应**字段一个没动**。挂法与纪律见坑表。
+  **例外 #2 —— 本项目第一次真正的破坏性变更**（2026-09-12，**经用户明确授权的契约变更**）：
+  `POST /chat` 的**请求体**删掉 `user` 与 `session_name`、`session_id` 由可选改**必填**；
+  同时**新增** `POST /sessions`（建会话的唯一入口）与 `PATCH /sessions/{id}`（改名）。
+  理由有两条：① 身份改由**密钥**推出——自报的用户名无从核实，基于它的校验只是装饰；
+  ② 「建会话」从 `/chat` 的副作用变成一个**显式动作**，调用方不必再猜「这次是新建还是续聊」。
+  **响应体三键一字未改**（`session_name` 的语义从「客户端给的别名」变为「只读回带会话标签」）。
+  旧字段不报错、**静默忽略**（pydantic 默认 `extra="ignore"`）：它们已无害，报 422 只会让
+  既有调用方收到一个莫名其妙的错。README 有「破坏性变更」与「升级须知」两节，动这块前先读。
 - **`config/*.yaml` 的现有格式与示例内容**：无需求不动配置。
 - **安全不变量相关的一切**（`shlex.quote`、redact、审计、恒不 sudo、凭据不进模型）：只许加固，不许放松。
 - **M3 的人工审批**（2026-09-10 新增，同样只许加固）：写工具与审批策略必须继续**成对产出**
@@ -492,6 +512,22 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 **真正的安全性只能来自鉴权**，这一点已在 README 里写得更醒目。
 > 因此也**不要**因为「名字可能被猜到」而增加限制——那防不住任何东西，
 > 能访问端口的人不需要猜名字。
+
+### 后续修订（2026-09-12 当天，鉴权落地后）：名字只在建会话时给
+
+上面那张表里「`session_name` 只在**新建**时生效、id + 名字同时给则名字被忽略」这条，
+随着鉴权一起来了一次收尾——**`session_name` 已从 `/chat` 的请求体彻底移除**：
+
+| 方面 | 上一版 | 现在 |
+|---|---|---|
+| 名字从哪给 | `/chat` 的 `session_name` 字段（仅新建时生效） | **`POST /sessions` 的 `name` 字段** |
+| 改名 | 无（名字只有一次机会） | **`PATCH /sessions/{id}`**（空串 = 清除标签） |
+| `/chat` 的 `session_id` | 可选（不传就新建） | **必填** |
+| `/chat` 的响应 | `session_name` = 客户端给的别名 | `session_name` = **只读回带**该会话的标签（键名不变） |
+
+那次「id + 名字同时给 → 名字被忽略」的规则**整条消失**了——两个字段不再共存于一个请求里，
+也就不存在歧义。**这是「规则塌缩」的又一次收益**：不是加了校验去处理歧义，
+而是让歧义在结构上无法表达。
 
 ---
 
@@ -675,8 +711,9 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 442 passed（2026-09-12 鉴权骨架后）
-                                     #   鉴权新增：api_auth 16、utils_auth 14
+python -m pytest tests -q            # 目前 487 passed（2026-09-12 鉴权 + 会话改造后）
+                                     #   鉴权与归属新增：api_auth、utils_auth、session_store
+                                     #     的归属契约用例、api_sessions 的建/改/越权用例
                                      #   M4 新增：sqlite_db 15、session_store 43（两种实现
                                      #     跑同一组契约断言）、api_sessions 18、chat_history 14、
                                      #     history_capable 9（真 graph 跑多轮×审批跨模块接线）

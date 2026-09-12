@@ -178,6 +178,24 @@ class SessionInfo:
         }
 
 
+def is_owner(info: SessionInfo, identity: str | None) -> bool:
+    """调用者是否有权访问这个会话。
+
+    - `identity is None` → **鉴权未启用**：没有身份可比，一律放行（行为与改造前一致）；
+    - 否则要求 `info.user` **精确匹配**，取「一律拒绝」——`user` 为空的存量行
+      **任何身份都不匹配**（空串不等于任何非空身份）。
+
+    这是所有者判定的**唯一实现**，供 api 层（`/sessions/*`）与 core 层（`/chat` 的
+    `_resolve_session`）共用；两处各写一遍必然漂移。
+
+    **不匹配一律转 404**（不是 403）：与既有的「未知 id → 404」一致，且不泄露
+    「这个 id 存在，只是不属于你」。
+
+    注意它**只判归属**，不管「是否存在」——调用方要先自己处理 `None`。
+    """
+    return identity is None or info.user == identity
+
+
 @dataclass(frozen=True)
 class TurnResult:
     """一轮对话的结果（Agent 侧返回给 core 的形状）。
@@ -244,10 +262,16 @@ class SessionStore(ABC):
 
     # -- 会话生命周期 -------------------------------------------------------
     @abstractmethod
-    def create(self, *, user: str = "", title: str = "", name: str = "") -> SessionInfo:
+    def create(
+        self, *, user: str | None = "", title: str = "", name: str = ""
+    ) -> SessionInfo:
         """新建一个会话并返回其元信息。
 
         **session_id 永远由存储层生成**——它是选中会话的**唯一**方式。
+
+        `user` 是**会话的归属身份**（鉴权关闭时传 `None`/空）。实现必须把 `None`
+        归一成 `""` 再落库，否则会 `INSERT ... user=NULL` 并构造出 `SessionInfo(user=None)`——
+        同一字段在读路径上却是 `str`（`_row_to_session` 有 `or ""` 兜底），类型漂移。
 
         `name` 是**给人看的标签**（用于在 `GET /sessions` 里认出是哪段对话），
         **不参与选中会话、不要求唯一**：同一个人可以有两段都叫「生产排查」的对话。
@@ -260,14 +284,35 @@ class SessionStore(ABC):
         """取会话元信息；不存在返回 None。"""
 
     @abstractmethod
-    def list(self, *, limit: int = 50) -> list[SessionInfo]:
-        """列出会话，最近更新的在前。"""
+    def list(self, *, user: str | None = None, limit: int = 50) -> list[SessionInfo]:
+        """列出会话，最近更新的在前。
+
+        `user` 给定时**只返回该身份的会话**（鉴权开启时的形态）；`None` = 不筛
+        （鉴权关闭，行为与改造前一致）。
+
+        过滤必须下推到 **LIMIT 之前**（写进 SQL 的 WHERE）：先取 limit 条再过滤，
+        会让结果少于 `limit`——调用方拿到的「最近 50 条」其实不是最近的 50 条。
+        """
 
     @abstractmethod
-    def delete(self, session_id: str) -> bool:
+    def delete(self, session_id: str, *, user: str | None = None) -> bool:
         """删除会话**连同其全部消息**（同事务；不依赖外键）。
 
-        返回是否真的删掉了。调用方另需作废该会话的未决审批（见 ApprovalCancellable）。
+        `user` 给定时要求归属匹配，**不匹配则什么都不写、直接返回 False**。守卫必须在
+        同一事务内、在**任何写之前**判定：先删 messages 再判归属，会让一次未授权的删除
+        **抹掉别人的对话正文**而会话行还在。
+
+        返回是否真的删掉了。调用方另需作废该会话的未决审批（见 ApprovalCancellable），
+        且**必须在调用本方法之前**先用 `is_owner` 判一次——否则会先把别人的待审批写命令
+        作废掉、再拿到 404，而 `cancel_pending` 是不可逆的。
+        """
+
+    @abstractmethod
+    def rename(self, session_id: str, *, name: str, user: str | None = None) -> bool:
+        """改会话标签。返回是否命中（不存在 / 归属不匹配 → False）。
+
+        **不更新 `updated_at`**：改名不是「会话活动」。刷新它会让 `GET /sessions` 的排序
+        和 TTL 的过期时机跟着一次纯标签操作跳动——那两处都该反映「最后一句话是什么时候说的」。
         """
 
     # -- 消息 ---------------------------------------------------------------

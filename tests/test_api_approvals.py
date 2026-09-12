@@ -106,17 +106,25 @@ def test_unavailable_agent_is_503():
 
 
 def test_chat_response_shape(client):
-    """/chat 契约：`reply` 仍是 str，另两个会话字段都是**追加**的。
+    """/chat **响应体**三键不变；变的是请求体（2026-09-12 破坏性变更）。
 
-    M4 给 /chat 先后加了 `session_id`（引用服务端生成的会话）与 `session_name`
-    （客户端自定义别名）——这是对外 HTTP 契约**唯一**登记在案的例外，属扩充而非修改
-    （同当初加 `/approvals` 的性质）。两个都不传时行为与改造前完全一致。
+    请求体删掉了 `user` 与 `session_name`、`session_id` 改为必填——身份改由密钥推出，
+    建会话拆到了 `POST /sessions`。响应里 `session_name` 保留，含义从「客户端给的别名」
+    变成「该会话的标签（只读回带）」。
+
+    这里持久化是关的（`client` 用 `Settings()`），`session_id` 传什么都行：
+    存储不可用时会被忽略，`reply` 照常走关键词/假 Agent。
     """
-    resp = client.post("/chat", json={"user": "ops", "message": "你好"})
+    resp = client.post("/chat", json={"message": "你好", "session_id": "whatever"})
 
     assert resp.status_code == 200
     assert set(resp.json()) == {"reply", "session_id", "session_name"}
     assert isinstance(resp.json()["reply"], str)
+
+
+def test_chat_without_session_id_is_422(client):
+    """必填字段缺失 → 422，而不是静默新建一段会话。"""
+    assert client.post("/chat", json={"message": "你好"}).status_code == 422
 
 
 def test_approvals_routes_registered():

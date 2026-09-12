@@ -11,6 +11,8 @@ from src.interfaces.session import (
     STATUS_FINAL,
     STATUS_PENDING_APPROVAL,
     SessionError,
+    SessionInfo,
+    is_owner,
 )
 from src.storage.db import open_database
 from src.storage.session import InMemorySessionStore, SqliteSessionStore
@@ -353,6 +355,143 @@ def test_reconcile_pending_is_idempotent(store):
 
     assert store.reconcile_pending(set()) == 1
     assert store.reconcile_pending(set()) == 0, "已作废的行不该被再次统计"
+
+
+# -- 归属（鉴权开启后由 api/core 传入身份；None = 鉴权关闭，不筛） --------------
+def test_list_filters_by_user(store):
+    store.create(user="alice")
+    store.create(user="bob")
+    store.create(user="alice")
+
+    assert len(store.list(user="alice")) == 2
+    assert [s.user for s in store.list(user="bob")] == ["bob"]
+    assert len(store.list()) == 3, "user=None → 不筛，行为与改造前一致"
+
+
+def test_list_filter_applies_before_limit(store):
+    """过滤必须下推到 LIMIT **之前**。
+
+    故意让 alice 是**最旧**的一条、bob 是最新的两条（总数 3 恰好等于 fixture 的
+    `max_sessions`，避开容量淘汰的干扰）。先取 `limit=1` 条再筛的话，取到的是最新的
+    bob、筛完为空——「最近 1 条」静默变成「一条都没有」。
+    """
+    store.create(user="alice")
+    store.create(user="bob")
+    store.create(user="bob")
+
+    got = store.list(user="alice", limit=1)
+
+    assert len(got) == 1
+    assert got[0].user == "alice"
+
+
+def test_delete_rejects_other_owner(store):
+    """非 owner 的删除必须**什么都不做**——包括不能抹掉消息。
+
+    SQLite 版原先先删 messages 再删 sessions：守卫若只加在 sessions 那条 SQL 上，
+    一次未授权的删除就会抹掉别人的对话正文，而会话行还在。
+    """
+    info = store.create(user="alice")
+    store.append_turn(info.session_id, user_content="机密内容", assistant_content="收到")
+
+    assert store.delete(info.session_id, user="bob") is False
+
+    assert store.get(info.session_id) is not None, "会话行必须还在"
+    assert len(store.messages(info.session_id)) == 2, "消息也不能被抹掉"
+
+
+def test_delete_with_matching_owner(store):
+    info = store.create(user="alice")
+    store.append_turn(info.session_id, user_content="a", assistant_content="b")
+
+    assert store.delete(info.session_id, user="alice") is True
+
+    assert store.get(info.session_id) is None
+    assert store.messages(info.session_id) == []
+
+
+def test_delete_without_user_does_not_check(store):
+    info = store.create(user="alice")
+    assert store.delete(info.session_id) is True, "user=None → 不校验，行为与改造前一致"
+
+
+def test_delete_rejects_unowned_row(store):
+    """存量行 `user` 为空 → **任何身份都不匹配**（2026-09-12 用户选的「一律拒绝」）。"""
+    info = store.create()  # user=""
+
+    assert store.delete(info.session_id, user="alice") is False
+    assert store.get(info.session_id) is not None
+
+
+# -- 改名 -------------------------------------------------------------------
+def test_rename_changes_the_label(store):
+    info = store.create(user="alice", name="旧名")
+
+    assert store.rename(info.session_id, name="新名", user="alice") is True
+    assert store.get(info.session_id).name == "新名"
+
+
+def test_rename_rejects_other_owner(store):
+    info = store.create(user="alice", name="旧名")
+
+    assert store.rename(info.session_id, name="新名", user="bob") is False
+    assert store.get(info.session_id).name == "旧名", "别人的标签一个字都不能动"
+
+
+def test_rename_unknown_returns_false(store):
+    assert store.rename("nope", name="新名") is False
+
+
+def test_rename_does_not_bump_updated_at(store):
+    """改名不是「会话活动」。
+
+    刷 `updated_at` 会让 `GET /sessions` 的排序与 TTL 过期时机跟着一次纯标签操作跳动，
+    而这两处都该反映「最后一句话是什么时候说的」。
+    """
+    info = store.create(user="alice")
+    before = store.get(info.session_id).updated_at
+    store._clock.advance(60)
+
+    store.rename(info.session_id, name="新名")
+
+    assert store.get(info.session_id).updated_at == before
+
+
+# -- create 的 user 归一 -----------------------------------------------------
+def test_create_normalises_none_user_to_empty_string(store):
+    """鉴权关闭时调用方传的就是 `None`。
+
+    不归一的话会 `INSERT ... user=NULL` 并构造出 `SessionInfo(user=None)`，
+    而读路径 `_row_to_session` 有 `or ""` 兜底——同一个字段两条路径两种类型。
+    """
+    info = store.create(user=None)
+
+    assert info.user == ""
+    assert store.get(info.session_id).user == ""
+    assert store.list()[0].user == ""
+
+
+# -- is_owner（纯函数：api 与 core 共用的**唯一**归属判定实现） ----------------
+def test_is_owner_allows_everything_when_auth_is_off():
+    """`identity is None` = 鉴权未启用 → 不校验，行为与改造前一致。"""
+    assert is_owner(SessionInfo(session_id="s", user="alice"), None) is True
+    assert is_owner(SessionInfo(session_id="s", user=""), None) is True
+
+
+def test_is_owner_requires_exact_match():
+    info = SessionInfo(session_id="s", user="alice")
+
+    assert is_owner(info, "alice") is True
+    assert is_owner(info, "bob") is False
+    assert is_owner(info, "Alice") is False, "身份是精确串：大小写敏感，不做任何归一"
+
+
+def test_is_owner_rejects_unowned_row_for_any_identity():
+    """「一律拒绝」：`user` 为空的存量行，**任何**非 None 身份都不匹配。"""
+    unowned = SessionInfo(session_id="s", user="")
+
+    assert is_owner(unowned, "alice") is False
+    assert is_owner(unowned, "bob") is False
 
 
 # -- 清理 -------------------------------------------------------------------

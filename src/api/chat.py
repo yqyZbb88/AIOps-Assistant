@@ -1,22 +1,26 @@
 """聊天路由：POST /chat。
 
-请求体新增**可选** `session_id`、响应体恒回带 `session_id`（M4 第二批）。
-这是对外 HTTP 契约唯一的扩充点，且**只增不改**：不传 session_id 时行为与改造前
-完全一致（每次调用独立），既有调用方无需改动。
+**契约变更（2026-09-12，破坏性）**：请求体删掉了 `user` 与 `session_name`，
+`session_id` 由可选改为**必填**。理由有两条：
+
+1. 调用者身份改由**密钥**推出（见 `src/api/deps.py`），请求体里自报的用户名不再采信——
+   自报的东西无从核实，基于它的任何校验都只是装饰；
+2. **建会话**拆到了 `POST /sessions`（名字在建会话时给）。`/chat` 只管聊天，
+   不再兼职建会话。
+
+响应体三个键不变（`reply` / `session_id` / `session_name`），`session_name` 现在
+是**回带**该会话的标签。
 """
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
+from src.api.deps import require_auth
 from src.core.agent import OpsAgent
-from src.interfaces.session import (
-    SESSION_NAME_MAX_CHARS,
-    SessionNotFoundError,
-    normalize_session_name,
-)
+from src.interfaces.session import SessionNotFoundError
 
 logger = logging.getLogger("ops_agent.api.chat")
 
@@ -26,75 +30,38 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     """/chat 请求体。
 
-    会话规则只有一条：**有 `session_id` 就用它续聊，没有就新建一段对话。**
+    **两段式：先 `POST /sessions` 建会话拿 id，之后每轮都带上它。**
 
-    - `session_id`：服务端生成的随机 id，**选中会话的唯一方式**。须已存在，未知则 404。
-    - `session_name`：给新会话起个**给人识别的名字**（标签）。它**不参与选中会话**——
-      传名字永远不会接到旧对话上；想让某段对话接得上，把它的 `session_id` 带回来。
-      同时给了 `session_id` 和名字时，**名字被忽略**。
+    - `message`：本轮用户输入。
+    - `session_id`：**必填**。须已存在且属于调用者；未知 / 不属于你一律 404
+      （两者同形，不泄露「这个 id 存在，只是不是你的」）。
 
-    名字**不要求唯一**，同一个人可以有两段都叫「生产排查」的对话——这也是为什么
-    `GET /sessions` 里除了名字还要看 id/时间/标题来区分。
-
-    注意：**不要把 `user` 当会话键**——同一人开两个话题会互相污染，多用户共用一个
-    标识（本服务无鉴权，前端常这么写）更会让所有人串进同一条对话。
-
-    **空串与纯空白视同「未提供」**（两个会话字段都是）：它们本就是可选字段，
-    而「我把输入框清空了」的意图就是「我没填」。把 `""` 当成「填了一个空名字」
-    而拒绝，会让 Swagger UI 里清空输入框这种最常见的操作直接 422。
+    **调用者身份不在这里**，它由 `Authorization: Bearer <密钥>` 推出
+    （见 config/settings.yaml 的 auth 段）。此前那个 `user` 字段已移除——
+    自报的用户名无从核实，基于它的校验只是装饰。客户端若仍带着 `user` 或
+    `session_name`，pydantic 会**静默忽略**（默认 `extra="ignore"`）：它们不再是
+    可信输入，为它们报 422 只会让既有调用方困惑。
     """
 
-    user: str = Field(..., description="调用方标识，如 'ops'")
     message: str = Field(..., min_length=1, description="用户输入的消息")
-    session_id: str | None = Field(
-        None, description="服务端生成的会话 id（须已存在，未知则 404）；空串视同未提供"
-    )
-    session_name: str | None = Field(
-        None,
-        description=f"给**新会话**起的标签（任意可见字符，最长 {SESSION_NAME_MAX_CHARS}）；"
-                    "不参与选中会话，传 id 时被忽略；空串视同未提供",
+    session_id: str = Field(
+        ..., min_length=1, description="会话 id，来自 POST /sessions（须已存在且属于你）"
     )
 
     @field_validator("session_id")
     @classmethod
-    def _blank_id_is_absent(cls, value: str | None) -> str | None:
-        """空串 / 纯空白 → None（视同没给 id）。
+    def _blank_id_is_rejected(cls, value: str) -> str:
+        """空白直接 422——**绝不能返回 `None`**。
 
-        不加这个的话，`session_id: ""` 会一路走到「按 id 续聊」分支并被判为假值，
-        落到「都没给 → 新建会话」——**结果虽然一样，但它走的是一条说得通的路径，
-        而不是「把一个空串当成了某个 id」**。顺手 `strip()`：id 是服务端生成的十六进制，
-        绝不含空格，所以去掉首尾空白只会救回「复制粘贴多带了空格」这种情况。
+        字段是必填 `str`，而 pydantic v2 **不会重新校验 after-validator 的返回值**：
+        返回 `None` 就真的得到 `None`，接着 `if session_id:` 为假、落到「没给 id」的
+        分支，白开一段会话（还顺带把 `DELETE` 的语义架空）。宁可报错。
         """
-        if value is None:
-            return None
-        if not isinstance(value, str):  # 交给 pydantic 原本的类型校验去报错
-            return value
-        return value.strip() or None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("session_id 不能为空或纯空白")
+        return stripped
 
-    @field_validator("session_name")
-    @classmethod
-    def _normalize_name(cls, value: str | None) -> str | None:
-        """空串 → None；否则在**入参校验阶段**归一化并卡住非法名字。
-
-        放这里的理由与 `approval.action` 用 `Literal` 一样：非法输入应当直接 422，
-        不要让它一路走到存储层再变成一个 500。
-
-        **注意这里会改写值**：全角字母、各种空格变体都会被归一化，
-        所以响应里回带的 `session_name` 可能与请求里的不完全一样（这是有意的——
-        见 `interfaces/session.py::normalize_session_name` 的说明）。
-        """
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            return value
-        # 纯空白先在这里拦掉：否则 normalize_session_name 会以「名字不能为空」拒绝它，
-        # 而用户的意图明明只是「没填」
-        if not value.strip():
-            return None
-        try:
-            return normalize_session_name(value)
-        except ValueError as exc:
-            raise ValueError(str(exc)) from exc
 
 class ChatResponse(BaseModel):
     """/chat 响应体。"""
@@ -104,34 +71,33 @@ class ChatResponse(BaseModel):
         None, description="本次使用的会话 id（持久化未启用时为 null）"
     )
     session_name: str | None = Field(
-        None, description="本次使用的会话名（未命名会话为 null）"
+        None, description="本次使用的会话的标签（未命名会话为 null，只读不改）"
     )
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest, request: Request) -> ChatResponse:
+def chat(
+    req: ChatRequest,
+    request: Request,
+    user: str | None = Depends(require_auth),
+) -> ChatResponse:
     """接收用户消息，经 OpsAgent 返回回复（Agent-first + 关键词兜底）。
 
-    持久化启用时，同一 `session_id` 或 `session_name` 的多轮会带上历史。
-    未知 `session_id` → 404；`session_name` 不存在则按此名新建。
+    `user` 由 `require_auth` 从密钥推出；鉴权关闭时为 `None`（此时不校验会话归属，
+    行为与改造前一致）。持久化启用时，同一 `session_id` 的多轮会带上历史；
+    未知 / 不属于调用者的 `session_id` → 404。
     """
     agent: OpsAgent = request.app.state.agent
     logger.info(
-        "收到消息 from=%s session_id=%s session_name=%s: %s",
-        req.user, req.session_id, req.session_name, req.message,
+        "收到消息 from=%s session_id=%s: %s", user, req.session_id, req.message
     )
     try:
-        turn = agent.chat_turn(
-            req.message,
-            session_id=req.session_id,
-            session_name=req.session_name,
-            user=req.user,
-        )
+        turn = agent.chat_turn(req.message, session_id=req.session_id, user=user)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     logger.info(
         "回复 from=%s session=%s(%s): %s",
-        req.user, turn.session_id, turn.session_name, turn.reply,
+        user, turn.session_id, turn.session_name, turn.reply,
     )
     return ChatResponse(
         reply=turn.reply, session_id=turn.session_id, session_name=turn.session_name
