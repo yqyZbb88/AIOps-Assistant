@@ -15,7 +15,7 @@ from src.core.agent import OpsAgent
 from src.interfaces.session import (
     SESSION_NAME_MAX_CHARS,
     SessionNotFoundError,
-    validate_session_name,
+    normalize_session_name,
 )
 
 logger = logging.getLogger("ops_agent.api.chat")
@@ -45,23 +45,26 @@ class ChatRequest(BaseModel):
     )
     session_name: str | None = Field(
         None,
-        description=f"自定义会话名（字母数字与 _.-，最长 {SESSION_NAME_MAX_CHARS}）；"
+        description=f"自定义会话名（字母数字 _ . - 空格与汉字，最长 {SESSION_NAME_MAX_CHARS} 字符）；"
                     "不存在则按此名新建会话",
     )
 
     @field_validator("session_name")
     @classmethod
-    def _check_name(cls, value: str | None) -> str | None:
-        """在**入参校验阶段**卡住非法名字（长度 / 字符集）。
+    def _normalize_name(cls, value: str | None) -> str | None:
+        """在**入参校验阶段**归一化并卡住非法名字。
 
         放这里的理由与 `approval.action` 用 `Literal` 一样：非法输入应当直接 422，
-        不要让它一路走到存储层再变成一个 500。白名单而非黑名单——见
-        `interfaces/session.py::validate_session_name` 的说明。
+        不要让它一路走到存储层再变成一个 500。
+
+        **注意这里会改写值**：全角字母、各种空格变体都会被归一化，
+        所以响应里回带的 `session_name` 可能与请求里的不完全一样（这是有意的——
+        见 `interfaces/session.py::normalize_session_name` 的说明）。
         """
         if value is None:
             return None
         try:
-            return validate_session_name(value)
+            return normalize_session_name(value)
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
 

@@ -258,7 +258,20 @@ def test_session_id_and_name_together_is_422(chat_client):
     assert resp.status_code == 422
 
 
-@pytest.mark.parametrize("bad", ["含中文", "有 空格", "a" * 65, "", "斜杠/", "分号;"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "a" * 65,          # 超长
+        "",                # 空串
+        "   ",             # 全是空白（归一化后为空）
+        "斜杠/",            # 白名单外
+        "分号;",
+        "テスト",           # 日文假名（已知边界：只放行汉字，不放行其它非 ASCII 文字）
+        "café",            # 重音拉丁字母
+        "a​b",        # 零宽空格——**肉眼完全看不见**，NFKC 也消不掉
+        "a﻿b",        # BOM
+    ],
+)
 def test_invalid_session_name_is_422(chat_client, bad):
     """非法名字必须在**入参校验阶段**被挡住，不能一路走到存储层再变 500。"""
     resp = chat_client.post(
@@ -266,6 +279,59 @@ def test_invalid_session_name_is_422(chat_client, bad):
     )
 
     assert resp.status_code == 422
+
+
+def test_chinese_and_space_names_are_accepted(chat_client):
+    body = chat_client.post(
+        "/chat", json={"user": "ops", "message": "hi", "session_name": "生产环境 排查"}
+    ).json()
+
+    assert body["session_name"] == "生产环境 排查"
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "test 1",       # 普通空格
+        "test 1",  # 不换行空格 NBSP
+        "test　1",  # 全角空格（中文输入法下按空格很容易打出来）
+        "test\n1",      # 换行
+        "test\t1",      # 制表符
+        "test  1",      # 连续空格
+        " test 1 ",     # 首尾空格
+    ],
+)
+def test_space_variants_hit_the_same_session(chat_client, variant):
+    """**这是整个归一化设计的核心**：空格有四种肉眼无法区分的编码。
+
+    不归一化的话，用户以为在续聊同一段对话，服务端却当成一个全新的名字——
+    而他看这两行数据长得一模一样，没有任何线索可查。
+    """
+    first = chat_client.post(
+        "/chat", json={"user": "ops", "message": "一", "session_name": "test 1"}
+    ).json()
+
+    again = chat_client.post(
+        "/chat", json={"user": "ops", "message": "二", "session_name": variant}
+    ).json()
+
+    assert again["session_id"] == first["session_id"], f"{variant!r} 应归一到同一段对话"
+    assert again["session_name"] == "test 1", "回带的是归一化后的名字"
+    assert len(chat_client.get("/sessions").json()) == 1
+
+
+def test_fullwidth_letters_normalize_to_halfwidth(chat_client):
+    """用中文输入法打出的全角字母与半角是同一段对话。"""
+    first = chat_client.post(
+        "/chat", json={"user": "ops", "message": "一", "session_name": "test1"}
+    ).json()
+
+    again = chat_client.post(
+        "/chat", json={"user": "ops", "message": "二", "session_name": "ｔｅｓｔ１"}
+    ).json()
+
+    assert again["session_id"] == first["session_id"]
+    assert again["session_name"] == "test1"
 
 
 def test_session_name_absent_returns_null(chat_client):
@@ -283,6 +349,41 @@ def test_unknown_session_id_still_404_even_with_name_support(chat_client):
     )
 
     assert resp.status_code == 404
+
+
+# -- 归一化函数本身（直接单测，不绕 HTTP） ------------------------------------
+def test_normalize_session_name_contract():
+    from src.interfaces.session import normalize_session_name as norm
+
+    assert norm("test_1") == "test_1"
+    assert norm("生产环境 排查") == "生产环境 排查"
+    assert norm("  a   b  ") == "a b", "去首尾 + 连续空白折成一个"
+    assert norm("ａｂｃ") == "abc", "全角 → 半角"
+    assert norm("test　1") == "test 1", "全角空格 → 普通空格"
+
+
+@pytest.mark.parametrize(
+    "bad", ["", "   ", "a" * 65, "a​b", "a﻿b", "日本語のテスト", "café", "x/y"]
+)
+def test_normalize_session_name_rejects(bad):
+    import pytest as _pytest
+
+    from src.interfaces.session import normalize_session_name as norm
+
+    with _pytest.raises(ValueError):
+        norm(bad)
+
+
+def test_invisible_char_error_shows_codepoint():
+    """零宽空格肉眼看不见，报错必须给出码点，否则用户无从排查。"""
+    import pytest as _pytest
+
+    from src.interfaces.session import normalize_session_name as norm
+
+    with _pytest.raises(ValueError) as exc:
+        norm("a​b")
+
+    assert "U+200B" in str(exc.value)
 
 
 # -- 数据真的落盘（跨 Container 实例可读） ------------------------------------

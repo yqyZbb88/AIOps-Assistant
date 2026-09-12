@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Collection, Protocol, Sequence, runtime_checkable
@@ -42,24 +43,59 @@ STATUS_ABANDONED = "abandoned"
 DEFAULT_MESSAGE_WINDOW = 20
 
 #: 会话名（客户端自定义别名）的格式。
-#: **限制长度是硬要求**：不限的话有人会拿一兆字节当名字塞进唯一索引。
+#: **限制长度是硬要求**：不限的话有人会拿一兆字节当名字塞进唯一索引（长度按码点算）。
 #: 名字**不等于** session_id——id 仍是服务端生成的 32 位随机值。
 SESSION_NAME_MAX_CHARS = 64
-_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,%d}$" % SESSION_NAME_MAX_CHARS)
+
+#: 允许的字符：ASCII 字母数字 + `_ . -` + 普通空格 + 汉字。
+#: 空格能被放行，是因为**归一化先把它折叠成唯一的 U+0020**（见下）。
+_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_.\- 㐀-䶿一-鿿]+$")
+
+#: 连续空白（含换行/制表/不换行空格/全角空格）→ 单个普通空格
+_WHITESPACE_RUN = re.compile(r"\s+")
 
 
-def validate_session_name(name: str) -> str:
-    """校验会话名，返回原值；不合法抛 ValueError。
+def normalize_session_name(name: str) -> str:
+    """归一化并校验会话名，返回**归一化后**的名字；不合法抛 ValueError。
 
-    按 **ASCII 白名单**而不是「排除危险字符」：后者永远会漏（换行、零宽字符、
-    各种 Unicode 空白都能骗过肉眼）。白名单里放的都是 URL / 命令行 / 日志里
-    都不需要转义的字符。
+    **返回值可能与入参不同，调用方必须使用返回值**（响应里回带的也是它）。
+
+    两步：
+
+    1. **NFKC 规范化 + 折叠空白**：`ｔｅｓｔ１` → `test1`、全角空格 `U+3000` /
+       不换行空格 `U+00A0` / 换行 / 制表符 → 普通空格 `U+0020`，连续空白折成一个并去首尾。
+    2. **白名单校验**：只放行字母数字 `_ . -`、空格与汉字。
+
+    为什么必须归一化：**空格有四种肉眼无法区分的编码**（普通 / 不换行 / 全角 / 零宽），
+    而中文输入法下按空格键很可能打出全角空格 `U+3000`。不归一化的话，用户以为在续聊
+    同一段对话，服务端却当成一个全新的名字；更糟的是他看这两行数据**长得一模一样**，
+    没有任何线索可查。全角/半角字母同理。
+
+    为什么归一化之后还要白名单：NFKC **消不掉零宽空格 `U+200B` 与 BOM `U+FEFF`**
+    ——它们不是空白的变体，而是各自独立的字符，`\\s` 也不匹配它们。用白名单而不是
+    「排除危险字符」是因为后者永远会漏：Unicode 十几万字符且持续新增，穷举不可能穷尽。
+
+    已知边界（按需再放）：不含汉字以外的非 ASCII 文字（日文假名、重音拉丁字母等），
+    也不含中文标点——它们都在归一化后落在白名单外。
     """
-    if not isinstance(name, str) or not _SESSION_NAME_RE.match(name):
+    if not isinstance(name, str):
+        raise ValueError(f"会话名必须是字符串: {name!r}")
+
+    normalized = _WHITESPACE_RUN.sub(" ", unicodedata.normalize("NFKC", name)).strip()
+    if not normalized:
+        raise ValueError(f"会话名不合法（不能为空，长度 1~{SESSION_NAME_MAX_CHARS}）: {name!r}")
+    if len(normalized) > SESSION_NAME_MAX_CHARS:
         raise ValueError(
-            f"会话名不合法（只允许字母数字与 _ . -，长度 1~{SESSION_NAME_MAX_CHARS}）: {name!r}"
+            f"会话名过长（{len(normalized)} > {SESSION_NAME_MAX_CHARS}）: {normalized[:20]!r}…"
         )
-    return name
+    if not _SESSION_NAME_RE.match(normalized):
+        # 报出具体字符的码点——零宽空格这类字符**肉眼看不见**，不给出码点用户无从排查
+        bad = sorted({c for c in normalized if not _SESSION_NAME_RE.match(c)})
+        shown = "、".join(f"{c!r}(U+{ord(c):04X})" for c in bad[:5])
+        raise ValueError(
+            f"会话名含不允许的字符: {shown}（只允许字母数字 _ . - 空格与汉字）"
+        )
+    return normalized
 
 # 可以进入模型上下文的窗口状态：**只有** final。
 # pending/abandoned 是控制面信息，展示给用户看（GET /sessions/{id}），但不给模型——
