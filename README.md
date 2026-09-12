@@ -28,6 +28,8 @@
 ```
 Assitant/
 ├── README.md / requirements.txt / .env.example
+├── docs/
+│   └── database.md            # SQLite 库结构详解（六张表逐字段说明 + 常用查询）
 ├── init.py                    # 用户模板（只读）：init_chat_model 单一模型入口
 ├── config/
 │   ├── settings.yaml          # 全局配置（支持 ${ENV} / ${ENV:-default} 插值）
@@ -102,6 +104,14 @@ Assitant/
 │       └── model_loader.py    #   ★ 模型单一入口：惰性复用 init.py + 进程内单例缓存
 └── tests/                     # 离线单测（conftest 提供 FakeMonitor / FakeLLM / FakeDiagnostics）
 ```
+
+### 相关文档
+
+| 文档 | 内容 |
+|---|---|
+| **README.md**（本文） | 项目结构 / 分层职责 / 配置 / 路由 / 扩展指南（**结构权威文档**） |
+| [PROJECT_HANDOVER.md](PROJECT_HANDOVER.md) | 开发约束 / 安全不变量 / 已踩的坑 / 既定决策 / 路线图 |
+| [docs/database.md](docs/database.md) | **SQLite 库结构详解**：六张表逐字段说明、表间关系、常用查询、迁移与备份 |
 
 ### 分层职责（依赖方向：上 → 下，插件向上实现接口）
 
