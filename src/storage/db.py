@@ -28,9 +28,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager, closing
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 logger = logging.getLogger("ops_agent.storage.db")
 
@@ -131,9 +132,53 @@ _DDL: tuple[str, ...] = (
 # 建表 / 迁移的进程级锁。正常读写路径不碰它。
 _init_lock = threading.Lock()
 
+#: 瞬时锁的退避重试间隔（秒）。
+#:
+#: 为什么 `busy_timeout` 之外还要这个：busy_timeout 只在**单个连接**内自旋重试，
+#: 而 `database is locked` 最常见的成因是**另一个进程**（典型是一个开着读事务的
+#: GUI 查看器）挡住了 WAL 的 checkpoint——写操作必须先 checkpoint 才能继续，
+#: 于是持续拿不到锁。那类争用通常几秒内自解，退避重试能把「瞬时争用」与
+#: 「真的坏了」分开，避免一次几秒的争用就丢掉一整轮会话。
+#:
+#: 只对 locked / busy 这类**瞬时**错误重试；其它 sqlite 错误立即抛出（重试没有意义）。
+_TRANSIENT_RETRY_DELAYS: tuple[float, ...] = (0.2, 0.5)
+
+
+def _is_transient(exc: sqlite3.Error) -> bool:
+    """是否属于「等一会儿可能就好了」的瞬时错误。"""
+    message = str(exc).lower()
+    return isinstance(exc, sqlite3.OperationalError) and (
+        "locked" in message or "busy" in message
+    )
+
 
 class DatabaseError(Exception):
     """存储层不可用（开库失败 / 版本过新 / 迁移失败）。"""
+
+
+def _retry_transient(op: Callable[[], Any], what: str) -> Any:
+    """执行 op；遇到瞬时锁错误就退避重试，其它错误立即抛出。
+
+    见 `_TRANSIENT_RETRY_DELAYS` 的说明（为什么 busy_timeout 之外还要这一层）。
+    重试耗尽的最后一个异常会**原样抛出**——由调用方决定降级。
+    """
+    delays = (0.0, *_TRANSIENT_RETRY_DELAYS)
+    last: sqlite3.Error | None = None
+    for index, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            return op()
+        except sqlite3.Error as exc:
+            if not _is_transient(exc):
+                raise  # 不是瞬时错误，重试没有意义
+            last = exc
+            logger.warning(
+                "数据库瞬时锁定（%s），剩余重试 %d 次: %s",
+                what.split()[0], len(delays) - index - 1, exc,
+            )
+    assert last is not None  # 循环至少跑一次，能走到这里必然有异常
+    raise last
 
 
 class Database:
@@ -169,9 +214,12 @@ class Database:
 
         用 IMMEDIATE 而非默认的 deferred，避免「读后升级写」撞 SQLITE_BUSY
         （见模块 docstring 第 3 条）。
+
+        `BEGIN` 本身带瞬时锁退避重试——**锁就是在这里取的**，所以重试放在这里
+        就覆盖了整个事务。事务体只跑一次（不复跑调用方的代码块）。
         """
         with self.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
+            _retry_transient(lambda: conn.execute("BEGIN IMMEDIATE"), "BEGIN IMMEDIATE")
             try:
                 yield conn
             except BaseException:
@@ -186,14 +234,17 @@ class Database:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
-        """执行单条写语句（自动提交），返回受影响行数。"""
+        """执行单条写语句（自动提交），返回受影响行数。瞬时锁会退避重试。
+
+        单条语句重发是安全的：失败时什么都没写进去。
+        """
         with self.connect() as conn:
-            return conn.execute(sql, params).rowcount
+            return _retry_transient(lambda: conn.execute(sql, params), sql).rowcount
 
     def executemany(self, sql: str, seq: Sequence[Sequence[Any]]) -> int:
-        """批量写（自动提交），返回受影响行数。"""
+        """批量写（自动提交），返回受影响行数。瞬时锁会退避重试。"""
         with self.connect() as conn:
-            return conn.executemany(sql, seq).rowcount
+            return _retry_transient(lambda: conn.executemany(sql, seq), sql).rowcount
 
     # -- 维护 ---------------------------------------------------------------
     def checkpoint(self) -> None:

@@ -80,7 +80,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：402 passed**（2026-09-11 M4 第二批「多轮」完成后；本日共增 109 例：
+    **当前基线：411 passed**（2026-09-11 M4 第二批「多轮」完成后；本日共增 109 例：
     `test_sqlite_db.py` 15、`test_session_store.py` 43、`test_api_sessions.py` 18、
     `test_chat_history.py` 14、`test_history_capable.py` 9、既有文件 +10）。
     M3 的 79 例其中
@@ -95,7 +95,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **402**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **411**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
     | [docs/database.md](docs/database.md) | **改表结构 / 加字段 / 改字段语义 / 改清理策略时必须同步**——它是库结构的逐字段说明。迁移那节的两条硬性约束（结构指纹一致、新列加末尾）也在那里 |
 
@@ -189,6 +189,9 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | **给既有方法「加一个带默认值的 kwarg」不等于向后兼容**（2026-09-11） | `runtime_checkable` 的 Protocol **只检验方法名是否存在、不检验签名**。所以给 `Assistant.reply` 加 `history=None` 后，只实现 `reply(self, message)` 的既有假对象仍会被 `isinstance(x, HistoryCapable)` 判为 True，然后在调用处 TypeError——**守卫形同虚设**。多轮能力因此另起方法名 `reply_turn`（照 `ApprovalCapable`/`ApprovalCancellable` 的先例）。加能力一律**新方法名 + 新 Protocol**，不要改既有方法的签名。 |
 | **持久化/IO 调用不能落在 Agent 的 catch-all try 里**（2026-09-11） | `ChatService` 那条 `except Exception` 会把任何异常归类成「LLM 抖动」并回落关键词，且只 warning、无 `exc_info`。DB 读写若圈在里面，schema 写错、盘满、权限错最终都表现为「模型最近有点飘」，永远查不出来。落库必须放在 try **之外**，有自己的错误处理与可观测出口（`/health` 的 `storage` 字段）。 |
 | **模型窗口里的「控制面消息」要过滤掉**（2026-09-11） | 待审批提示（`⚠️ 待人工审批…审批 id：xxx`）是给人看的，进模型上下文会让模型在后续轮次里幻觉「还在等批准」。会话表用 `status` 区分：`history()` 只返回 `final`、`messages()` 返回全部——**同一张表两个读口**，分别服务「给模型看」与「给人看」。 |
+| **`database is locked` 的常见成因是「外部的查看器」，不一定是有人抢着写**（2026-09-12 用户报障） | WAL 模式下读者不挡写者，**但读者会挡住 checkpoint**；WAL 涨到阈值时写操作必须先 checkpoint，于是持续拿不到锁 → `database is locked`。实测：用户开着 **DB Browser for SQLite** 看库，服务端写入失败（`busy_timeout` 重试 5 秒后放弃）。**规矩**：不要一边跑服务一边用外部工具开着同一个 `.db`；要查数据优先用服务自己的读接口（`/sessions`、`/alerts/history`），或用完即走的命令行。另注意 `busy_timeout` 只在**单个连接**内自旋，跨进程的长事务它不是解药。 |
+| **健康标志位必须「成功时恢复」，不能只置位不撤销**（2026-09-12 修） | 原先 `_fail()` 把 `healthy=False` 之后**永不恢复**，于是一次几秒的瞬时锁就让 `/health` **永远**显示 degraded，而库其实好好的——那样的字段会立刻失去可信度，**比不报还糟**。改为成对的 `_fail()` / `_ok()`：`healthy` 反映「最近一次操作的结果」。**凡是给运维看的状态位都要问一句：故障恢复后它会自己变回去吗？** |
+| **跨进程争用要能自己扛过去，别一次失败就丢掉整轮**（2026-09-12 修） | `busy_timeout` 对付同进程内的短争用够用，但跨进程（外部查看器）的长争用会让一次操作直接失败。已在 `Database.execute/executemany/transaction` 加**退避重试**（0 / 0.2 / 0.5 秒，只对 `locked`/`busy` 这类瞬时错误；其它 sqlite 错误立即抛出——重试没有意义）。写测试时注意：**重试循环在 `Database.execute` 内部**，所以模拟故障要打在**连接**那一层（替换 `db.connect`），替换 `db.execute` 会把重试一起换掉、测出来的是「没有重试」。 |
 | **`ALTER TABLE` 之后 SQLite 会重写 `sqlite_master.sql`，新旧库的「DDL 文本」永远不可能相同**（2026-09-11 实测踩到） | 所以「迁移后的库 == 全新建的库」这条不变量**不能靠比较 SQL 文本**去验——要比**结构指纹**（表名、每表有序的列定义、索引名）。见 `tests/test_sqlite_db.py::_structure`。另外两件与迁移有关的实事：① ALTER 只能把新列加到**末尾**，所以全新建库的 DDL 也把新列写在末尾，两条路径的**列序**才对得上（否则将来有人写 `INSERT INTO sessions VALUES(...)` 会在新库上正常、在旧库上炸）；② 加在表上的**唯一索引**要在迁移里单独 `CREATE UNIQUE INDEX`（ALTER 加不了表级约束），否则升级上来的库缺这层约束而新库有。 |
 | **可选字段的空串要视同「未提供」，否则 Swagger 里清空输入框就会 422**（2026-09-12 用户报障） | **Swagger UI（`/docs`）会把所有字段都填进示例请求体**（`{"user":"string","message":"string","session_id":"string","session_name":"string"}`）。用户把某一栏**清空**（而不是删掉那一行）时，发出去的是 `""`——于是「清空可选字段」这个最常见的操作被判成「填了一个空值」而拒绝。规矩：**任何可选字符串字段**，在校验前先 `strip()`，空则返回 `None`。非字符串要原样放行交给 pydantic 报类型错，别在这里掩盖。反面例子：`session_id: ""` 当时被当成「没给 id」→ 静默新建会话（不报错反而更难发现）。 |
 | **用户可见的「标识」类字符串要先归一化，再按 Unicode 类别拒绝——而不是白名单放行**（2026-09-12，同一处改了两次） | ① **必须归一化**：空格有**四种肉眼无法区分的编码**（`U+0020` 普通 / `U+00A0` 不换行 / `U+3000` 全角 / `U+200B` 零宽），全角与半角字母同理，而**中文输入法下按空格很可能打出全角空格**。不归一化的后果：用户以为在续聊同一段对话，服务端却当成全新标识——而他看两行数据长得一模一样，**没有任何线索可查**。做法：`NFKC` + 折叠空白 + 去首尾。② **归一化之后仍要挡零宽**：NFKC **消不掉**零宽空格 `U+200B` 与 BOM `U+FEFF`（它们不是空白的变体，`\s` 也不匹配）。③ **怎么挡：按 Unicode 类别，不要用白名单**。这两次都栽在这里——先写成 ASCII 白名单，被用户问「为什么中文不行」；改成「ASCII + 汉字」白名单，又被问「为什么还要这么严」。**根因是把「枚举危险字符会漏」错误地推广成了「白名单比黑名单好」**：枚举具体的危险字符确实会漏，但**按类别排除（`Cc`/`Cf`/`Cs`/`Co`/`Cn`）是有明确边界、完备的**。真正要挡的只有「看不见的字符」这一类，所有可见文字（假名、重音字母、中文标点、emoji、阿拉伯文）都不在其中——拒绝它们纯属误伤。④ 报错要**打出码点**（`U+200B`），否则零宽字符用户根本无从排查。 |
@@ -644,7 +647,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 402 passed（2026-09-11 M4 第二批「多轮」后）
+python -m pytest tests -q            # 目前 411 passed（2026-09-11 M4 第二批「多轮」后）
                                      #   M4 新增：sqlite_db 15、session_store 43（两种实现
                                      #     跑同一组契约断言）、api_sessions 18、chat_history 14、
                                      #     history_capable 9（真 graph 跑多轮×审批跨模块接线）

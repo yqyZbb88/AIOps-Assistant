@@ -304,3 +304,101 @@ def test_unique_constraint_is_enforced(tmp_path):
 def test_database_repr_mentions_path(tmp_path):
     db = Database(tmp_path / "ops.db")
     assert "ops.db" in repr(db)
+
+
+# -- 瞬时锁退避重试 ----------------------------------------------------------
+@pytest.fixture
+def no_retry_delay(monkeypatch):
+    """把退避间隔归零，让重试测试不必真的等 0.7 秒。"""
+    import src.storage.db as dbmod
+
+    monkeypatch.setattr(dbmod, "_TRANSIENT_RETRY_DELAYS", (0.0, 0.0))
+
+
+def test_is_transient_classifies_errors():
+    from src.storage.db import _is_transient
+
+    assert _is_transient(sqlite3.OperationalError("database is locked"))
+    assert _is_transient(sqlite3.OperationalError("database table is busy"))
+    # 这些重试没有意义，必须立即抛出
+    assert not _is_transient(sqlite3.OperationalError("no such table: nope"))
+    assert not _is_transient(sqlite3.IntegrityError("UNIQUE constraint failed"))
+    assert not _is_transient(RuntimeError("database is locked"))  # 非 sqlite 异常
+
+
+def test_retry_transient_recovers(no_retry_delay):
+    """前两次撞锁、第三次成功 → 整体成功。这正是「瞬时争用」的形态。"""
+    from src.storage.db import _retry_transient
+
+    calls = []
+
+    def op():
+        calls.append(1)
+        if len(calls) < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    assert _retry_transient(op, "INSERT INTO x") == "ok"
+    assert len(calls) == 3
+
+
+def test_retry_transient_gives_up_after_all_attempts(no_retry_delay):
+    from src.storage.db import _retry_transient
+
+    calls = []
+
+    def op():
+        calls.append(1)
+        raise sqlite3.OperationalError("database is locked")
+
+    with pytest.raises(sqlite3.OperationalError):
+        _retry_transient(op, "INSERT INTO x")
+    assert len(calls) == 3, "0.0 + 两个退避间隔 = 共 3 次尝试"
+
+
+def test_retry_transient_does_not_retry_permanent_errors(no_retry_delay):
+    from src.storage.db import _retry_transient
+
+    calls = []
+
+    def op():
+        calls.append(1)
+        raise sqlite3.OperationalError("no such table: nope")
+
+    with pytest.raises(sqlite3.OperationalError):
+        _retry_transient(op, "INSERT INTO x")
+    assert len(calls) == 1, "非瞬时错误重试没有意义，必须只试一次"
+
+
+def test_execute_retries_transient_lock(tmp_path, no_retry_delay, monkeypatch):
+    """端到端：`Database.execute` 撞一次瞬时锁之后自己恢复，调用方无感。"""
+    db = open_database(tmp_path / "ops.db")
+    real_connect = db.connect
+    state = {"n": 1}
+
+    class Flaky:
+        """第一次 BEGIN/INSERT 抛 locked，之后放行。"""
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=()):
+            if state["n"] > 0 and sql.lstrip().upper().startswith("INSERT"):
+                state["n"] -= 1
+                raise sqlite3.OperationalError("database is locked")
+            return self._conn.execute(sql, params)
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def patched():
+        with real_connect() as conn:
+            yield Flaky(conn)
+
+    monkeypatch.setattr(db, "connect", patched)
+
+    db.execute(
+        "INSERT INTO sessions (session_id, created_at, updated_at) VALUES (?,?,?)",
+        ("s1", "t", "t"),
+    )
+
+    assert len(db.query("SELECT 1 FROM sessions")) == 1

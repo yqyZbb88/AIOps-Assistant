@@ -117,6 +117,16 @@ class SqliteHistoryStore(HistoryStore):
         logger.error("状态日志存储操作失败: %s", exc, exc_info=True)
         return HistoryError(str(exc))
 
+    def _ok(self) -> None:
+        """一次成功操作 → 标记健康。
+
+        `healthy` 反映「最近一次操作的结果」，不是「历史上有没有失败过」——
+        否则一次几秒的瞬时锁就会让 `/health` 永远显示 degraded，而库其实好好的，
+        那个字段也就没人信了（与 SqliteSessionStore 同款处理）。
+        """
+        self._healthy = True
+        self._last_error = None
+
     # -- 写入 ---------------------------------------------------------------
     def record_batch(
         self,
@@ -149,6 +159,7 @@ class SqliteHistoryStore(HistoryStore):
                     ))
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
+        self._ok()
 
         self._maybe_purge()
 
@@ -172,6 +183,7 @@ class SqliteHistoryStore(HistoryStore):
             rows = self.db.query(sql, (max(1, int(limit)),))
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
+        self._ok()
         builder = _BUILDERS[table]
         return [builder(**row) for row in rows]
 
@@ -180,9 +192,11 @@ class SqliteHistoryStore(HistoryStore):
         if table not in _TABLES:
             raise ValueError(f"未知的归档表: {table}")
         try:
-            return int(self.db.query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"])
+            n = int(self.db.query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"])
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
+        self._ok()
+        return n
 
     # -- 清理 ---------------------------------------------------------------
     def purge_expired(self) -> int:
@@ -203,6 +217,7 @@ class SqliteHistoryStore(HistoryStore):
                     ).rowcount
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
+        self._ok()
 
         self._last_purge = self._clock()
         if removed:

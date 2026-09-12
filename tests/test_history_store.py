@@ -1,6 +1,8 @@
 """状态日志归档存储：三表写入/读取、关联键、幂等、截断、清理（全离线）。"""
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from src.interfaces.history import (
@@ -8,6 +10,7 @@ from src.interfaces.history import (
     MAX_DETAIL_CHARS,
     AdviceRecord,
     AlertRecord,
+    HistoryError,
     RemediationRecord,
 )
 from src.storage.db import open_database
@@ -207,13 +210,33 @@ def test_write_failure_marks_unhealthy(tmp_path, monkeypatch):
     assert store.healthy is True
 
     def boom(*a, **k):
-        raise __import__("sqlite3").OperationalError("模拟写失败")
+        raise sqlite3.OperationalError("模拟写失败")
 
     monkeypatch.setattr(store.db, "transaction", boom)
-
-    from src.interfaces.history import HistoryError
 
     with pytest.raises(HistoryError):
         store.record_batch(alerts=[_alert()])
     assert store.healthy is False
     assert "模拟写失败" in (store.last_error or "")
+
+
+def test_health_recovers_after_a_successful_operation(tmp_path, monkeypatch):
+    """与 SqliteSessionStore 同款：`healthy` 反映**最近一次**操作的结果。
+
+    否则一次瞬时锁会让 `/health` 永远显示 degraded，而库其实好好的。
+    """
+    store = SqliteHistoryStore(open_database(tmp_path / "ops.db"))
+
+    def boom(*a, **k):
+        raise sqlite3.OperationalError("模拟一次瞬时失败")
+
+    monkeypatch.setattr(store.db, "transaction", boom)
+    with pytest.raises(HistoryError):
+        store.record_batch(alerts=[_alert()])
+    assert store.healthy is False
+
+    monkeypatch.undo()  # 恢复
+
+    store.record_batch(alerts=[_alert()])
+    assert store.healthy is True, "成功一次就该恢复"
+    assert store.last_error is None

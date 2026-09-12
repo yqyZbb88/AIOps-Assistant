@@ -441,7 +441,7 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
 截断、清理）、`test_api_alerts.py`（`POST /alert` → `/alerts/history` 端到端 + 归档失败
 不影响告警接收）、`test_logger.py`（审计落盘的幂等挂载与开关语义）。
 
-**当前基线：402 passed。**
+**当前基线：411 passed。**
 
 ---
 

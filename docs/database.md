@@ -320,6 +320,31 @@ UNION ALL SELECT 'ai_advice', COUNT(*) FROM ai_advice;
 > WAL 模式下**删行不会让文件变小**（页面会被复用，不会无限增长）。
 > 代码在清理后会低频执行 `wal_checkpoint(TRUNCATE)` 回收空间。
 
+### 并发与「database is locked」
+
+**遇到 `database is locked` 时，最常见的成因不是「有人跟你抢着写」，而是有个外部程序开着这个库。**
+
+WAL 模式下读者不挡写者，**但读者会挡住 checkpoint**；WAL 增长到阈值时，写操作必须先做
+checkpoint 才能继续——于是持续拿不到锁，报出 `database is locked`。实测：**DB Browser for
+SQLite** 开着这个库时，服务端写入就会失败（`busy_timeout` 重试 5 秒后放弃）。
+
+所以：
+
+- **不要一边跑服务，一边用 GUI 工具开着同一个 `.db` 文件**。看完就把连接关掉。
+- 要查数据**优先用服务自己的读接口**（`GET /sessions`、`GET /sessions/{id}`、
+  `GET /alerts/history`）——它们不会跟写入争锁。
+- 用命令行 `sqlite3.exe` 查也行，它查完就退出、不驻留。
+
+服务端对此有两层防护：
+
+| 机制 | 作用 |
+|---|---|
+| `busy_timeout = 5s`（每连接） | 同进程内的短争用自旋等待 |
+| **退避重试**（0 / 0.2 / 0.5 秒，只对 `locked`/`busy`） | 跨进程的瞬时争用——几秒内自解就能扛过去，不会丢一轮会话 |
+
+两者都耗尽才会失败，此时：该轮**不落库**但聊天照常返回（降级），
+`/health` 会显示 `storage: degraded`；**下一次成功操作会自动恢复成 `ok`**。
+
 ### schema 迁移
 
 改表结构时**必须**：递增 [src/storage/db.py](../src/storage/db.py) 的 `SCHEMA_VERSION`，

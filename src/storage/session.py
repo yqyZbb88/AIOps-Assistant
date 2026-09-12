@@ -19,7 +19,8 @@ import sqlite3
 import time
 import uuid
 from collections import OrderedDict
-from typing import Any, Callable, Collection
+from contextlib import contextmanager
+from typing import Any, Callable, Collection, Iterator
 
 from src.interfaces.session import (
     DEFAULT_MESSAGE_WINDOW,
@@ -135,25 +136,54 @@ class SqliteSessionStore(SessionStore):
         logger.error("会话存储操作失败: %s", exc, exc_info=True)
         return SessionError(str(exc))
 
+    def _ok(self) -> None:
+        """一次成功操作 → 标记健康。
+
+        **必须成对调用**：`healthy` 反映的是「最近一次操作的结果」，而不是
+        「历史上有没有失败过」。少了这一步，一次几秒的瞬时锁（典型成因是外部
+        查看器占着库）就会让 `/health` **永远**显示 degraded，而库其实好好的——
+        那样的字段会立刻失去可信度，比不报还糟。
+        """
+        self._healthy = True
+        self._last_error = None
+
     def _query(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         try:
-            return self.db.query(sql, params)
+            rows = self.db.query(sql, params)
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
+        self._ok()
+        return rows
+
+    def _execute(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """单条写语句 + 健康记账。"""
+        try:
+            rowcount = self.db.execute(sql, params)
+        except sqlite3.Error as exc:
+            raise self._fail(exc) from exc
+        self._ok()
+        return rowcount
+
+    @contextmanager
+    def _tx(self) -> Iterator[sqlite3.Connection]:
+        """写事务 + 健康记账（失败统一转成 SessionError）。"""
+        try:
+            with self.db.transaction() as conn:
+                yield conn
+        except sqlite3.Error as exc:
+            raise self._fail(exc) from exc
+        self._ok()
 
     # -- 会话生命周期 -------------------------------------------------------
     def create(self, *, user: str = "", title: str = "", name: str = "") -> SessionInfo:
         session_id = uuid.uuid4().hex
         stamp = to_iso(self._clock())
-        try:
-            self.db.execute(
-                "INSERT INTO sessions "
-                "(session_id, user, name, title, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, 'active', ?, ?)",
-                (session_id, user, name, title, stamp, stamp),
-            )
-        except sqlite3.Error as exc:
-            raise self._fail(exc) from exc
+        self._execute(
+            "INSERT INTO sessions "
+            "(session_id, user, name, title, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'active', ?, ?)",
+            (session_id, user, name, title, stamp, stamp),
+        )
 
         self._maybe_purge()
         return SessionInfo(
@@ -180,13 +210,10 @@ class SqliteSessionStore(SessionStore):
 
     def delete(self, session_id: str) -> bool:
         """删会话连同其消息（同事务，不依赖外键）。"""
-        try:
-            with self.db.transaction() as conn:
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-                cur = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                deleted = cur.rowcount > 0
-        except sqlite3.Error as exc:
-            raise self._fail(exc) from exc
+        with self._tx() as conn:
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            cur = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+            deleted = cur.rowcount > 0
         return deleted
 
     # -- 消息 ---------------------------------------------------------------
@@ -226,24 +253,21 @@ class SqliteSessionStore(SessionStore):
         当新问题再答一遍。整轮同进同出才是对的。
         """
         stamp = to_iso(self._clock())
-        try:
-            with self.db.transaction() as conn:
-                conn.execute(
-                    _INSERT_MESSAGE,
-                    (session_id, session_id, ROLE_USER, user_content, status, approval_id, stamp),
-                )
-                conn.execute(
-                    _INSERT_MESSAGE,
-                    (session_id, session_id, ROLE_ASSISTANT, assistant_content, status, approval_id, stamp),
-                )
-                conn.execute(
-                    "UPDATE sessions SET updated_at = ?, "
-                    "title = CASE WHEN title = '' THEN ? ELSE title END "
-                    "WHERE session_id = ?",
-                    (stamp, _title_from(user_content), session_id),
-                )
-        except sqlite3.Error as exc:
-            raise self._fail(exc) from exc
+        with self._tx() as conn:
+            conn.execute(
+                _INSERT_MESSAGE,
+                (session_id, session_id, ROLE_USER, user_content, status, approval_id, stamp),
+            )
+            conn.execute(
+                _INSERT_MESSAGE,
+                (session_id, session_id, ROLE_ASSISTANT, assistant_content, status, approval_id, stamp),
+            )
+            conn.execute(
+                "UPDATE sessions SET updated_at = ?, "
+                "title = CASE WHEN title = '' THEN ? ELSE title END "
+                "WHERE session_id = ?",
+                (stamp, _title_from(user_content), session_id),
+            )
 
     def update_pending(
         self,
@@ -261,28 +285,25 @@ class SqliteSessionStore(SessionStore):
         stamp = to_iso(self._clock())
         # 只有链式审批才换 approval_id；最终态与作废都保留原 id 作为历史痕迹
         stored_id = next_approval_id if status == STATUS_PENDING_APPROVAL else approval_id
-        try:
-            with self.db.transaction() as conn:
-                row = conn.execute(
-                    "SELECT session_id FROM messages WHERE approval_id = ? AND status = ? LIMIT 1",
-                    (approval_id, STATUS_PENDING_APPROVAL),
-                ).fetchone()
-                if row is None:
-                    return False
-                session_id = row[0]
-                conn.execute(
-                    "UPDATE messages SET status = ?, approval_id = ?, "
-                    "content = CASE WHEN role = ? THEN ? ELSE content END "
-                    "WHERE approval_id = ? AND status = ?",
-                    (status, stored_id, ROLE_ASSISTANT, content,
-                     approval_id, STATUS_PENDING_APPROVAL),
-                )
-                conn.execute(
-                    "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-                    (stamp, session_id),
-                )
-        except sqlite3.Error as exc:
-            raise self._fail(exc) from exc
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT session_id FROM messages WHERE approval_id = ? AND status = ? LIMIT 1",
+                (approval_id, STATUS_PENDING_APPROVAL),
+            ).fetchone()
+            if row is None:
+                return False
+            session_id = row[0]
+            conn.execute(
+                "UPDATE messages SET status = ?, approval_id = ?, "
+                "content = CASE WHEN role = ? THEN ? ELSE content END "
+                "WHERE approval_id = ? AND status = ?",
+                (status, stored_id, ROLE_ASSISTANT, content,
+                 approval_id, STATUS_PENDING_APPROVAL),
+            )
+            conn.execute(
+                "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
+                (stamp, session_id),
+            )
         return True
 
     def reconcile_pending(self, live_approval_ids: Collection[str]) -> int:
@@ -302,40 +323,34 @@ class SqliteSessionStore(SessionStore):
                 f"OR approval_id NOT IN ({placeholders}))"
             )
             cond_params = (STATUS_PENDING_APPROVAL, *live)
-        try:
-            with self.db.transaction() as conn:
-                turns = conn.execute(
-                    f"SELECT COUNT(*) FROM messages WHERE {cond} AND role = ?",
-                    (*cond_params, ROLE_ASSISTANT),
-                ).fetchone()[0]
-                conn.execute(
-                    f"UPDATE messages SET status = ? WHERE {cond}",
-                    (STATUS_ABANDONED, *cond_params),
-                )
-        except sqlite3.Error as exc:
-            raise self._fail(exc) from exc
+        with self._tx() as conn:
+            turns = conn.execute(
+                f"SELECT COUNT(*) FROM messages WHERE {cond} AND role = ?",
+                (*cond_params, ROLE_ASSISTANT),
+            ).fetchone()[0]
+            conn.execute(
+                f"UPDATE messages SET status = ? WHERE {cond}",
+                (STATUS_ABANDONED, *cond_params),
+            )
         return int(turns)
 
     # -- 清理 ---------------------------------------------------------------
     def purge_expired(self) -> int:
         """删掉过期会话（连同消息），再按容量上限淘汰最旧的若干个。"""
         cutoff = cutoff_iso(self._clock(), self.ttl_seconds)
-        try:
-            with self.db.transaction() as conn:
-                expired = [r[0] for r in conn.execute(
-                    "SELECT session_id FROM sessions WHERE updated_at < ?", (cutoff,)
-                ).fetchall()]
-                overflow = [r[0] for r in conn.execute(
-                    "SELECT session_id FROM sessions ORDER BY updated_at DESC LIMIT -1 OFFSET ?",
-                    (self.max_sessions,),
-                ).fetchall()]
-                ids = list(dict.fromkeys([*expired, *overflow]))  # 去重且保序
-                if ids:
-                    marks = ",".join("?" for _ in ids)
-                    conn.execute(f"DELETE FROM messages WHERE session_id IN ({marks})", ids)
-                    conn.execute(f"DELETE FROM sessions WHERE session_id IN ({marks})", ids)
-        except sqlite3.Error as exc:
-            raise self._fail(exc) from exc
+        with self._tx() as conn:
+            expired = [r[0] for r in conn.execute(
+                "SELECT session_id FROM sessions WHERE updated_at < ?", (cutoff,)
+            ).fetchall()]
+            overflow = [r[0] for r in conn.execute(
+                "SELECT session_id FROM sessions ORDER BY updated_at DESC LIMIT -1 OFFSET ?",
+                (self.max_sessions,),
+            ).fetchall()]
+            ids = list(dict.fromkeys([*expired, *overflow]))  # 去重且保序
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                conn.execute(f"DELETE FROM messages WHERE session_id IN ({marks})", ids)
+                conn.execute(f"DELETE FROM sessions WHERE session_id IN ({marks})", ids)
 
         self._last_purge = self._clock()
         if ids:

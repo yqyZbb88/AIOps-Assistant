@@ -1,6 +1,9 @@
 """会话存储：SQLite 与内存两套实现跑同一组契约测试（离线）。"""
 from __future__ import annotations
 
+import sqlite3
+from contextlib import contextmanager
+
 import pytest
 
 from src.interfaces.session import (
@@ -124,6 +127,95 @@ def test_name_can_be_reused_after_delete(store):
 
     assert second.session_id != first.session_id
     assert store.get(second.session_id).name == "test_1"
+
+
+# -- 健康状态：反映「最近一次操作」，而不是「历史上有没有失败过」 --------------
+def _flaky_db(db, *, failures: int, error: Exception):
+    """让 `db.connect()` 给出的连接在**头 N 次写语句**上抛错，其余放行。
+
+    必须打在**连接**这一层，不能替换 `db.execute`：重试循环在 `Database.execute`
+    **内部**、包着 `conn.execute`；替换掉整个 `db.execute` 等于把重试也一起换掉了，
+    测出来的就是「没有重试」——我第一版正是这么写错的。
+    """
+    real_connect = db.connect
+    remaining = {"n": failures}
+
+    class Flaky:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=()):
+            if remaining["n"] > 0 and sql.lstrip().upper().startswith(
+                ("INSERT", "UPDATE", "DELETE")
+            ):
+                remaining["n"] -= 1
+                raise error
+            return self._conn.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    @contextmanager
+    def patched():
+        with real_connect() as conn:
+            yield Flaky(conn)
+
+    return patched, remaining
+
+
+def test_health_recovers_after_a_successful_operation(tmp_path, monkeypatch):
+    """**一次瞬时失败不能把 healthy 永久钉死。**
+
+    否则一次几秒的锁（典型成因是外部查看器占着库）过后，`/health` 会永远显示
+    degraded，而库其实好好的——那个字段也就没人信了，比不报还糟。
+    """
+    store = SqliteSessionStore(open_database(tmp_path / "x.db"))
+    patched, _ = _flaky_db(store.db, failures=99, error=sqlite3.OperationalError("boom"))
+    monkeypatch.setattr(store.db, "connect", patched)
+
+    with pytest.raises(SessionError):
+        store.create(user="ops")
+    assert store.healthy is False
+    assert store.last_error
+
+    monkeypatch.undo()  # 恢复正常
+
+    store.create(user="ops")
+    assert store.healthy is True, "成功一次就该恢复"
+    assert store.last_error is None
+
+
+def test_transient_lock_is_retried_instead_of_losing_the_turn(tmp_path, monkeypatch):
+    """撞一次瞬时锁不该丢掉整轮会话——退避重试应当把它救回来。"""
+    import src.storage.db as dbmod
+
+    monkeypatch.setattr(dbmod, "_TRANSIENT_RETRY_DELAYS", (0.0, 0.0))
+    store = SqliteSessionStore(open_database(tmp_path / "x.db"))
+    patched, remaining = _flaky_db(
+        store.db, failures=1, error=sqlite3.OperationalError("database is locked")
+    )
+    monkeypatch.setattr(store.db, "connect", patched)
+
+    info = store.create(user="ops")
+
+    assert info.session_id, "重试之后应当成功"
+    assert remaining["n"] == 0
+    assert store.healthy is True
+
+
+def test_permanent_error_still_degrades(tmp_path, monkeypatch):
+    """不是瞬时的错误（比如表不存在）不该被重试掩盖，仍要如实降级。"""
+    store = SqliteSessionStore(open_database(tmp_path / "x.db"))
+    patched, remaining = _flaky_db(
+        store.db, failures=99, error=sqlite3.OperationalError("no such table: nope")
+    )
+    monkeypatch.setattr(store.db, "connect", patched)
+
+    with pytest.raises(SessionError):
+        store.create(user="ops")
+
+    assert store.healthy is False
+    assert remaining["n"] == 98, "非瞬时错误只该试一次"
 
 
 # -- 消息 -------------------------------------------------------------------
