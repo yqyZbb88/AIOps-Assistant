@@ -117,6 +117,17 @@ class AuthSettings:
     enabled: bool = False
     tokens: str = ""
 
+    #: `POST /alert`（Alertmanager webhook）**只接受这个身份**的密钥；留空 = 不限制。
+    #:
+    #: 为什么需要：`/alert` 不是只读的——它把告警喂给 `RuleEngine`，而
+    #: `auto_execute: true` 的规则会**直接执行写命令、不经人工审批**。不限制的话，
+    #: 任何一个持有效密钥的聊天用户都能构造告警去踩那条路径。给它一个专用身份，
+    #: 就把「人」的密钥与「机器入口」的密钥分开了。
+    #:
+    #: 默认空串是**有意的 fail-open**（保持既有部署不变），但 `main.create_app` 会在
+    #: `enabled` 为真而这里为空时打一条 WARNING——不能让它悄悄失效。
+    alert_identity: str = ""
+
 
 @dataclass(frozen=True)
 class LoggingSettings:

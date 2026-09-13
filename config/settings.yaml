@@ -66,3 +66,10 @@ auth:
   # 单引号不能省：不加引号时，变量为空会解析成 null、变量有值会被 YAML 当成
   # 流式映射解析成 dict；两者都会让启动校验失败。
   tokens: '${OPS_API_TOKENS:-}'
+
+  # POST /alert（Alertmanager webhook）**只接受这个身份**的密钥；留空 = 不限制。
+  # 为什么需要：/alert 会把告警喂给规则引擎，而 auto_execute: true 的规则会直接
+  # 执行写命令、不经人工审批——不限制的话，任何持有效密钥的聊天用户都能构造告警
+  # 去踩那条路径。填的必须是 .env 里某个密钥映射到的身份名。
+  # 留空时会有一条启动 WARNING（不静默）。
+  alert_identity: alertmanager

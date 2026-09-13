@@ -119,7 +119,8 @@ r = httpx.get("http://127.0.0.1:8000/sessions",
 | `GET /sessions` | 只列出 `user` 与身份**精确匹配**的会话 |
 | `GET/PATCH/DELETE /sessions/{id}` | `user` 不匹配 → **404**（与「未知 id」同形，不泄露 id 是否存在） |
 | `POST /chat` | 会话 `user` 不匹配 → 404 |
-| `/alert`、`/approvals`、`/alerts/*` | 只校验「密钥有效」，不看身份名 |
+| **`POST /alert`** | **要求身份是 `auth.alert_identity`**（见 3.9），其他有效密钥 → **403** |
+| `/approvals`、`/alerts/*` | 只校验「密钥有效」，不看身份名 |
 
 > **身份名是精确串、大小写敏感**，不做任何归一化（`Alice` ≠ `alice`）。
 > 一个身份可以对应**多条**密钥（比如一个人换了新密钥还没删旧的）。
@@ -149,12 +150,43 @@ r = httpx.get("http://127.0.0.1:8000/sessions",
 | `GET /health` | **豁免**，不需要密钥（给探针用） |
 | `/docs` `/redoc` `/openapi.json` | FastAPI 自建的 app 级路由，**本来就不在任何 router 里**，不受影响 |
 | 别人会话的 `id` 存在与否 | 都无法区分，一律 **404** |
+| 密钥有效但身份不是 `auth.alert_identity`，且调的是 `/alert` | **403**（已认证、无权限——与会话那边的 404 有意区分） |
 | 密钥含非 ASCII 字符 | 不会 500——比对前统一编码过 |
 
 比对用 `hmac.compare_digest` 并**遍历全部密钥不提前返回**，避免用响应时间泄露
 「猜的密钥前缀对不对」。
 
-### 3.9 故障排查
+### 3.9 `/alert` 的身份白名单（授权，不只是认证）
+
+**`POST /alert` 和别的端点不一样：它要求身份。** 光有「有效密钥」不够。
+
+```yaml
+# config/settings.yaml
+auth:
+  alert_identity: alertmanager    # 只有这个身份能调 /alert；留空 = 不限制
+```
+
+| 调用者 | 结果 |
+|---|---|
+| 无凭据 | **401**（没认证） |
+| `alice` 的有效密钥 | **403**（认证过了，但身份不对） |
+| `alertmanager` 的密钥 | 200 |
+| `alert_identity` 留空 | 任何有效密钥都 200（**有意的 fail-open**，启动时有一条 WARNING） |
+| 鉴权关闭 | 200（也没有身份可言，行为与改造前一致） |
+
+**为什么单单这个端点要设限**：`/alert` 不是只读的——它把告警喂给 `RuleEngine`，
+而 **`auto_execute: true` 的规则会直接执行写命令、不经人工审批**。不设限的话，
+任何持有效密钥的聊天用户都能构造一条告警去踩那条路径，等于从「聊天用户」越权到
+「可触发写命令」。（出厂 4 条规则全是 `auto_execute: false`，所以现在是惰性的——
+但改一条就活了，而那正是 README 说的启用方式。）
+
+**为什么这里是 403 而会话那边是 404**：会话那边要藏「这个 id 存不存在」，所以统一
+404；这里调用者已经通过鉴权了，只是没权限——「认证过但被拒」在语义上就是 403。
+
+**同组的其他路由不受影响**：`/alerts/recent`、`/alerts/active`、`/alerts/history`
+仍是「任意有效密钥」——它们是只读的。
+
+### 3.10 故障排查
 
 | 现象 | 多半是 |
 |---|---|
@@ -163,6 +195,8 @@ r = httpx.get("http://127.0.0.1:8000/sessions",
 | 所有请求 401 | 忘了带 `Authorization` 头；或带了但前缀不是 `Bearer `（注意有个空格） |
 | 只有 `/health` 能通 | 这是**正确行为**，它本来就是唯一豁免的 |
 | 能登录但**看不到自己刚建的会话** | 身份名与建会话时的不一致（换了密钥/身份名）。身份是精确匹配，改过就找不回来了 |
+| **`/alert` 返回 403** | 你的密钥映射到的身份 ≠ `auth.alert_identity`。要么换用 webhook 那条密钥，要么把配置改成你的身份名 |
+| 启动日志出现 `alert_identity 为空` 的 WARNING | `/alert` 对**任何**有效密钥开放——这不是错误，是提醒你还没设限 |
 | **告警一条都收不到** | 见第四节——`/alert` 也要求密钥，去 **Alertmanager 的日志**里找 `Notify attempt failed` |
 
 ---
@@ -183,6 +217,10 @@ r = httpx.get("http://127.0.0.1:8000/sessions",
 OPS_API_TOKENS={"k-alice-9f3a…": "alice", "k-am-3e77…": "alertmanager"}
 //                                              ↑ webhook 专用身份
 ```
+
+⚠️ **这个名字必须和 `settings.yaml` 的 `auth.alert_identity` 一致**——`/alert` 只认
+那个身份（见 3.9），名字对不上会直接 **403**，而表现是「告警一条都收不到」。
+两处一处是 `.env` 的**值**、一处是 `settings.yaml` 的字面量，改名字时**两处都要改**。
 
 ### 4.2 把同一个令牌写进凭据文件
 

@@ -11,9 +11,10 @@ from fastapi.testclient import TestClient
 
 from src.interfaces.session import STATUS_PENDING_APPROVAL
 from src.main import create_app
-from src.utils.config_loader import AuthSettings, Settings, StorageSettings
+from src.utils.config_loader import AuthSettings, LLMSettings, Settings, StorageSettings
+from tests.conftest import make_alert, make_payload
 
-_TOKENS = '{"k-alice": "alice", "k-bob": "bob"}'
+_TOKENS = '{"k-alice": "alice", "k-bob": "bob", "k-am": "alertmanager"}'
 
 # FastAPI 自己建的 app 级路由，不属于任何一个 router，本就不该被拦
 _EXEMPT_PATHS = {"/health", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
@@ -26,16 +27,26 @@ def _as(token: str) -> dict[str, str]:
 
 
 def _make_app(
-    *, enabled: bool = True, tokens: str = _TOKENS, db_path=None
+    *, enabled: bool = True, tokens: str = _TOKENS, db_path=None, alert_identity: str = ""
 ) -> FastAPI:
-    """默认不落盘（测试不写真实 db）；给了 `db_path` 才打开持久化。"""
+    """默认不落盘（测试不写真实 db）；给了 `db_path` 才打开持久化。
+
+    **告警 AI 分析一律关掉**：`/alert` 会走 `AlertAnalyzer`，而那条路径**确实**受
+    `llm.enabled` 控制（与聊天 Agent 相反）——不关就是真调 DeepSeek。
+    """
     storage = (
         StorageSettings(enabled=False)
         if db_path is None
         else StorageSettings(enabled=True, db_path=str(db_path))
     )
     return create_app(
-        settings=Settings(storage=storage, auth=AuthSettings(enabled=enabled, tokens=tokens))
+        settings=Settings(
+            llm=LLMSettings(enabled=False),
+            storage=storage,
+            auth=AuthSettings(
+                enabled=enabled, tokens=tokens, alert_identity=alert_identity
+            ),
+        )
     )
 
 
@@ -157,6 +168,81 @@ def test_disabled_auth_needs_no_credentials():
     with TestClient(app) as c:
         assert c.get("/sessions").status_code == 200
         assert c.get("/approvals").status_code == 200
+
+
+# -- /alert 的身份白名单（授权，区别于上面的「认证」） ------------------------
+def _alert_payload() -> dict:
+    return make_payload(make_alert("FakeAlert")).model_dump(by_alias=True, mode="json")
+
+
+def test_alert_rejects_a_valid_key_of_the_wrong_identity():
+    """**人**的密钥不能发告警。
+
+    `/alert` 会把告警喂给规则引擎，而 `auto_execute: true` 的规则**直接执行写命令、
+    不经人工审批**——不设限的话，每个持有效密钥的聊天用户都能触发写入。
+    """
+    app = _make_app(alert_identity="alertmanager")
+    with TestClient(app) as c:
+        resp = c.post("/alert", json=_alert_payload(), headers=_as("k-alice"))
+
+    assert resp.status_code == 403, "已认证但无权限 → 403（不是 401，也不是 404）"
+
+
+def test_alert_accepts_the_configured_identity():
+    app = _make_app(alert_identity="alertmanager")
+    with TestClient(app) as c:
+        resp = c.post("/alert", json=_alert_payload(), headers=_as("k-am"))
+
+    assert resp.status_code == 200
+    assert resp.json()["received"] == 1
+    assert resp.json()["ai_advice"] == [], "测试里 LLM 是关的，不该有分析"
+
+
+def test_alert_without_credentials_is_still_401_not_403():
+    """没凭据是「没认证」→ 401；有凭据但身份不对才是 403。别把两者混了。"""
+    app = _make_app(alert_identity="alertmanager")
+    with TestClient(app) as c:
+        resp = c.post("/alert", json=_alert_payload())
+
+    assert resp.status_code == 401
+    assert resp.headers["WWW-Authenticate"] == "Bearer"
+
+
+def test_alert_identity_empty_keeps_the_old_behaviour():
+    """留空 = 不限制（有意的 fail-open，保持既有部署不变）——启动时会有 WARNING。"""
+    app = _make_app(alert_identity="")
+    with TestClient(app) as c:
+        assert c.post("/alert", json=_alert_payload(), headers=_as("k-alice")).status_code == 200
+
+
+def test_alert_identity_is_not_enforced_when_auth_is_off():
+    """鉴权关着时也没有身份可言，不校验（行为与改造前一致）。"""
+    app = _make_app(enabled=False, tokens="", alert_identity="alertmanager")
+    with TestClient(app) as c:
+        assert c.post("/alert", json=_alert_payload()).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/alerts/recent", "/alerts/history"])
+def test_other_alert_routes_still_accept_any_valid_identity(path):
+    """白名单**只管 `/alert`**：同组其他路由仍是「任意有效密钥」。"""
+    app = _make_app(alert_identity="alertmanager")
+    with TestClient(app) as c:
+        assert c.get(path, headers=_as("k-alice")).status_code == 200
+
+
+def test_empty_alert_identity_logs_a_warning(caplog):
+    """fail-open 不能是静默的——否则用户以为锁上了。"""
+    with caplog.at_level(logging.WARNING, logger="ops_agent.main"):
+        _make_app(alert_identity="")
+
+    assert any("alert_identity" in r.getMessage() for r in caplog.records)
+
+
+def test_configured_alert_identity_does_not_warn(caplog):
+    with caplog.at_level(logging.WARNING, logger="ops_agent.main"):
+        _make_app(alert_identity="alertmanager")
+
+    assert not any("alert_identity" in r.getMessage() for r in caplog.records)
 
 
 # -- 会话归属：身份由密钥推出，所以隔离是真的 --------------------------------

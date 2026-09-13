@@ -212,6 +212,7 @@ pip install -r requirements.txt
 | `logging.audit_max_bytes/audit_backup_count` | 审计文件轮转上限（5 MiB）与保留份数（3） |
 | `auth.enabled` | 共享密钥鉴权开关（代码里 dataclass 默认 `false`，本文件才是出厂值） |
 | `auth.tokens` | 「密钥 → 身份」的 **JSON 映射**，形如 `{"k-alice-9f3a":"alice"}`；真实值走 `.env` 的 `OPS_API_TOKENS`。**yaml 里的占位符必须用单引号包住**（`'${OPS_API_TOKENS:-}'`），否则变量有值时会被 YAML 当成流式映射解析成 dict |
+| `auth.alert_identity` | `POST /alert` 只接受的**身份名**（默认 `alertmanager`）；留空 = 不限制，且启动时有一条 WARNING。**必须与 `.env` 里某个密钥映射到的身份一致** |
 
 ### config/actions.yaml（写命令目录，WRITE 边界）
 
@@ -368,7 +369,7 @@ python src/main.py
 |---|---|
 | `GET /health` | 健康检查 → `{"status","storage"}`（`storage` 为 `ok`/`degraded`） |
 | `POST /chat` | 请求 `{"message","session_id"}`（**`session_id` 必填**）→ `{"reply","session_id","session_name"}` |
-| `POST /alert` | Alertmanager webhook 推送 → `AlertAck` |
+| `POST /alert` | Alertmanager webhook 推送 → `AlertAck`。**鉴权上除密钥外还要求身份是 `auth.alert_identity`**，其他有效密钥 → 403 |
 | `GET /alerts/recent?limit=` | 最近被动接收的告警记录 |
 | `GET /alerts/active` | 实时活动告警（监控源故障转 502） |
 | `GET /alerts/history` | **落盘归档**：告警 + 处置结果 + AI 建议（持久化未启用时三者均为空） |
@@ -385,6 +386,11 @@ python src/main.py
 >
 > **会话归属**：身份由密钥推出，`/sessions/*` 只能看到 / 改 / 删**自己的**会话。
 > 别人的会话一律 **404**（不是 403）——与「未知 id」同形，不泄露「这个 id 存在，只是不是你的」。
+>
+> **`POST /alert` 的身份白名单**：它不只看「密钥有效」，还要求身份等于
+> `auth.alert_identity`（默认 `alertmanager`），其他有效密钥 → **403**。因为这条路径会把
+> 告警喂给规则引擎，而 `auto_execute: true` 的规则**直接执行写命令、不经人工审批**——
+> 不设限的话每个聊天用户都能构造告警去触发写入。
 >
 > ### 会话：两段式（2026-09-12 起）
 >
@@ -507,7 +513,7 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
 时的反向告警；以及**跨身份的会话隔离**：别人读/聊/改/删一律 404、`GET /sessions` 只看得到
 自己的、**非 owner 的 DELETE 不得作废别人的待审批写命令**、存量 `user` 的可见性规则）。
 
-**当前基线：487 passed。**
+**当前基线：496 passed。**
 
 ---
 

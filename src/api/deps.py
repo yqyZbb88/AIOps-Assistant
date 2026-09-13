@@ -69,3 +69,34 @@ def require_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return identity
+
+
+def require_alert_identity(
+    request: Request,
+    identity: str | None = Depends(require_auth),
+) -> str | None:
+    """在「密钥有效」之上再加一层**授权**：`/alert` 只认 `auth.alert_identity`。
+
+    因为 `POST /alert` 不是只读接口——它把告警喂给 `RuleEngine`，而
+    `auto_execute: true` 的规则会**直接执行写命令、不经人工审批**。不设限的话，
+    任何持有效密钥的聊天用户都能构造告警去踩那条路径，等于从「聊天用户」越权到
+    「可触发写命令」。
+
+    三种放行/拒绝：
+
+    - 鉴权关闭（`identity is None`）→ 放行（也谈不上身份，行为与改造前一致）；
+    - `alert_identity` **留空** → 放行（有意的 fail-open，保持既有部署不变；
+      启动时会有 WARNING 提醒）；
+    - 否则身份必须**精确匹配**，不匹配 → **403**。
+
+    **为什么这里用 403 而会话那边用 404**：那边要藏「这个 id 存不存在」，
+    而这里调用者已经通过鉴权了，只是没权限——「认证过但被拒」在语义上就是 403。
+    """
+    auth = getattr(getattr(request.app.state, "settings", None), "auth", None)
+    allowed = (getattr(auth, "alert_identity", "") or "").strip()
+    if identity is None or not allowed or identity == allowed:
+        return identity
+    raise HTTPException(
+        status_code=403,
+        detail=f"该身份无权调用此接口（需要 {allowed}）",
+    )

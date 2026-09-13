@@ -114,6 +114,13 @@ def _check_auth(settings: Settings) -> None:
             "服务仍在**无鉴权**运行，所有接口对能访问该端口的人开放。"
         )
 
+    if settings.auth.enabled and not (settings.auth.alert_identity or "").strip():
+        logger.warning(
+            "auth.alert_identity 为空 —— POST /alert 对**任何**有效密钥开放。"
+            "而它会喂给规则引擎（auto_execute: true 的规则直接执行写命令、不经审批），"
+            "等于每个聊天用户都能触发写入。建议在 settings.yaml 里设成 webhook 专用身份。"
+        )
+
 
 # 模块级实例：uvicorn src.main:app 直接引用的对象
 app = create_app()

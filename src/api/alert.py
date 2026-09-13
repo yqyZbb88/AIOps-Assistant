@@ -1,24 +1,30 @@
 """告警路由：POST /alert 接收、GET /alerts/recent、GET /alerts/active、GET /alerts/history。
 
-鉴权（config/settings.yaml 的 auth 段）：
-启用后本组路由要求 `Authorization: Bearer <密钥>`，**POST /alert 也不例外**。
+鉴权（config/settings.yaml 的 auth 段）——**本组有个例外，两条规则别混**：
 
-⚠️ 因此打开 auth 之后，**必须在 Alertmanager 侧同步配置**，否则告警会被静默 401：
+- 整组（含 `POST /alert`）都要求 `Authorization: Bearer <密钥>`；
+- **`POST /alert` 还多一层授权**：身份必须是 `auth.alert_identity`（默认 `alertmanager`），
+  其他有效密钥一律 **403**。`/alerts/*` 三个只读端点不受这一层影响。
+
+为什么单单 `/alert` 要设限：这条路径能让 RuleEngine 按 rules.yaml 执行白名单写命令
+（`core/agent.py` 的 `process_alert`，`auto_execute: true` 时**不经人工审批**）。
+不设限的话，任何持有效密钥的聊天用户都能构造告警去踩那条写路径。
+
+⚠️ 因此打开 auth 之后，**必须在 Alertmanager 侧同步配置**，否则告警会被静默挡住：
 在 receiver 的 `webhook_configs` 里给它加 `http_config.authorization`
-（`type: Bearer` + 密钥），具体键名以你所用的 Alertmanager 版本文档为准。
-漏配的表现是「服务侧一条告警都收不到」，而 Alertmanager 那边的日志才看得到 401。
-
-为什么不豁免 /alert：这条路径能让 RuleEngine 按 rules.yaml 执行白名单写命令
-（core/agent.py 的 process_alert），留一条无鉴权入口等于把写命令暴露给任何能访问
-端口的人。详见 README「安全说明」。
+（`type: Bearer` + 密钥，见 `require_alert_identity`）。**两个常见坑**：
+① 漏配 → 401，服务侧一条都收不到，只有 Alertmanager 的日志看得到；
+② 配了但身份名与 `auth.alert_identity` 对不上 → 403，表现**同样是收不到告警**。
+完整配方与排查见 docs/auth.md。
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from src.api.deps import require_alert_identity
 from src.core.agent import OpsAgent
 from src.interfaces.history import HistoryError
 from src.interfaces.monitor import MonitorError
@@ -34,15 +40,23 @@ def _agent(request: Request) -> OpsAgent:
 
 
 @router.post("/alert", response_model=AlertAck)
-def alert(payload: AlertmanagerPayload, request: Request) -> AlertAck:
+def alert(
+    payload: AlertmanagerPayload,
+    request: Request,
+    identity: str | None = Depends(require_alert_identity),
+) -> AlertAck:
     """接收 Alertmanager webhook 推送的告警。
 
     处理由 OpsAgent 编排：记录 → 规则处置（auto_execute=true 才动作）→
     无规则告警 AI 分析（失败不阻塞）。
+
+    **鉴权：除「密钥有效」外还要求身份是 `auth.alert_identity`（403 否则）。**
+    因为这条路径能触发规则引擎执行写命令（`auto_execute: true` 时无需人工审批），
+    不能让人人都能构造告警打进来。本组其他路由（`/alerts/*`）仍是「任意有效密钥」。
     """
     logger.info(
-        "收到 Alertmanager 通知: %d 条, 整组状态=%s, receiver=%s",
-        len(payload.alerts), payload.status, payload.receiver,
+        "收到 Alertmanager 通知 from=%s: %d 条, 整组状态=%s, receiver=%s",
+        identity, len(payload.alerts), payload.status, payload.receiver,
     )
     return _agent(request).process_alert(payload)
 
