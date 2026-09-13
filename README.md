@@ -485,6 +485,11 @@ python -m pytest tests -q
 `pytest_sessionfinish` 兜底判失败）。后者是为一个真实坑加的——配了 LangSmith 时 langchain 会起
 后台线程偷偷发外网请求，而测试**照样全绿**，只有抓 socket 才看得见。
 
+**测试也绝不碰仓库里那个真实数据库**：`import src.main` 会按仓库真实配置打开
+`data/ops_agent.db`，而**开库会跑迁移、写数据**——conftest 在模块级把
+`open_database` 换成「只接受仓库外路径」，指向 `data/` 的那次直接降级为 None
+（必须写在模块级：那个 import 发生在收集阶段，比任何 fixture 都早）。
+
 `tests/conftest.py` 提供
 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics`，覆盖：规则引擎（假执行器 ok/failed/skip/unmatched）、
 只读诊断（白名单解析、参数正则/转义安全边界、SSH stub 下的截断与审计、渲染）、
@@ -513,7 +518,7 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
 时的反向告警；以及**跨身份的会话隔离**：别人读/聊/改/删一律 404、`GET /sessions` 只看得到
 自己的、**非 owner 的 DELETE 不得作废别人的待审批写命令**、存量 `user` 的可见性规则）。
 
-**当前基线：533 passed。**
+**当前基线：535 passed。**
 
 ---
 

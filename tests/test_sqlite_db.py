@@ -71,15 +71,52 @@ def test_sessions_columns_are_exact(tmp_path):
     }
 
 
+def test_approval_decisions_columns_are_exact(tmp_path):
+    """这张表的列被逐字段说明在 docs/database.md 里，改列要同步那边。"""
+    db = open_database(tmp_path / "ops.db")
+    cols = {r["name"] for r in db.query("PRAGMA table_info(approval_decisions)")}
+    assert cols == {"approval_id", "session_id", "action", "decided_at", "decided_by"}
+
+
+def test_v3_db_gains_decided_by(tmp_path):
+    """v3 → v4：老的决策记录拿到默认空串，不丢数据。
+
+    （`decided_by` 为什么必须落库而不只是写审计日志：日志会轮转被冲掉，
+    而这张表的 TTL 是 7 天——回头追问「那条 unknown 是谁批的」时日志早没了。）
+    """
+    path = tmp_path / "ops.db"
+    db = open_database(path)
+    db.execute(
+        "INSERT INTO approval_decisions (approval_id, session_id, action, decided_at) "
+        "VALUES (?,?,?,?)",
+        ("ap-old", "s1", "approve", "2026-01-01T00:00:00+00:00"),
+    )
+    with sqlite3.connect(str(path)) as conn:  # 手工退回 v3 的样子
+        conn.execute("ALTER TABLE approval_decisions DROP COLUMN decided_by")
+        conn.execute("PRAGMA user_version = 3")
+
+    migrated = open_database(path)
+
+    assert migrated is not None
+    assert _user_version(path) == SCHEMA_VERSION
+    assert migrated.query("SELECT approval_id, decided_by FROM approval_decisions") == [
+        {"approval_id": "ap-old", "decided_by": ""}
+    ], "老记录保住，新列给默认值"
+
+
 # -- 迁移（v1 → v2） --------------------------------------------------------
 def _downgrade_to_v1(path) -> None:
-    """把一个 v2 库改造成 v1 的样子：去掉 name 列与它的索引，user_version 改回 1。
+    """把一个**当前版本**的库改造成 v1 的样子，用于验证逐级迁移。
 
-    v2 的 sessions 就是 v1 的 sessions 加一列，所以「v2 减去 name」恰好等价于 v1 结构。
+    **每个后续版本加的列都要在这里撤掉**——否则那个列在「假装成 v1」的库里其实还在，
+    升到对应那一步的 `ALTER TABLE ADD COLUMN` 会撞 `duplicate column name`，
+    于是迁移失败、`open_database` 返回 None，报错还容易让人以为是迁移写错了。
+    （v2 加 sessions.name、v4 加 approval_decisions.decided_by。）
     """
     with sqlite3.connect(str(path)) as conn:
         conn.execute("DROP INDEX IF EXISTS idx_sessions_user_name")
         conn.execute("ALTER TABLE sessions DROP COLUMN name")
+        conn.execute("ALTER TABLE approval_decisions DROP COLUMN decided_by")
         conn.execute("PRAGMA user_version = 1")
 
 

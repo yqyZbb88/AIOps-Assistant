@@ -40,7 +40,11 @@ logger = logging.getLogger("ops_agent.storage.db")
 #   v2 (2026-09-11 M4 第二批)：sessions 加 name 列 + (user, name) 部分唯一索引
 #   v3 (2026-09-12)：**撤掉**那个唯一索引——session_name 从「别名」降为「纯标签」，
 #                    不再参与选中会话，因此没有唯一性需求（允许重名）
-SCHEMA_VERSION = 3
+#   v4 (2026-09-13)：approval_decisions 加 decided_by 列。**决策人必须落库**，
+#                    不能只写审计日志——日志会轮转（5 MiB × 3 份）而被冲掉，
+#                    而这张表的 TTL 是 7 天：等你需要回答「那条 unknown 的命令是谁批的」时，
+#                    磁盘上的日志早就转没了，库里那行却还在。
+SCHEMA_VERSION = 4
 
 # 建表语句（幂等）。顺序即执行顺序。
 _DDL: tuple[str, ...] = (
@@ -124,7 +128,11 @@ _DDL: tuple[str, ...] = (
         approval_id TEXT NOT NULL,
         session_id  TEXT,
         action      TEXT NOT NULL,
-        decided_at  TEXT NOT NULL
+        decided_at  TEXT NOT NULL,
+        -- `decided_by` 刻意排在**最后**：它由 v4 的 ALTER TABLE 追加，而 ALTER 只能加在
+        -- 末尾。这样「全新建库」与「逐级迁移上来」两条路径的**列序也一致**（有结构指纹测试）。
+        -- 空串 = 当时鉴权未启用（没有身份可言）——这一条本身就是审计要回答的问题，别用 NULL 含糊它。
+        decided_by  TEXT NOT NULL DEFAULT ''
     )
     """,
 )
@@ -314,6 +322,13 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
         # **每个历史分支都得保留、按序执行**，这样任意旧版本都能升到最新，
         # 且「全新建库」与「逐级迁移」得到同一结构（有测试锁结构指纹）。
         conn.execute("DROP INDEX IF EXISTS idx_sessions_user_name")
+
+    if current < 4:
+        # v3 → v4：审批决策记名。只写审计日志不够——日志会轮转被冲掉，
+        # 而这张表要留住「那条命令是谁批的」，尤其当它落进 `unknown`（结果未知）时。
+        conn.execute(
+            "ALTER TABLE approval_decisions ADD COLUMN decided_by TEXT NOT NULL DEFAULT ''"
+        )
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 

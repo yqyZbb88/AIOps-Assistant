@@ -396,13 +396,25 @@ class SessionStore(ABC):
         """
 
     @abstractmethod
-    def record_decision(self, approval_id: str, *, session_id: str | None, action: str) -> None:
+    def record_decision(
+        self,
+        approval_id: str,
+        *,
+        session_id: str | None,
+        action: str,
+        decided_by: str = "",
+    ) -> None:
         """落一条审批决策记录（`approval_decisions` 表）。
 
         **调用时机是这个方法的全部要害**：必须在 `decide()` 把待审批项 `pop()` 掉之后、
         `resume()` 执行命令**之前**。进程若恰好死在这两者之间，重启后
         `reconcile_pending` 才能据此把那一轮标成「结果未知」而不是错误的「未执行」——
         那是唯一能覆盖这个窗口的位置，而 core / api 层都只能在这个区间的外面动手。
+
+        `decided_by` 是**决策人的身份**；空串 = 当时鉴权未启用。
+        **必须落库而不只是写审计日志**：日志会轮转被冲掉（5 MiB × 3 份），而这张表
+        的 TTL 是 7 天——等你回头追问「那条 `unknown` 的命令到底是谁批的」时，
+        磁盘上的日志早就转没了，库里那行却还在。
         """
 
     @abstractmethod
@@ -435,7 +447,12 @@ class ApprovalLedger(Protocol):
     """
 
     def record_decision(
-        self, approval_id: str, *, session_id: str | None, action: str
+        self,
+        approval_id: str,
+        *,
+        session_id: str | None,
+        action: str,
+        decided_by: str = "",
     ) -> None:
         ...
 

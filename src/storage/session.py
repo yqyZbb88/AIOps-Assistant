@@ -394,12 +394,19 @@ class SqliteSessionStore(SessionStore):
             )
         return int(abandoned_turns), int(unknown_turns)
 
-    def record_decision(self, approval_id: str, *, session_id: str | None, action: str) -> None:
-        """落一条审批决策记录。调用时机是全部要害，见 ABC 的说明。"""
+    def record_decision(
+        self,
+        approval_id: str,
+        *,
+        session_id: str | None,
+        action: str,
+        decided_by: str = "",
+    ) -> None:
+        """落一条审批决策记录（含决策人）。调用时机是全部要害，见 ABC 的说明。"""
         self._execute(
-            "INSERT INTO approval_decisions (approval_id, session_id, action, decided_at) "
-            "VALUES (?, ?, ?, ?)",
-            (approval_id, session_id, action, to_iso(self._clock())),
+            "INSERT INTO approval_decisions "
+            "(approval_id, session_id, action, decided_at, decided_by) VALUES (?, ?, ?, ?, ?)",
+            (approval_id, session_id, action, to_iso(self._clock()), decided_by or ""),
         )
 
     def decided_approval_ids(self) -> set[str]:
@@ -615,7 +622,15 @@ class InMemorySessionStore(SessionStore):
                         abandoned += 1
         return abandoned, unknown
 
-    def record_decision(self, approval_id: str, *, session_id: str | None, action: str) -> None:
+    def record_decision(
+        self,
+        approval_id: str,
+        *,
+        session_id: str | None,
+        action: str,
+        decided_by: str = "",
+    ) -> None:
+        # 只留判「有没有提交过决策」需要的部分——内存实现是降级用的，不追求与库等价
         self._decisions[approval_id] = session_id
 
     def decided_approval_ids(self) -> set[str]:

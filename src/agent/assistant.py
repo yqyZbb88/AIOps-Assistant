@@ -528,7 +528,12 @@ class OpsAssistant:
             return
         try:
             self.ledger.record_decision(
-                approval_id, session_id=record.get("session_id"), action=action
+                approval_id,
+                session_id=record.get("session_id"),
+                action=action,
+                # 触发者即决策人：待审批项只对它自己可见（/approvals 按归属隔离），
+                # 所以批准它的必然就是当初触发它的那个身份。空串 = 当时鉴权未启用。
+                decided_by=record.get("user") or "",
             )
         except Exception as exc:  # noqa: BLE001 - 一律转成「审批暂不可用」，别炸成 500
             logger.error("审批决策记录落盘失败，已中止本次决策（命令未执行）: %s", exc)

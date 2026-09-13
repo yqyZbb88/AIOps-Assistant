@@ -16,7 +16,7 @@
 | 位置 | 默认 `data/ops_agent.db`（相对仓库根，由 `storage.db_path` 配置） |
 | 伴生文件 | WAL 模式下同目录会有 `ops_agent.db-wal` 与 `ops_agent.db-shm`（**同样是运行时产物，不要提交**） |
 | 日志模式 | `wal`（同步盘/网络盘上开不起来时自动回落 `delete`，不影响使用） |
-| schema 版本 | 当前 **v3**，记在 `PRAGMA user_version` 里 |
+| schema 版本 | 当前 **v4**，记在 `PRAGMA user_version` 里 |
 | 总开关 | `storage.enabled`。关掉 / 打不开 → **服务照常启动**，只是不落盘，行为与引入本功能前完全一致 |
 | 清理 | TTL + 容量上限，**惰性 + 节流**触发（写入时顺带，默认 60 秒最多一次），无后台线程 |
 
@@ -138,7 +138,7 @@ alert_key = fingerprint（若告警带了）否则 "告警名|实例|开始时�
 | `seq` | INTEGER | **在会话内的序号**，从 1 开始严格递增。**排序靠它，不靠时间戳** |
 | `role` | TEXT | `user` 或 `assistant`。**只有这两种**（不存工具调用，见下） |
 | `content` | TEXT | 消息原文 |
-| `status` | TEXT | 见下方三态说明 |
+| `status` | TEXT | 见下方四态说明 |
 | `approval_id` | TEXT | 该轮触发了写命令审批时，这里是审批 id；否则为 NULL |
 | `created_at` | TEXT | 时间戳（UTC，秒级） |
 
@@ -261,8 +261,9 @@ UPDATE 成最终回答（`status` 变 `final`），`seq` 不变。追加新行�
 | `session_id` | TEXT | 属于哪段对话；可为 NULL |
 | `action` | TEXT | `approve` / `reject` |
 | `decided_at` | TEXT | 决策提交时间（UTC，秒级） |
+| `decided_by` | TEXT | **决策人的身份**（由密钥推出）。空串 = 当时鉴权未启用 |
 
-**这张表只为一件事存在**：区分「命令确定没执行」与「命令可能已经执行过」。
+**这张表主要为一件事存在**：区分「命令确定没执行」与「命令可能已经执行过」。
 
 `decide()` 的顺序是「**先取走待审批项（pop）→ 再执行命令（resume）**」。进程若恰好死在
 两者之间，光看会话表无法知道命令跑没跑。所以 `decide()` 在 **pop 与 resume 之间**
@@ -276,7 +277,19 @@ UPDATE 成最终回答（`status` 变 `final`），`seq` 不变。追加新行�
 **写失败会中止这次决策、命令不执行**——那样调用方给出的「没执行」结论仍然是对的，
 反过来吞掉错误继续执行才会制造错误的审计结论。
 
+`decided_by` **必须落库，不能只写审计日志**：`logs/audit.log` 会轮转
+（5 MiB × 3 份），而这张表的 TTL 是 7 天——等你回头追问「那条 `unknown` 的命令
+到底是谁批的」时，磁盘上的日志早就转没了，库里那行却还在。
+
 清理：删会话时**连带删**，另有 TTL（跟会话表同一趟清理）。
+
+查谁批过写命令：
+
+```sql
+SELECT d.decided_at, d.decided_by, d.action, d.approval_id, s.name
+FROM approval_decisions d LEFT JOIN sessions s ON s.session_id = d.session_id
+ORDER BY d.decided_at DESC;
+```
 
 ---
 

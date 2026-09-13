@@ -26,6 +26,40 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+
+# ---------------------------------------------------------------------------
+# 堵住仓库里那个**真实**数据库：测试绝不允许碰它
+# ---------------------------------------------------------------------------
+# 为什么需要：`import src.main` 会执行模块级的 `app = create_app()`，而它用**仓库真实配置**
+# （config/settings.yaml 的 storage.enabled: true）装配容器 → `container.sessions()` →
+# `open_database(ROOT_DIR/"data/ops_agent.db")`。**开库会跑迁移、也会写数据**，
+# 于是跑一次测试就可能改动——甚至迁移坏——用户的真实库。实测确认过：
+# 只 `import src.main` 就能让那个文件的 mtime 变化。
+#
+# **必须写在模块级、不能写成 fixture**：`import src.main` 发生在 pytest 的**收集阶段**
+# （导入各测试模块时），比任何 fixture 都早——fixture 挂上去时库已经被打开了。
+#
+# 做法：把 `open_database` 换成「只接受仓库外路径」的版本。测试自己用 tmp_path 开库照常，
+# 唯独指向仓库 data/ 的那次拿到 None —— 正是「持久化不可用」的既有语义（降级、服务照常）。
+def _block_real_database() -> None:
+    import src.storage.db as dbmod
+
+    real_open = dbmod.open_database
+    data_dir = (ROOT / "data").resolve()
+
+    def guarded(path, *args, **kwargs):
+        try:
+            if Path(path).resolve().is_relative_to(data_dir):
+                return None
+        except Exception:  # noqa: BLE001 - 路径怪到解析不了，交给原实现去报错
+            pass
+        return real_open(path, *args, **kwargs)
+
+    dbmod.open_database = guarded
+
+
+_block_real_database()
+
 from src.interfaces.agent_action import AgentActionError, AgentActionSource  # noqa: E402
 from src.interfaces.diagnostic import (
     CommandSpec,

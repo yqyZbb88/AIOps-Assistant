@@ -84,13 +84,13 @@ class RecordingLedger:
     """记录决策落盘与对账调用的假 ledger（也可换成真的 InMemorySessionStore）。"""
 
     def __init__(self) -> None:
-        self.records: list[tuple[str, str | None, str]] = []
+        self.records: list[tuple[str, str | None, str, str]] = []
         self.reconciled: list[set[str]] = []
 
     def record_decision(
-        self, approval_id: str, *, session_id: str | None, action: str
+        self, approval_id: str, *, session_id: str | None, action: str, decided_by: str = ""
     ) -> None:
-        self.records.append((approval_id, session_id, action))
+        self.records.append((approval_id, session_id, action, decided_by))
 
     def reconcile_pending(self, live_approval_ids):
         self.reconciled.append({str(x) for x in live_approval_ids})
@@ -210,7 +210,7 @@ def test_decide_records_the_decision(monkeypatch, fake_actions, approvals):
 
     agent.decide(turn.approval_id, action="approve")
 
-    assert ledger.records == [(turn.approval_id, "s-1", "approve")]
+    assert ledger.records == [(turn.approval_id, "s-1", "approve", "alice")]
 
 
 def test_decision_is_recorded_before_the_command_runs(monkeypatch, fake_actions, approvals):
@@ -238,7 +238,7 @@ def test_decision_is_recorded_before_the_command_runs(monkeypatch, fake_actions,
     with pytest.raises(RuntimeError):
         agent.decide(turn.approval_id, action="approve")
 
-    assert ledger.records == [(turn.approval_id, "s-7", "approve")], "崩之前记录就该在了"
+    assert ledger.records == [(turn.approval_id, "s-7", "approve", "alice")], "崩之前记录就该在了"
     assert approvals.get(turn.approval_id) is None, "审批项确实已被 pop 掉"
 
 
