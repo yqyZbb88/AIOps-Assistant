@@ -471,7 +471,13 @@ OPS_API_TOKENS={"k-你的随机值": "yqyZ"}
 python -m pytest tests -q
 ```
 
-全部离线：不发起任何真实 DeepSeek / Prometheus / SSH 调用。`tests/conftest.py` 提供
+**全部离线**（不发起任何真实 DeepSeek / Prometheus / SSH 调用），而且这条**由两道闸门强制**
+（[tests/conftest.py](tests/conftest.py)）：`_no_real_model_in_tests` 把模型入口换成「一调用就炸」，
+`_no_external_network_in_tests` 让任何**非回环地址**的连接直接失败（后台线程里的违规由
+`pytest_sessionfinish` 兜底判失败）。后者是为一个真实坑加的——配了 LangSmith 时 langchain 会起
+后台线程偷偷发外网请求，而测试**照样全绿**，只有抓 socket 才看得见。
+
+`tests/conftest.py` 提供
 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics`，覆盖：规则引擎（假执行器 ok/failed/skip/unmatched）、
 只读诊断（白名单解析、参数正则/转义安全边界、SSH stub 下的截断与审计、渲染）、
 配置环境插值、敏感打码、ChatService 关键词兜底、OpsAgent 告警全链路，以及

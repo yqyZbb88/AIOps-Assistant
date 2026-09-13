@@ -1,10 +1,25 @@
 """测试公共：FakeMonitor / FakeLLM / 告警构造工具 + 确保仓库根在 sys.path。"""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
-import pytest
+# ---------------------------------------------------------------------------
+# 在任何 langchain 导入**之前**关掉 LangSmith 链路追踪
+# ---------------------------------------------------------------------------
+# 用户 `.env` 里配了 LANGSMITH_TRACING/API_KEY 时，langchain 会起一个**后台线程**
+# 往 api.smith.langchain.com 发请求（`langsmith/_internal/_background_thread.py`
+# 的 tracing_control_thread_func → client.info，与有没有真的跑模型无关）。
+# 这违反本仓库「测试全部离线」的硬性约束，且失败形态很隐蔽：测试照样全绿，
+# 只有抓 socket 才看得见。
+#
+# 位置很关键：conftest 先于任何测试模块加载，而 config_loader 加载 `.env` 用的是
+# `load_dotenv(override=False)`——所以这里设的值不会被 `.env` 覆盖。
+for _var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING", "LANGCHAIN_TRACING_V2"):
+    os.environ[_var] = "false"
+
+import pytest  # noqa: E402
 
 # 保证在任意 pytest 调用方式下都能 `import src`
 ROOT = Path(__file__).resolve().parent.parent
@@ -245,3 +260,102 @@ def _no_audit_file_in_tests():
         if getattr(handler, _FILE_HANDLER_TAG, None):
             audit_logger.removeHandler(handler)
     yield
+
+
+# ---------------------------------------------------------------------------
+# 全局隔离：测试绝不允许加载**真实模型**（那会发起真实 DeepSeek 调用）
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _no_real_model_in_tests(monkeypatch):
+    """把模型入口换成「一调用就炸」，任何漏注入假模型的用例立刻失败。
+
+    为什么需要：聊天 Agent 的构建**没有任何开关**——`llm.enabled=false` 只让容器跳过
+    告警 AI 分析，聊天走的 `container._assistant_factory()` → `OpsAssistant` →
+    `utils/model_loader.get_model()` → 根 `init.py` 的 `init_chat_model`，配了
+    `.env` 的 key 就**真的会发请求**。而失败形态是**成功**（返回一段看起来正常的回答），
+    不是报错——所以只能靠这道闸门拦。
+
+    注意必须在**两个**地方打补丁：`model_loader.get_model` 是对模块的调用；
+    而 `agent/assistant.py` 在**模块顶层**做了 `from ... import get_model`，
+    已导入的话得打它自己那份引用。测试若自己 `monkeypatch.setattr(assistant_mod,
+    "get_model", ...)` 注入脚本化模型，会覆盖本补丁（后打的赢）——那正是期望的用法。
+    """
+    import sys
+
+    def _forbidden(*_args, **_kwargs):
+        raise AssertionError(
+            "测试里不得加载真实模型——这会发起真实 API 调用。"
+            "请照 tests/test_agent_actions_hitl_graph.py 注入脚本化模型，"
+            "或给 ChatService._assistant 注入假对象（如 FakeHistoryAssistant）。"
+        )
+
+    import src.utils.model_loader as model_loader
+
+    monkeypatch.setattr(model_loader, "get_model", _forbidden)
+    assistant_mod = sys.modules.get("src.agent.assistant")
+    if assistant_mod is not None:
+        monkeypatch.setattr(assistant_mod, "get_model", _forbidden, raising=False)
+
+# ---------------------------------------------------------------------------
+# 全局隔离：测试绝不允许建立**对外**网络连接
+# ---------------------------------------------------------------------------
+_VIOLATIONS: list[str] = []
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_external_network_in_tests():
+    """任何对**非回环地址**的连接一律失败。硬性约束：测试全部离线。
+
+    比「给某个具体客户端打补丁」彻底得多——它不关心是哪个库、哪条线程发的请求。
+    这道闸门是为一个**实测踩到**的坑加的：用户 `.env` 里配了 LangSmith 时，langchain
+    会起一个后台线程周期性往 api.smith.langchain.com 发 `client.info`，**与有没有真跑模型
+    无关**。它绕过了一切模型层的桩（`get_model` 打得再死也没用），而且测试**照样全绿**——
+    只有抓 socket 才看得见。
+
+    回环地址放行（本机服务、asyncio 的 socketpair 等）；`address` 不是元组的一律放行
+    （socketpair 的地址是整数，不是 (host, port)）。
+    """
+    import socket
+
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def _check(address) -> None:
+        if not isinstance(address, tuple):
+            return  # 本机 socketpair 之类，不走网络
+        host = str(address[0])
+        if host in ("127.0.0.1", "localhost", "::1", "0.0.0.0", ""):
+            return
+        message = (
+            f"测试里出现了对外的网络连接：{address}。本仓库要求测试**全部离线**。"
+            "请把对应客户端换成本地桩；若它是某个库的后台线程（如 LangSmith 追踪），"
+            "在 conftest 顶部把它关掉。"
+        )
+        _VIOLATIONS.append(message)
+        raise AssertionError(message)
+
+    def spy(self, address, *a, **k):
+        _check(address)
+        return real_connect(self, address, *a, **k)
+
+    def spy_ex(self, address, *a, **k):
+        _check(address)
+        return real_connect_ex(self, address, *a, **k)
+
+    socket.socket.connect = spy
+    socket.socket.connect_ex = spy_ex
+    yield
+    socket.socket.connect = real_connect
+    socket.socket.connect_ex = real_connect_ex
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    """后台线程里的违规会被它自己吞掉，这里兜底把整轮判为失败。"""
+    if _VIOLATIONS:
+        print()
+        print("=" * 60)
+        print("测试出现了对外网络连接（本仓库要求测试全部离线）：")
+        for item in _VIOLATIONS:
+            print("   ", item)
+        print("=" * 60)
+        session.exitstatus = 1

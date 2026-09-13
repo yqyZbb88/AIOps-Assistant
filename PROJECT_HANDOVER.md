@@ -76,7 +76,10 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
    唯一例外是 `RuleEngine.reload_rules()`（热更新，已支持）。
 10. **`config/*.yaml` 的正文与注释都不要出现字面 `${`** ——`interpolate()` 对整个文件文本替换，
     注释里的 `${...}` 也会被当环境变量，冒出误导性日志。
-11. 测试纪律：`python -m pytest tests -q`（仓库根，conda `langchain1.2`），**全部离线**，
+11. 测试纪律：`python -m pytest tests -q`（仓库根，conda `langchain1.2`），**全部离线**——
+    **这条现在有闸门强制执行**（[tests/conftest.py](tests/conftest.py) 的
+    `_no_real_model_in_tests` 与 `_no_external_network_in_tests`，见坑表那两行），
+    不再是靠自觉；
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
@@ -218,6 +221,8 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | **用户可见的「标识」类字符串要先归一化，再按 Unicode 类别拒绝——而不是白名单放行**（2026-09-12，同一处改了两次） | ① **必须归一化**：空格有**四种肉眼无法区分的编码**（`U+0020` 普通 / `U+00A0` 不换行 / `U+3000` 全角 / `U+200B` 零宽），全角与半角字母同理，而**中文输入法下按空格很可能打出全角空格**。不归一化的后果：用户以为在续聊同一段对话，服务端却当成全新标识——而他看两行数据长得一模一样，**没有任何线索可查**。做法：`NFKC` + 折叠空白 + 去首尾。② **归一化之后仍要挡零宽**：NFKC **消不掉**零宽空格 `U+200B` 与 BOM `U+FEFF`（它们不是空白的变体，`\s` 也不匹配）。③ **怎么挡：按 Unicode 类别，不要用白名单**。这两次都栽在这里——先写成 ASCII 白名单，被用户问「为什么中文不行」；改成「ASCII + 汉字」白名单，又被问「为什么还要这么严」。**根因是把「枚举危险字符会漏」错误地推广成了「白名单比黑名单好」**：枚举具体的危险字符确实会漏，但**按类别排除（`Cc`/`Cf`/`Cs`/`Co`/`Cn`）是有明确边界、完备的**。真正要挡的只有「看不见的字符」这一类，所有可见文字（假名、重音字母、中文标点、emoji、阿拉伯文）都不在其中——拒绝它们纯属误伤。④ 报错要**打出码点**（`U+200B`），否则零宽字符用户根本无从排查。 |
 | **唯一约束遇到「多数行为空」的列要用部分索引**（2026-09-11） | 会话名只有少数会话有。直接 `UNIQUE(user, name)` 会让同一 user 的**第二个无名会话插入失败**（`'' = ''`）。写成 `CREATE UNIQUE INDEX ... ON sessions(user, name) WHERE name <> ''`——既约束了有名字的，又放过了没名字的。凡「可选标识」类字段都照此办理。 |
 | **`logging` 的 handler 是全局状态，加 handler 必须幂等**（2026-09-11） | `configure_logging` 每次 `create_app` 都会调用（测试里几十次）。无条件 `addHandler` 会让每条日志写 N 遍，且 N 个 handler 争抢同一文件——**Windows 上轮转 rename 直接 PermissionError**。按路径查重跳过。另外 `RotatingFileHandler` **不创建父目录**（`logs/` 不存在直接抛），且用 `delay=True` 避免启动即占句柄。 |
+| **聊天 Agent 的构建「没有任何开关」，测试里必须注入假模型**（2026-09-12 实测踩到两次） | `settings.llm.enabled=false` **只管告警 AI 分析**，聊天走的 `container._assistant_factory()` → `OpsAssistant` → `utils/model_loader.get_model()` → 根 `init.py`，配了 `.env` 的 key 就**真的发请求**。危险之处在于**失败形态是成功**——回复看起来像一段正常的运维回答，而不是报错（我因此误调了两次真模型）。规矩：`tests/conftest.py` 有 autouse 的 `_no_real_model_in_tests` 把 `get_model` 换成「一调用就炸」；用例要么照 `test_agent_actions_hitl_graph.py` 注入脚本化模型，要么给 `ChatService._assistant` 注入假对象。**注意必须在两处打补丁**——`assistant.py` 在模块顶层做了 `from ... import get_model`。 |
+| **测试「全绿」不等于「离线」：LangSmith 的后台线程会偷偷发外网请求**（2026-09-12 实测） | 用户 `.env` 里配了 `LANGSMITH_TRACING` 时，langchain 会起一个**后台线程**周期性往 `api.smith.langchain.com` 发 `client.info`——**与有没有真跑模型无关**。所以任何模型层的桩都拦不住它，而且它跑在后台线程里、异常被自己吞掉，**测试照样全绿**。只有在 `socket.socket.connect` 上挂钩子才看得见（实测抓到一个 `34.8.121.39:443`）。规矩：① conftest 顶部（**任何 langchain 导入之前**）把 `LANGSMITH_TRACING` / `LANGCHAIN_TRACING*` 设成 `false`；② 再加一道 `_no_external_network_in_tests` 闸门——非回环地址的 `connect` 一律抛，并由 `pytest_sessionfinish` 兜底把整轮判失败（后台线程吞掉异常也跑不掉）。**排查这类问题的通用手法：在 socket 层挂钩子抓调用栈，比猜哪个库发的准得多。** |
 | **`import src.main` 有副作用：模块级 `create_app()` 会按仓库真实配置挂上文件 handler**（2026-09-11 实测踩到） | 后果不只是「测试互相串」——测试里被 stub 掉的 `exec_command` 照样走 `record_execution`，于是**测试套件会往仓库的 `logs/audit.log` 写一堆假数据**（实测跑完留下 32 行 `192.168.1.1` / `h` / `boom`）。已加 `tests/conftest.py` 的 session 级 autouse fixture 摘掉文件 handler；文件落盘本身由 `test_logger.py` 用 `tmp_path` 专门覆盖。**新增任何「按真实配置打开资源」的模块级副作用时，都要同步加这样的隔离**，否则测试会悄悄污染工作区。 |
 | **`purge_interval_seconds=0` 时清理会在写入途中就跑**（2026-09-11 踩到） | 「写入时顺带清理」的设计意味着：想手动控制清理时机的测试，必须在断言前**真的关掉**自动清理。而且不能只给个大数——`_last_purge` 初值是 0、clock 是 epoch 秒（1.7e9），**任何有限大数都会在首次写入时被判为「已超间隔」**。要关就传 `float("inf")`。（两次踩到：会话存储与状态日志各一次。） |
 | **归档/落盘前要过一遍「这些内容原本进过磁盘吗」**（2026-09-11） | 把只进 console 的数据改为落盘时，等于**升级了它的泄露面**。`remediations.detail` 里含远端命令 stdout，此前因为「整段输出不落日志」的约定而安全；一落盘就成了磁盘明文。新增任何落盘字段前，先问「这段内容原本的可见范围是什么」。 |
