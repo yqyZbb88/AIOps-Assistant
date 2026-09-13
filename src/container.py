@@ -270,20 +270,32 @@ class Container:
 
     @staticmethod
     def _reconcile_pending(store: SessionStore) -> None:
-        """开库时把残留的「待审批」轮标为 abandoned。
+        """开库时收敛残留的「待审批」轮，并**分开**报告两类结局。
 
         **新进程里任何 pending 行必然是孤儿**：待审批项存在 `ApprovalStore`（进程内存），
         checkpoint 线程存在 `InMemorySaver`（同样是进程内存），两者都不可能跨重启存活。
         不处理的话那些行会永远显示「有一条命令等你批」，而 `/approvals` 里根本没有它——
-        用户永远批不了。宁可诚实标成「已作废」。
+        用户永远批不了。
+
+        两类必须分开说，因为**结局不同、该做的事也不同**：
+
+        - **作废**：决策从没提交过 → 命令一定没执行 → 无需处理；
+        - **结果未知**：决策提交过、但进程死在命令跑完之前 → **命令可能已经执行了**，
+          这是唯一需要人去翻 `logs/audit.log` 对账的情况，所以用 WARNING 喊出来。
         """
         try:
-            count = store.reconcile_pending(set())
+            abandoned, unknown = store.reconcile_pending(set())
         except Exception as exc:  # noqa: BLE001 - 清理失败不该阻止服务启动
             logger.warning("清理残留待审批会话失败（不影响启动）: %s", exc)
             return
-        if count:
-            logger.info("已将 %d 条残留的待审批对话标记为作废（审批不跨进程存活）", count)
+        if abandoned:
+            logger.info("已将 %d 条残留的待审批对话标记为作废（审批不跨进程存活）", abandoned)
+        if unknown:
+            logger.warning(
+                "有 %d 条残留的待审批轮**提交过决策但没跑完**：命令可能已经执行过。"
+                "它们已被标为「结果未知」而非「未执行」——请对照 logs/audit.log 确认后手工收尾。",
+                unknown,
+            )
 
     @staticmethod
     def _resolve_db_path(raw: str):
@@ -312,6 +324,9 @@ class Container:
             diag=self.diagnostics(),
             agent_actions=write_source,
             approvals=approvals,
+            # 审批决策落盘与淘汰后对账都走会话存储（窄接口，见 ApprovalLedger）。
+            # 持久化未启用时是 None，那两套机制整体跳过——没有会话表就没有要分辨的东西。
+            ledger=self.sessions(),
             debug=self.settings.agent.debug,
             name=self.settings.agent.name,
         )

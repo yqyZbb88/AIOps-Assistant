@@ -75,9 +75,10 @@ alert_key = fingerprint（若告警带了）否则 "告警名|实例|开始时�
 一条告警可能对应 **0~N 条** `remediations`（`config/rules.yaml` 里可以让同一个 alertname
 命中多条规则），以及 **0~1 条** `ai_advice`（命中规则就不走 AI 分析了）。
 
-### `approval_decisions`（孤立表）
+### `approval_decisions`（独立的一张）
 
-它不属于上面任何一组，当前也**没有任何代码往里写**——详见第四节末尾。
+它不属于上面任何一组：不与告警关联，而是**挂在对话那一组的 `messages.approval_id` 上**——
+记录某条待审批的写命令「决策有没有提交过」。详见第四节末尾。
 
 ---
 
@@ -143,13 +144,22 @@ alert_key = fingerprint（若告警带了）否则 "告警名|实例|开始时�
 
 **唯一约束** `UNIQUE(session_id, seq)`，另有索引 `idx_messages_session_seq`。
 
-#### `status` 三种取值
+#### `status` 四种取值
 
 | 值 | 含义 | 会进模型上下文吗 |
 |---|---|---|
 | `final` | 正常完成的一轮 | ✅ 会 |
 | `pending_approval` | 这轮触发了写命令，**最终回答还没产生**（等你审批） | ❌ 不会 |
-| `abandoned` | 该审批已不可能再有下文（进程重启 / 过期 / 会话被删） | ❌ 不会 |
+| `abandoned` | 该审批已不可能再有下文，且**确定没执行**（进程重启 / 过期 / 会话被删） | ❌ 不会 |
+| `unknown` | **结果未知**：决策提交过，但进程死在「取走审批项」与「命令跑完」之间 | ❌ 不会 |
+
+**`abandoned` 与 `unknown` 必须分开**，判据是 `approval_decisions` 里**有没有**该
+`approval_id` 的记录：没有 → 决策从没提交过、命令一定没执行 → `abandoned`；
+有 → 命令**可能已经执行过** → `unknown`。
+
+把 `unknown` 标成 `abandoned` 不是文字问题，是**审计结论与事实相反**——方向恰是
+fail-safe 的反面。两者的展示口都在 `GET /sessions/{id}`；`unknown` 出现时启动日志里
+会有一条 WARNING 提示去对照 `logs/audit.log`。二者都**不进模型窗口**。
 
 **为什么 `seq` 不用时间戳代替**：时间戳是秒级的，同一秒里连写两行就分不出先后。
 
@@ -243,23 +253,30 @@ UPDATE 成最终回答（`status` 变 `final`），`seq` 不变。追加新行�
 **这个字段以前是「响应发完即蒸发」的**：`POST /alert` 的响应体里带回给 Alertmanager，
 没人保存。事后想回看「当时 AI 对这条告警说了什么」，完全没有途径。
 
-### `approval_decisions` —— ⚠️ 当前是空表
+### `approval_decisions` —— 审批决策台账
 
 | 字段 | 类型 | 含义 |
 |---|---|---|
-| `approval_id` | TEXT | 审批 id |
-| `session_id` | TEXT | 属于哪段对话 |
+| `approval_id` | TEXT | 审批 id（对应 `messages.approval_id`） |
+| `session_id` | TEXT | 属于哪段对话；可为 NULL |
 | `action` | TEXT | `approve` / `reject` |
-| `decided_at` | TEXT | 决策时间 |
+| `decided_at` | TEXT | 决策提交时间（UTC，秒级） |
 
-**这张表建好了但没有任何代码往里写**（`git grep approval_decisions src/` 只命中建表那一行）。
+**这张表只为一件事存在**：区分「命令确定没执行」与「命令可能已经执行过」。
 
-它对应一个**尚未修复的风险窗口**：`decide()` 的执行顺序是「先取走待审批项 → 再执行命令」。
-进程若恰好死在两者之间，重启后那条消息会被标成 `abandoned`（= 未执行），
-**而命令其实可能已经执行过了**——历史表给出的结论是错的，且方向恰好与 fail-safe 相反。
+`decide()` 的顺序是「**先取走待审批项（pop）→ 再执行命令（resume）**」。进程若恰好死在
+两者之间，光看会话表无法知道命令跑没跑。所以 `decide()` 在 **pop 与 resume 之间**
+先落一条记录：
 
-目前唯一的补救是：命令真执行时会写审计日志（`logs/audit.log`），对照它能发现矛盾。
-**单看会话表会被误导。** 该遗留已登记在 [PROJECT_HANDOVER.md](../PROJECT_HANDOVER.md) 的路线图。
+- 重启后 `reconcile_pending` 扫到孤儿 pending 行时，**有**记录 → 标 `unknown`（结果未知）；
+- **没有**记录 → 命令一定没执行 → 标 `abandoned`。
+
+落盘位置是这套机制的全部要害：core 与 api 层都只能在这个区间的**外面**动手，
+所以它由 `OpsAssistant` 自己做（窄接口 `interfaces.session.ApprovalLedger`）。
+**写失败会中止这次决策、命令不执行**——那样调用方给出的「没执行」结论仍然是对的，
+反过来吞掉错误继续执行才会制造错误的审计结论。
+
+清理：删会话时**连带删**，另有 TTL（跟会话表同一趟清理）。
 
 ---
 

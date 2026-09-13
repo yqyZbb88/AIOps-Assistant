@@ -10,6 +10,7 @@ from src.interfaces.session import (
     STATUS_ABANDONED,
     STATUS_FINAL,
     STATUS_PENDING_APPROVAL,
+    STATUS_UNKNOWN,
     SessionError,
     SessionInfo,
     is_owner,
@@ -328,13 +329,13 @@ def test_reconcile_pending_with_empty_set_abandons_all(store):
     store.append_turn(info.session_id, user_content="x", assistant_content="⚠️",
                       status=STATUS_PENDING_APPROVAL, approval_id="ap1")
 
-    assert store.reconcile_pending(set()) == 1
+    assert store.reconcile_pending(set()) == (1, 0), "没提交过决策 → 作废"
     assert store.messages(info.session_id)[1].status == STATUS_ABANDONED
     assert store.get(info.session_id).pending_approvals == 0
 
 
 def test_reconcile_pending_keeps_live_ids(store):
-    """运行期判据：审批被 TTL/容量淘汰后，对应行也要作废（只看启动时不够）。"""
+    """运行期判据：审批被 TTL/容量淘汰后，对应行也要收敛（只看启动时不够）。"""
     info = store.create()
     store.append_turn(info.session_id, user_content="x", assistant_content="⚠️",
                       status=STATUS_PENDING_APPROVAL, approval_id="ap-live")
@@ -342,7 +343,7 @@ def test_reconcile_pending_keeps_live_ids(store):
     store.append_turn(other.session_id, user_content="y", assistant_content="⚠️",
                       status=STATUS_PENDING_APPROVAL, approval_id="ap-dead")
 
-    assert store.reconcile_pending({"ap-live"}) == 1
+    assert store.reconcile_pending({"ap-live"}) == (1, 0)
 
     assert store.messages(info.session_id)[1].status == STATUS_PENDING_APPROVAL
     assert store.messages(other.session_id)[1].status == STATUS_ABANDONED
@@ -353,8 +354,70 @@ def test_reconcile_pending_is_idempotent(store):
     store.append_turn(info.session_id, user_content="x", assistant_content="⚠️",
                       status=STATUS_PENDING_APPROVAL, approval_id="ap1")
 
-    assert store.reconcile_pending(set()) == 1
-    assert store.reconcile_pending(set()) == 0, "已作废的行不该被再次统计"
+    assert store.reconcile_pending(set()) == (1, 0)
+    assert store.reconcile_pending(set()) == (0, 0), "已收敛的行不该被再次统计"
+
+
+# -- 决策记录：区分「一定没执行」与「可能已经执行」 ---------------------------
+def test_reconcile_marks_decided_orphans_as_unknown(store):
+    """**这套机制存在的全部理由。**
+
+    `decide()` 先 `pop()` 掉审批项、再 `resume()` 执行命令。进程若死在两者之间，
+    命令**可能已经执行过**——标成 `abandoned`（未执行）会让审计结论与事实相反，
+    方向恰是 fail-safe 的反面。有决策记录 → 必须标 `unknown`。
+    """
+    info = store.create()
+    store.append_turn(info.session_id, user_content="重启 nginx", assistant_content="⚠️",
+                      status=STATUS_PENDING_APPROVAL, approval_id="ap-done")
+    store.record_decision("ap-done", session_id=info.session_id, action="approve")
+
+    assert store.reconcile_pending(set()) == (0, 1)
+    assert store.messages(info.session_id)[1].status == STATUS_UNKNOWN
+    assert store.get(info.session_id).pending_approvals == 0, "结果未知也不再是「等你批」"
+
+
+def test_reconcile_keeps_undecided_orphans_as_abandoned(store):
+    """没有决策记录 = 决策从没提交过 = 命令**一定**没执行。两类不能混。"""
+    info = store.create()
+    store.append_turn(info.session_id, user_content="x", assistant_content="⚠️",
+                      status=STATUS_PENDING_APPROVAL, approval_id="ap-undone")
+
+    assert store.reconcile_pending(set()) == (1, 0)
+    assert store.messages(info.session_id)[1].status == STATUS_ABANDONED
+
+
+def test_reconcile_handles_both_kinds_in_one_pass(store):
+    """同一批孤儿里两类混在一起——先标 unknown 再标 abandoned，别互相覆盖。"""
+    done = store.create()
+    store.append_turn(done.session_id, user_content="a", assistant_content="⚠️",
+                      status=STATUS_PENDING_APPROVAL, approval_id="ap-done")
+    store.record_decision("ap-done", session_id=done.session_id, action="approve")
+    undone = store.create()
+    store.append_turn(undone.session_id, user_content="b", assistant_content="⚠️",
+                      status=STATUS_PENDING_APPROVAL, approval_id="ap-undone")
+
+    assert store.reconcile_pending(set()) == (1, 1)
+
+    assert store.messages(done.session_id)[1].status == STATUS_UNKNOWN
+    assert store.messages(undone.session_id)[1].status == STATUS_ABANDONED
+
+
+def test_decided_ids_are_reported(store):
+    store.record_decision("ap-1", session_id="s", action="approve")
+    store.record_decision("ap-2", session_id="s", action="reject")
+
+    assert store.decided_approval_ids() == {"ap-1", "ap-2"}
+
+
+def test_decision_records_are_dropped_with_their_session(store):
+    """决策记录只为「重启后判 unknown」而存在，会话没了就没人再读它。"""
+    info = store.create()
+    store.record_decision("ap-1", session_id=info.session_id, action="approve")
+    store._clock.advance(3601)  # 超出 fixture 的 ttl=3600
+
+    store.purge_expired()
+
+    assert store.decided_approval_ids() == set()
 
 
 # -- 归属（鉴权开启后由 api/core 传入身份；None = 鉴权关闭，不筛） --------------

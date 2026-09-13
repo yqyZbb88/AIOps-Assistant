@@ -36,6 +36,10 @@ ROLE_ASSISTANT = "assistant"
 #                    否则模型会以为「还在等批准」而重复催促；见 status 说明）
 # - abandoned        审批已作废（进程重启 / 过期 / 会话删除），永远不会再有下文
 STATUS_FINAL = "final"
+#: **结果未知**：决策已提交（命令可能已执行），但进程在「取走审批项」与「命令跑完」
+#: 之间断了，无从确认。与 `abandoned`（确定没执行）**必须分开**——把这种标成「未执行」
+#: 会让审计结论与事实相反。同样不进模型窗口（见 WINDOW_STATUSES）。
+STATUS_UNKNOWN = "unknown"
 STATUS_PENDING_APPROVAL = "pending_approval"
 STATUS_ABANDONED = "abandoned"
 
@@ -371,11 +375,20 @@ class SessionStore(ABC):
         """
 
     @abstractmethod
-    def reconcile_pending(self, live_approval_ids: Collection[str]) -> int:
-        """把**不在** live_approval_ids 里的 pending **轮**标为 abandoned，返回轮数。
+    def reconcile_pending(self, live_approval_ids: Collection[str]) -> tuple[int, int]:
+        """收敛**不在** live_approval_ids 里的 pending **轮**，返回 `(作废轮数, 结果未知轮数)`。
 
-        返回轮数而非行数：一轮有 user + assistant 两行，数行会翻倍（与 `pending_approvals`
-        的口径一致）。
+        两类要分开，**绝不能混为一谈**：
+
+        - 该 `approval_id` **没有**决策记录 → 决策从没提交过，命令一定没执行 → `abandoned`；
+        - **有**决策记录 → 决策已提交，但进程死在「取走审批项」与「命令跑完」之间 →
+          命令**可能已经执行过** → `unknown`。
+
+        第二种情况是审计结论问题而不是文字问题：标成「未执行」会让日志和事实相反，
+        方向恰是 fail-safe 的反面（详见 `approval_decisions` 表与 `record_decision`）。
+
+        返回**轮数**而非行数：一轮有 user + assistant 两行，数行会翻倍（与
+        `pending_approvals` 的口径一致）。
 
         - 开库时传空集合：新进程里任何 pending 行必然是孤儿（审批存在进程内存里，
           不可能跨重启存活）；
@@ -383,8 +396,51 @@ class SessionStore(ABC):
         """
 
     @abstractmethod
+    def record_decision(self, approval_id: str, *, session_id: str | None, action: str) -> None:
+        """落一条审批决策记录（`approval_decisions` 表）。
+
+        **调用时机是这个方法的全部要害**：必须在 `decide()` 把待审批项 `pop()` 掉之后、
+        `resume()` 执行命令**之前**。进程若恰好死在这两者之间，重启后
+        `reconcile_pending` 才能据此把那一轮标成「结果未知」而不是错误的「未执行」——
+        那是唯一能覆盖这个窗口的位置，而 core / api 层都只能在这个区间的外面动手。
+        """
+
+    @abstractmethod
+    def decided_approval_ids(self) -> set[str]:
+        """所有已提交过决策的 approval_id（供请求... 见 reconcile_pending 的判据）。"""
+
+    @abstractmethod
     def purge_expired(self) -> int:
-        """清理过期会话（连同消息），返回删除的会话数。由调用方节流后低频触发。"""
+        """清理过期会话（连同消息）**与过期的决策记录**，返回删除的会话数。
+
+        由调用方节流后低频触发。
+        """
+
+
+@runtime_checkable
+class ApprovalLedger(Protocol):
+    """审批与「会话里那一轮 pending」的对账口（窄接口）。
+
+    **只为 OpsAssistant 存在**：它有两个动作的时机**只有 Agent 自己知道**，core / api
+    都插不进去，所以用一个窄接口把这两件事托付给它，而不是把整个 `SessionStore` 递进去。
+
+    - `record_decision`：必须在 `decide()` 的 `pop()` 与 `resume()` **之间**落盘。
+      那是唯一能覆盖「决策已提交、命令可能已执行」风险窗口的位置——core 与 api 层
+      都只能在这个区间的**外面**动手。
+    - `reconcile_pending`：审批项被 TTL/容量淘汰时立刻把会话里那轮收敛掉。否则它会
+      一直显示「有一条命令等你批」，而 `/approvals` 里根本没有它。
+
+    两套 `SessionStore` 实现**结构上就已经满足**本协议（方法名与签名一致），无需显式
+    继承——这正是用 Protocol 而非 ABC 的理由。
+    """
+
+    def record_decision(
+        self, approval_id: str, *, session_id: str | None, action: str
+    ) -> None:
+        ...
+
+    def reconcile_pending(self, live_approval_ids: Collection[str]) -> tuple[int, int]:
+        ...
 
 
 @runtime_checkable

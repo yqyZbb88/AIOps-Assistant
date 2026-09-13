@@ -25,7 +25,10 @@ from langchain_core.messages import AIMessage  # noqa: E402
 from langchain_core.outputs import ChatGeneration, ChatResult  # noqa: E402
 
 from src.agent.assistant import ALLOWED_APPROVAL_DECISIONS, OpsAssistant  # noqa: E402
-from src.interfaces.approval import ApprovalError  # noqa: E402
+from src.interfaces.approval import (  # noqa: E402
+    ApprovalError,
+    ApprovalUnavailableError,
+)
 from src.interfaces.session import TurnResult  # noqa: E402
 from src.storage.approval import ApprovalStore  # noqa: E402
 
@@ -60,7 +63,9 @@ def _tool_call(name: str, args: dict, call_id: str = "c1") -> AIMessage:
     )
 
 
-def _build_assistant(monkeypatch, responses, *, fake_actions, diag=None, approvals=None):
+def _build_assistant(
+    monkeypatch, responses, *, fake_actions, diag=None, approvals=None, ledger=None
+):
     """构建挂了审批中间件的 OpsAssistant（模型被替换为脚本化假模型）。"""
     from src.agent import assistant as assistant_mod
 
@@ -71,7 +76,25 @@ def _build_assistant(monkeypatch, responses, *, fake_actions, diag=None, approva
         diag=diag,
         agent_actions=fake_actions,
         approvals=approvals if approvals is not None else ApprovalStore(),
+        ledger=ledger,
     )
+
+
+class RecordingLedger:
+    """记录决策落盘与对账调用的假 ledger（也可换成真的 InMemorySessionStore）。"""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str | None, str]] = []
+        self.reconciled: list[set[str]] = []
+
+    def record_decision(
+        self, approval_id: str, *, session_id: str | None, action: str
+    ) -> None:
+        self.records.append((approval_id, session_id, action))
+
+    def reconcile_pending(self, live_approval_ids):
+        self.reconciled.append({str(x) for x in live_approval_ids})
+        return 0, 0
 
 
 def _monitor():
@@ -169,6 +192,149 @@ def test_reply_turn_is_a_thin_forwarder(monkeypatch, fake_actions, approvals):
 
     assert agent.reply_turn("hi").text == "ok"
     assert seen == {"message": "hi", "session_id": None, "user": None}
+
+
+# -- 决策落盘：位置就是这套机制的全部要害 -----------------------------------
+def test_decide_records_the_decision(monkeypatch, fake_actions, approvals):
+    """`decide()` 必须落一条决策记录，且带上会话与决策类型。"""
+    ledger = RecordingLedger()
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"}),
+         AIMessage(content="已重启 nginx")],
+        fake_actions=fake_actions,
+        approvals=approvals,
+        ledger=ledger,
+    )
+    turn = agent.reply_turn_ctx("重启 nginx", session_id="s-1", user="alice")
+
+    agent.decide(turn.approval_id, action="approve")
+
+    assert ledger.records == [(turn.approval_id, "s-1", "approve")]
+
+
+def test_decision_is_recorded_before_the_command_runs(monkeypatch, fake_actions, approvals):
+    """**落盘必须发生在 resume 之前**——这是整套机制存在的理由。
+
+    模拟「审批项已取走、命令还没跑完，进程死了」：让 resume 抛错。
+    只要记录已经写下，重启后的 reconcile 就能把那一轮标成「结果未知」，
+    而不是错误的「未执行」（命令可能其实执行过了）。
+    """
+    ledger = RecordingLedger()
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"})],
+        fake_actions=fake_actions,
+        approvals=approvals,
+        ledger=ledger,
+    )
+    turn = agent.reply_turn_ctx("重启 nginx", session_id="s-7", user="alice")
+
+    def boom(*a, **k):
+        raise RuntimeError("模拟：命令执行到一半进程死了")
+
+    monkeypatch.setattr(agent.agent, "invoke", boom)
+
+    with pytest.raises(RuntimeError):
+        agent.decide(turn.approval_id, action="approve")
+
+    assert ledger.records == [(turn.approval_id, "s-7", "approve")], "崩之前记录就该在了"
+    assert approvals.get(turn.approval_id) is None, "审批项确实已被 pop 掉"
+
+
+def test_decision_record_failure_aborts_without_running(monkeypatch, fake_actions, approvals):
+    """记录写不进去 → **不执行命令**，整次决策失败。
+
+    看起来严厉，但方向是对的：审批项已 pop、命令没跑，调用方给出的「没执行」结论是
+    **正确**的。反过来吞掉错误继续执行，一旦随后崩溃就会得到「以为没执行、其实执行了」
+    的错误审计结论——正是这套机制要消除的方向。
+    """
+    class BrokenLedger:
+        def record_decision(self, *a, **k):
+            raise RuntimeError("磁盘满了")
+
+        def reconcile_pending(self, *a, **k):
+            return 0, 0
+
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"})],
+        fake_actions=fake_actions,
+        approvals=approvals,
+        ledger=BrokenLedger(),
+    )
+    turn = agent.reply_turn_ctx("重启 nginx", session_id="s", user="alice")
+    called: list = []
+    monkeypatch.setattr(agent.agent, "invoke", lambda *a, **k: called.append(1))
+
+    with pytest.raises(ApprovalUnavailableError):
+        agent.decide(turn.approval_id, action="approve")
+
+    assert called == [], "命令绝不能执行"
+
+
+def test_crash_window_ends_up_unknown_not_abandoned(monkeypatch, fake_actions, approvals):
+    """**端到端回归**：决策提交后崩溃 → 那一轮是「结果未知」，不是「未执行」。
+
+    整条链路：中断登记 → decide（pop → 落决策 → resume 崩）→ 新进程 reconcile。
+    """
+    from src.interfaces.session import STATUS_PENDING_APPROVAL, STATUS_UNKNOWN
+    from src.storage.session import InMemorySessionStore
+
+    store = InMemorySessionStore()
+    info = store.create(user="alice")
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"})],
+        fake_actions=fake_actions,
+        approvals=approvals,
+        ledger=store,
+    )
+    turn = agent.reply_turn_ctx("重启 nginx", session_id=info.session_id, user="alice")
+    store.append_turn(
+        info.session_id, user_content="重启 nginx", assistant_content="⚠️ 待人工审批",
+        status=STATUS_PENDING_APPROVAL, approval_id=turn.approval_id,
+    )
+
+    monkeypatch.setattr(
+        agent.agent, "invoke", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("崩"))
+    )
+    with pytest.raises(RuntimeError):
+        agent.decide(turn.approval_id, action="approve")
+
+    # 模拟重启：新进程里任何 pending 行都是孤儿
+    abandoned, unknown = store.reconcile_pending(set())
+
+    assert (abandoned, unknown) == (0, 1), "提交过决策就不能判成「未执行」"
+    assert store.messages(info.session_id)[1].status == STATUS_UNKNOWN
+
+
+def test_evicted_pending_is_reconciled_immediately(monkeypatch, fake_actions):
+    """审批项被容量淘汰时，**当场**把会话里那轮收敛掉。
+
+    不这么做的话它会一直显示「有一条命令等你批」，而 `/approvals` 里根本没有它——
+    用户永远批不了，只能等下次重启。而 `_purge_expired` 恰好知道有没有真淘汰东西，
+    所以对账只在真淘汰时发生，没淘汰的轮次零额外开销。
+    """
+    ledger = RecordingLedger()
+    store = ApprovalStore(maxlen=1)
+    # 两轮各触发一次中断（中断会停在工具执行之前，所以每轮只消耗一条脚本）
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"}),
+         _tool_call("restart_service", {"service": "mysql"})],
+        fake_actions=fake_actions,
+        approvals=store,
+        ledger=ledger,
+    )
+
+    agent.reply_turn_ctx("重启 nginx", session_id="s", user="alice")
+    assert ledger.reconciled == [], "没淘汰就不该对账"
+
+    agent.reply_turn_ctx("重启 mysql", session_id="s", user="alice")
+
+    assert len(ledger.reconciled) == 1, "淘汰了就该对账一次"
+    assert len(ledger.reconciled[-1]) == 1, "live 里只剩刚加的那条"
 
 
 def test_reply_pending_notice_is_a_plain_string(monkeypatch, fake_actions):

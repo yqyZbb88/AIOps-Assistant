@@ -29,6 +29,7 @@ from src.interfaces.session import (
     STATUS_ABANDONED,
     STATUS_FINAL,
     STATUS_PENDING_APPROVAL,
+    STATUS_UNKNOWN,
     WINDOW_STATUSES,
     ChatMessage,
     SessionError,
@@ -342,11 +343,11 @@ class SqliteSessionStore(SessionStore):
             )
         return True
 
-    def reconcile_pending(self, live_approval_ids: Collection[str]) -> int:
-        """把不在 live_approval_ids 里的 pending **轮**标为 abandoned，返回轮数。
+    def reconcile_pending(self, live_approval_ids: Collection[str]) -> tuple[int, int]:
+        """收敛不在 live 里的 pending 轮，返回 `(作废轮数, 结果未知轮数)`。
 
-        返回轮数而非行数：一轮有 user + assistant 两行，数行会翻倍
-        （与 `pending_approvals` 的口径保持一致）。
+        两类的判据是「**有没有决策记录**」，不能混：没有 → 命令一定没执行（abandoned）；
+        有 → 决策提交过，命令可能已执行（unknown）。反过来标就是审计结论错误。
         """
         live = tuple(str(x) for x in live_approval_ids)
         if not live:
@@ -359,8 +360,31 @@ class SqliteSessionStore(SessionStore):
                 f"OR approval_id NOT IN ({placeholders}))"
             )
             cond_params = (STATUS_PENDING_APPROVAL, *live)
+
+        decided = self.decided_approval_ids()
         with self._tx() as conn:
-            turns = conn.execute(
+            orphans = [
+                r[0] for r in conn.execute(
+                    f"SELECT DISTINCT approval_id FROM messages WHERE {cond}", cond_params
+                ).fetchall()
+            ]
+            risky = sorted(a for a in orphans if a in decided)
+            unknown_turns = 0
+            if risky:
+                # ① 提交过决策的 → unknown。必须**先**处理它们：改完之后它们不再满足 cond，
+                #    下面那条 UPDATE 就只会扫到真正没提交过决策的。
+                ph = ",".join("?" for _ in risky)
+                unknown_turns = conn.execute(
+                    f"SELECT COUNT(*) FROM messages WHERE {cond} "
+                    f"AND approval_id IN ({ph}) AND role = ?",
+                    (*cond_params, *risky, ROLE_ASSISTANT),
+                ).fetchone()[0]
+                conn.execute(
+                    f"UPDATE messages SET status = ? WHERE {cond} AND approval_id IN ({ph})",
+                    (STATUS_UNKNOWN, *cond_params, *risky),
+                )
+            # ② 剩下的 → abandoned（决策从没提交过，命令一定没执行）
+            abandoned_turns = conn.execute(
                 f"SELECT COUNT(*) FROM messages WHERE {cond} AND role = ?",
                 (*cond_params, ROLE_ASSISTANT),
             ).fetchone()[0]
@@ -368,7 +392,20 @@ class SqliteSessionStore(SessionStore):
                 f"UPDATE messages SET status = ? WHERE {cond}",
                 (STATUS_ABANDONED, *cond_params),
             )
-        return int(turns)
+        return int(abandoned_turns), int(unknown_turns)
+
+    def record_decision(self, approval_id: str, *, session_id: str | None, action: str) -> None:
+        """落一条审批决策记录。调用时机是全部要害，见 ABC 的说明。"""
+        self._execute(
+            "INSERT INTO approval_decisions (approval_id, session_id, action, decided_at) "
+            "VALUES (?, ?, ?, ?)",
+            (approval_id, session_id, action, to_iso(self._clock())),
+        )
+
+    def decided_approval_ids(self) -> set[str]:
+        return {r["approval_id"] for r in self._query(
+            "SELECT DISTINCT approval_id FROM approval_decisions"
+        )}
 
     # -- 清理 ---------------------------------------------------------------
     def purge_expired(self) -> int:
@@ -386,6 +423,11 @@ class SqliteSessionStore(SessionStore):
             if ids:
                 marks = ",".join("?" for _ in ids)
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({marks})", ids)
+                # 决策记录跟着会话一起走：它只为「重启后判 unknown」而存在，
+                # 会话没了就没人再读它。单靠 TTL 也行，但留着是纯粹的垃圾。
+                conn.execute(
+                    f"DELETE FROM approval_decisions WHERE session_id IN ({marks})", ids
+                )
                 conn.execute(f"DELETE FROM sessions WHERE session_id IN ({marks})", ids)
 
         self._last_purge = self._clock()
@@ -423,6 +465,8 @@ class InMemorySessionStore(SessionStore):
         self._clock: Callable[[], float] = clock or time.time
         self._sessions: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._messages: dict[str, list[ChatMessage]] = {}
+        #: 已提交的审批决策：approval_id → session_id（后者用于随会话清理）
+        self._decisions: dict[str, str | None] = {}
 
     def _touch(self, session_id: str) -> None:
         """把会话标记为最近使用（OrderedDict 尾部 = 最新）。"""
@@ -546,21 +590,36 @@ class InMemorySessionStore(SessionStore):
             return True
         return False
 
-    def reconcile_pending(self, live_approval_ids: Collection[str]) -> int:
+    def reconcile_pending(self, live_approval_ids: Collection[str]) -> tuple[int, int]:
         live = {str(x) for x in live_approval_ids}
-        changed = 0
-        for session_id, msgs in self._messages.items():
+        abandoned = unknown = 0
+        for msgs in self._messages.values():
             for idx, msg in enumerate(msgs):
                 if msg.status != STATUS_PENDING_APPROVAL:
                     continue
                 if msg.approval_id is not None and msg.approval_id in live:
                     continue
+                # 有决策记录 = 决策提交过、命令可能已执行 → unknown；否则一定没执行
+                status = (
+                    STATUS_UNKNOWN
+                    if msg.approval_id in self._decisions
+                    else STATUS_ABANDONED
+                )
                 msgs[idx] = ChatMessage(
-                    msg.role, msg.content, msg.seq, STATUS_ABANDONED, msg.approval_id, msg.created_at
+                    msg.role, msg.content, msg.seq, status, msg.approval_id, msg.created_at
                 )
                 if msg.role == ROLE_ASSISTANT:  # 按轮计数，不按行
-                    changed += 1
-        return changed
+                    if status == STATUS_UNKNOWN:
+                        unknown += 1
+                    else:
+                        abandoned += 1
+        return abandoned, unknown
+
+    def record_decision(self, approval_id: str, *, session_id: str | None, action: str) -> None:
+        self._decisions[approval_id] = session_id
+
+    def decided_approval_ids(self) -> set[str]:
+        return set(self._decisions)
 
     def purge_expired(self) -> int:
         cutoff = cutoff_iso(self._clock(), self.ttl_seconds)
@@ -569,7 +628,13 @@ class InMemorySessionStore(SessionStore):
         alive = [sid for sid in self._sessions if sid not in doomed]
         if len(alive) > self.max_sessions:
             doomed.extend(alive[: len(alive) - self.max_sessions])
-        for sid in dict.fromkeys(doomed):
+        ordered = list(dict.fromkeys(doomed))
+        for sid in ordered:
             self._messages.pop(sid, None)
             self._sessions.pop(sid, None)
+        # 决策记录跟着会话一起走（见 SQLite 版同一处的说明）
+        if ordered:
+            gone = set(ordered)
+            for aid in [a for a, sid in self._decisions.items() if sid in gone]:
+                self._decisions.pop(aid, None)
         return len(set(doomed))

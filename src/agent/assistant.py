@@ -40,10 +40,15 @@ from uuid import uuid4
 from typing import Sequence
 
 from src.interfaces.agent_action import AgentActionSource
-from src.interfaces.approval import ApprovalError, ApprovalOutcome, PendingApproval
+from src.interfaces.approval import (
+    ApprovalError,
+    ApprovalOutcome,
+    ApprovalUnavailableError,
+    PendingApproval,
+)
 from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.monitor import MonitorSource
-from src.interfaces.session import ChatMessage, TurnResult
+from src.interfaces.session import ApprovalLedger, ChatMessage, TurnResult
 from src.storage.approval import ApprovalStore
 from src.utils.model_loader import ModelLoadError, content_text, get_model
 
@@ -199,6 +204,7 @@ class OpsAssistant:
         diag: DiagnosticSource | None = None,
         agent_actions: AgentActionSource | None = None,
         approvals: ApprovalStore | None = None,
+        ledger: ApprovalLedger | None = None,
         name: str = "ops_assistant",
         system_prompt: str | None = None,
         response_format=None,
@@ -240,6 +246,9 @@ class OpsAssistant:
         self.interrupt_on = bundle.interrupt_on
 
         self.approvals = approvals
+        #: 审批决策落盘 / 淘汰后对账的口（窄接口，见 interfaces.session.ApprovalLedger）。
+        #: 只在有写命令能力时才有意义；持久化未启用时为 None，那些机制整体跳过。
+        self.ledger = ledger if self.write_tools else None
         if self.write_tools:
             if approvals is None:
                 raise ValueError(
@@ -407,6 +416,11 @@ class OpsAssistant:
         if not thread_id:
             raise ApprovalError(f"审批项 {approval_id} 缺少线程信息，无法续跑")
 
+        # ★ 落决策记录。**位置就是这套机制的全部要害**：必须在 pop() 之后、resume() 之前。
+        #   进程若恰好死在这两者之间，重启时 reconcile_pending 才能把那一轮标成
+        #   「结果未知」而不是错误的「未执行」——命令可能已经执行过了。
+        self._record_decision(approval_id, record, action)
+
         # 决策顺序与条数必须与挂起调用一一对应（多了少了都会毒化线程）
         decisions = [{"type": action} for _ in actions]
         reason_note = f"，理由: {reason}" if reason else ""
@@ -425,7 +439,14 @@ class OpsAssistant:
         # 续跑可能触发**下一条**写命令（同一线程、新的中断），需继续挂起等审批
         interrupted = _extract_interrupt(response)
         if interrupted is not None:
-            next_id = self._register_pending(thread_id, interrupted)
+            # 链式审批也属于**同一个会话、同一个触发者**，上下文原样继承——
+            # 否则第二条待审批项会变成「无主」，连原主都批不了。
+            next_id = self._register_pending(
+                thread_id,
+                interrupted,
+                session_id=record.get("session_id"),
+                user=record.get("user"),
+            )
             return ApprovalOutcome(
                 approval_id=approval_id,
                 decision=action,
@@ -483,18 +504,68 @@ class OpsAssistant:
                 "待审批队列已满，淘汰最旧一条 id=%s（其命令将永不执行）",
                 evicted.get("approval_id"),
             )
+            # 容量淘汰也是一次「队列变了」——同样要收敛会话里那几轮，
+            # 否则它们会永远显示「有一条命令等你批」。
+            self._reconcile_ledger()
         logger.warning(
             "写命令待人工审批 id=%s 工具=%s（未批准前不会执行）",
             approval_id, [a.get("name") for a in actions],
         )
         return approval_id
 
+    def _record_decision(self, approval_id: str, record: dict, action: str) -> None:
+        """落一条决策记录（在 `pop()` 与 `resume()` 之间调用）。
+
+        **写失败就中止这次决策**（抛 `ApprovalUnavailableError` → api 503）——看起来
+        严厉，但方向是对的：审批项这时已经 pop 掉了、**命令不会执行**，而调用方据此
+        给出的「没执行」结论是**正确**的。反过来若吞掉错误继续执行，一旦进程随后崩溃，
+        重启后就会得到「以为没执行、其实执行了」的错误审计结论——正是这套机制要消除的方向。
+        （卡住的显示会由下一次对账自愈：那时它不在 live 里、又没有决策记录 → 标 abandoned。）
+
+        `ledger` 为 None（持久化未启用）时直接跳过：没有会话表，也就没有要分辨的东西。
+        """
+        if self.ledger is None:
+            return
+        try:
+            self.ledger.record_decision(
+                approval_id, session_id=record.get("session_id"), action=action
+            )
+        except Exception as exc:  # noqa: BLE001 - 一律转成「审批暂不可用」，别炸成 500
+            logger.error("审批决策记录落盘失败，已中止本次决策（命令未执行）: %s", exc)
+            raise ApprovalUnavailableError(
+                f"无法记录本次审批决策（存储故障），已中止且未执行命令，请重试: {exc}"
+            ) from exc
+
     def _purge_expired(self) -> None:
-        """清理过期待审批项，并连同其线程一起删除（否则线程只增不减）。"""
+        """清理过期待审批项，并连同其线程一起删除（否则线程只增不减）。
+
+        **真淘汰了才去对账**：没淘汰时（绝大多数的轮次）一点额外开销都没有。
+        （另一条淘汰路径是**容量**上限，那条发生在 `add()` 里、由 `_register_pending`
+        处理——两条路径都要对账，漏一条就会留下永远批不掉的「待审批」行。）
+        """
         if self.approvals is None:
             return
-        for rec in self.approvals.purge_expired():
+        purged = self.approvals.purge_expired()
+        if not purged:
+            return
+        for rec in purged:
             self._delete_thread(rec.get("thread_id"))
+        self._reconcile_ledger()
+
+    def _reconcile_ledger(self) -> None:
+        """把「审批队列里已经没有了的」会话轮收敛掉。
+
+        队列刚变过（TTL 过期 / 容量淘汰）时调用。不收敛的话那些行会一直显示
+        「有一条命令等你批」，而 `/approvals` 里根本没有它——用户永远批不了，
+        只能等下次重启。
+        """
+        if self.ledger is None or self.approvals is None:
+            return
+        try:
+            live = {r["approval_id"] for r in self.approvals.list()}
+            self.ledger.reconcile_pending(live)
+        except Exception as exc:  # noqa: BLE001 - 收敛失败不该影响本轮对话
+            logger.warning("待审批项变化后对账失败（不影响本轮）: %s", exc)
 
     def _delete_thread(self, thread_id: str | None) -> None:
         """删除已完结/已作废的线程（checkpointer 无自动回收）。"""
