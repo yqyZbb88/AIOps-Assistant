@@ -59,7 +59,7 @@ auth:
   # 关闭时服务行为与改造前完全一致——无身份，因此也不做会话所有者校验。
   # 代码里的 dataclass 默认值同样是 false，与 storage.enabled 同理：测试里
   # Settings() 被直接构造多次，默认打开会让既有用例集体 401。出厂值只由本文件决定。
-  enabled: false
+  enabled: true
 
   # 「密钥 → 身份」的 JSON 映射，例：{"k-alice-9f3a":"alice","k-bob-71cd":"bob"}
   # 真实值走 .env 的 OPS_API_TOKENS（config/ 下不落任何明文密钥）。

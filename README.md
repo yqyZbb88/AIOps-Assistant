@@ -29,7 +29,8 @@
 Assitant/
 ├── README.md / requirements.txt / .env.example
 ├── docs/
-│   └── database.md            # SQLite 库结构详解（六张表逐字段说明 + 常用查询）
+│   ├── database.md            # SQLite 库结构详解（六张表逐字段说明 + 常用查询）
+│   └── auth.md                # 鉴权与密钥（密钥怎么来/放哪/怎么用、Alertmanager 侧、排查）
 ├── init.py                    # 用户模板（只读）：init_chat_model 单一模型入口
 ├── config/
 │   ├── settings.yaml          # 全局配置（支持 ${ENV} / ${ENV:-default} 插值）
@@ -114,6 +115,7 @@ Assitant/
 | **README.md**（本文） | 项目结构 / 分层职责 / 配置 / 路由 / 扩展指南（**结构权威文档**） |
 | [PROJECT_HANDOVER.md](PROJECT_HANDOVER.md) | 开发约束 / 安全不变量 / 已踩的坑 / 既定决策 / 路线图 |
 | [docs/database.md](docs/database.md) | **SQLite 库结构详解**：六张表逐字段说明、表间关系、常用查询、迁移与备份 |
+| [docs/auth.md](docs/auth.md) | **鉴权与密钥**：本项目有哪些密钥、怎么生成、怎么用、Alertmanager 侧怎么配、故障排查 |
 
 ### 分层职责（依赖方向：上 → 下，插件向上实现接口）
 
@@ -166,7 +168,7 @@ pip install -r requirements.txt
 | 动作审计日志 | settings.yaml · `logging.audit` | `true` | `false` → **只记失败**，成功执行静默（**非完全关闭**） |
 | 审计落盘 | settings.yaml · `logging.audit_file` | `logs/audit.log` | 留空则只进 console（重启即丢；审计的用处恰是事后追查） |
 | SQLite 持久化 | settings.yaml · `storage.enabled` | `true`（**yaml 里**） | 代码里 dataclass 默认 `false`，看出厂值以本文件为准；`false`/打不开 → 服务照常起，只是不落盘 |
-| **API 鉴权** | settings.yaml · `auth.enabled` | **`false`（关闭）** | 关闭 = 无身份、不做会话归属校验，行为与改造前一致；**绑 `0.0.0.0` 前必须打开**（见「安全说明」）。`true` 却没配密钥会**拒绝启动** |
+| **API 鉴权** | settings.yaml · `auth.enabled` | **`true`（已打开）** | 打开后除 `GET /health` 外全部要求 `Authorization: Bearer <密钥>`，身份由密钥推出、会话按身份隔离。关闭 = 无身份、不做归属校验，行为与改造前一致（但残余风险全部成立）。`true` 却没配密钥会**拒绝启动**。详见 [docs/auth.md](docs/auth.md) |
 | 对外监听地址 | settings.yaml · `server.host` | `127.0.0.1` | 仅本机可访问；改 `0.0.0.0` 前先读「安全说明」的残余风险 |
 
 **rules.yaml 出厂 4 条规则，全部 `auto_execute: false`**——也就是说**当前没有任何无人值守的写路径**：
@@ -511,17 +513,18 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
 
 ## 安全说明
 
-- **API 鉴权（`settings.yaml` 的 `auth` 段，出厂关闭）**：启用后除 `GET /health`（探针豁免）
+- **API 鉴权（`settings.yaml` 的 `auth` 段）**：启用后除 `GET /health`（探针豁免）
   外**所有**接口都要求 `Authorization: Bearer <密钥>`，**身份由密钥推出**（服务端事实）——
   请求体里自报的用户名一律不采信。密钥 → 身份 的映射走 `.env` 的 `OPS_API_TOKENS`。
   `auth.enabled: true` 却解析不出任何密钥会**拒绝启动**（绝不「空密钥 = 放行」）。
   **关闭时下面列的所有残余风险全部成立**，`server.host` 默认仅 127.0.0.1 是唯一的缓解。
-  ⚠️ **打开前必须先配好 Alertmanager**——`POST /alert` 也挂了鉴权，配方见下节。
+  **密钥怎么生成、怎么用、身份名影响什么、出问题怎么查——见 [docs/auth.md](docs/auth.md)**。
 - **⚠️ `/sessions/*` 会吐出对话原文**：可能含主机名、报错原文、运维细节与写命令的参数。
   未启用 `auth` 时 `GET /sessions` 会把**所有**会话的 id 直接列出来，任何能访问该端口的人
   都能读到全部对话。启用 `auth` 后按身份过滤（只能看到自己的）。
 - **密钥只进 .env / 环境变量**：代码、`config/`、文档均不落明文。规则密码以
   `${SSH_PASSWORD_192_168_20_128}` 占位，加载时插值；变量未设置时插值为空，不会误连。
+  各类密钥的清单与获取方式见 [docs/auth.md](docs/auth.md)。
 - **动作审计**：写命令执行器（`CatalogCommandExecutor`）经 `plugins/common/audit.py` 统一向
   `ops_agent.audit` logger 写结构化记录
   `{action, host, params(打码), started_at, result/error}`，**永不包含密码**。
@@ -546,69 +549,10 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
   **注意：原设计里还有一条「出厂 `enabled: false`」的缓解，但 2026-09-10 起本仓库已把该能力打开，
   这条保护不再成立**——写通道现在是活的。
   **绑 `0.0.0.0` 前必须先打开 `auth`**，或把 `agent_actions.yaml` 的 `enabled` 改回 `false`。
-### 开启 `auth` 之前：把 Alertmanager 侧配好
-
-`POST /alert` 也挂了鉴权。**先配 Alertmanager、确认告警照常入库，最后才打开 `auth.enabled`**
-——鉴权关闭时服务端会忽略那个头，所以这个顺序是零停机、可随时回退的。
-
-**第 1 步 · 给 webhook 一条专用密钥。** 别跟人共用：`alertmanager.yml` 常被提交进运维仓库
-或打进镜像，泄漏面比服务自己的 `.env` 大得多；专用令牌泄漏只丢一个告警入口。
-
-```bash
-# 生成一条随机令牌（值自己留着，别贴进任何会被提交的文件）
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-写进 `.env` 的 `OPS_API_TOKENS`，身份名用一个专用标识：
-
-```jsonc
-OPS_API_TOKENS={"k-alice-9f3a": "alice", "k-am-7c21b0": "alertmanager"}
-//                                             ↑ webhook 专用，与人分开
-```
-
-**第 2 步 · 把同一个令牌写进一个凭据文件**（Alertmanager 要读它；尾随换行会被自动去掉）：
-
-```bash
-printf '%s' '<第 1 步生成的令牌>' > 'D:/Prometheus/alertmanager-0.33.1.windows-amd64/ops_agent_token'
-```
-
-**第 3 步 · 在 receiver 上加 `http_config.authorization`**（路径按你的实际部署改）：
-
-```yaml
-receivers:
-  - name: 'web.hook'
-    webhook_configs:
-      - url: 'http://127.0.0.1:8000/alert'
-        send_resolved: true
-        http_config:
-          authorization:
-            type: Bearer
-            credentials_file: 'D:/Prometheus/alertmanager-0.33.1.windows-amd64/ops_agent_token'
-```
-
-用 `credentials_file` 而不是内联 `credentials:`——后者等于把密钥又抄一份进那个文件里。
-
-**第 4 步 · 重启并验证。**
-
-> ⚠️ **实测（alertmanager 0.33.1）：凭据文件缺失/路径写错时，Alertmanager 照常启动**，
-> 只是通知一条都发不出去——只在**它自己的日志**里留一条
-> `level=WARN ... "Notify attempt failed, will retry later"`，服务端侧完全无感。
-> 所以这一步不能省。
-
-```bash
-# ① 重启 Alertmanager 后，手动推一条告警进去
-curl -s -X POST localhost:9093/api/v2/alerts -H 'Content-Type: application/json' \
-     -d '[{"labels":{"alertname":"AuthCheck","severity":"warning"},"startsAt":"2026-09-13T00:00:00Z"}]'
-
-# ② 确认服务端真的收到了（此时 auth 还没开，不需要凭据）
-curl -s localhost:8000/alerts/recent
-
-# ③ 看到了 AuthCheck 再打开 auth；打开之后同样的请求要带密钥了
-```
-
-若第 ② 步没收到，先去 **Alertmanager 的日志**里找 `Notify attempt failed`——那就是凭据
-文件的问题（不存在、路径不对、内容不对）。
-
+- **⚠️ 打开 `auth` 前必须先配好 Alertmanager**：`POST /alert` 也要求密钥。配方（含
+  「凭据文件缺失时 Alertmanager 照常启动、但通知静默发不出去」这条实测坑）见
+  [docs/auth.md](docs/auth.md) 第四节。**顺序**：先配 Alertmanager、确认告警照常入库，
+  最后才打开 `auth.enabled`——鉴权关闭时服务端会忽略那个头，所以零停机、可随时回退。
 - **SSH host key**：演示环境使用 `AutoAddPolicy`；生产建议核对 known_hosts 后改用 RejectPolicy。
 - **提交前**：`.env` 与含密钥文件不要进版本库。仓库已于 2026-09-10 完成 `git init`，
   `.gitignore` 已忽略 `.env` / `__pycache__` / `.pytest_cache` / `.venv` / `参考/` /
