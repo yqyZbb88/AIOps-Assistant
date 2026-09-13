@@ -121,6 +121,7 @@ r = httpx.get("http://127.0.0.1:8000/sessions",
 | `POST /chat` | 会话 `user` 不匹配 → 404 |
 | **`POST /alert`** | **要求身份是 `auth.alert_identity`**（见 3.9），其他有效密钥 → **403** |
 | **`/approvals`** | **按归属隔离**：只看得到、也只批得动**自己触发**的待审批项；别人的一律 **404** |
+| **`POST /approvals/{id}`** | 决策**记名**：往审计日志写一条 `approval_decision`，`decided_by` 就是这里的身份名。鉴权关闭时为空串 |
 | `/alerts/*` | 只校验「密钥有效」，不看身份名（三个都是只读端点） |
 
 > **身份名是精确串、大小写敏感**，不做任何归一化（`Alice` ≠ `alice`）。
@@ -315,6 +316,9 @@ python -c "import sqlite3;print(sqlite3.connect('data/ops_agent.db').execute('SE
 ## 七、速查
 
 ```bash
+# 看谁批准过写命令（审计日志，与命令执行记录同文件）
+grep approval_decision logs/audit.log
+
 # 造密钥
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 

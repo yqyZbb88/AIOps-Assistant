@@ -9,11 +9,11 @@ JSON 拼装，两条边界共用同一通道与结构。安全不变量：
 """
 from __future__ import annotations
 
-import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from src.utils.logger import get_audit_logger
+from src.utils.logger import write_audit
 from src.utils.security import redact_sensitive
 
 
@@ -39,7 +39,6 @@ def record_execution(
     - params:   入参副本，内部做敏感打码，调用方可传原值；
     - result/error 二选一：result 只放轻量状态（不含整段输出）。
     """
-    audit = get_audit_logger()
     record: dict[str, Any] = {"action": action}
     if command is not None:
         record["command"] = command
@@ -50,7 +49,6 @@ def record_execution(
 
     if error is not None:
         record["error"] = error
-        audit.error("%s", json.dumps(record, ensure_ascii=False))
     else:
         record["result"] = result
-        audit.info("%s", json.dumps(record, ensure_ascii=False))
+    write_audit(record, level=logging.ERROR if error is not None else logging.INFO)

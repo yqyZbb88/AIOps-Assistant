@@ -85,9 +85,9 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：525 passed**（2026-09-13 `/alert` 白名单 + 审批归属 + 决策落盘完成后；
-    当日从 411 起共增 114：鉴权骨架 31 + 会话改造 45 + `/alert` 白名单 9 +
-    审批归属 14 + 决策落盘与结果未知 15）。鉴权骨架批次的 31 例 = `test_api_auth.py` 16、
+    **当前基线：533 passed**（2026-09-13 鉴权 + 审批归属 + 决策落盘 + 决策人审计完成后；
+    当日从 411 起共增 122：鉴权骨架 31 + 会话改造 45 + `/alert` 白名单 9 +
+    审批归属 14 + 决策落盘与结果未知 15 + 决策人审计 8）。鉴权骨架批次的 31 例 = `test_api_auth.py` 16、
     `test_utils_auth.py` 14、既有文件 +1。
     M4 当日共增 109 例：
     `test_sqlite_db.py` 15、`test_session_store.py` 43、`test_api_sessions.py` 18、
@@ -104,7 +104,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **525**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **533**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
     | [docs/database.md](docs/database.md) | **改表结构 / 加字段 / 改字段语义 / 改清理策略时必须同步**——它是库结构的逐字段说明。迁移那节的两条硬性约束（结构指纹一致、新列加末尾）也在那里 |
     | [docs/auth.md](docs/auth.md) | **改鉴权行为时必须同步**——新增/改动密钥种类、`auth` 段语义、豁免端点、401/404 规则、Alertmanager 侧配法，都要改它。它是鉴权细节的**唯一**出处，README 只留摘要 |
@@ -177,7 +177,11 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   既有调用方与所有测试假对象一行未改；
   ② `interfaces.approval.may_decide(pending, identity)`——api 两个端点共用的**唯一**判定
   （与会话那边的 `is_owner` 同款语义）。`identity is None`（鉴权关闭）→ 不校验。
-  **未做**：`POST /approvals` 不记「谁批准的」，见路线图。
+  **决策人审计**：`POST /approvals` 在命令执行**之前**往 `ops_agent.audit` 写一条
+  `{action: "approval_decision", approval_id, decision, decided_by, reason, commands, decided_at}`
+  ——写在之前是因为进程若死在执行中途，事后追责最需要的正是「谁批的」这一条
+  （命令本身由执行器另写 `record_execution`，两条对照能还原完整经过）。
+  队列里没有的 id / 越权尝试**不写**审计，免得留一串「批准」的假记录。
 - **审批决策落盘 + 结果未知状态**（2026-09-13）：`approval_decisions` 表**不再是空表**。
   `decide()` 在 **pop 与 resume 之间**落一条决策记录（那是唯一能覆盖风险窗口的位置，
   core/api 都只能在这个区间外面动手，所以由 `OpsAssistant` 自己做，走窄接口
@@ -259,6 +263,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | **`hmac.compare_digest` 收 `str` 且含非 ASCII 会抛 `TypeError` → 500 而不是 401**（2026-09-12 实测） | 常数时间比对有两个容易一起漏掉的点：① **先 `.encode()` 再比**，否则一个含中文的 Authorization 头会把「凭据无效」（401）变成服务端异常（500）；② **遍历全部密钥、不提前 return**，命中第一个也走完，否则响应时间泄露「第几个密钥匹配上了」＝泄露「猜的密钥前缀对不对」。密钥数量是个位数，全遍历的代价可以忽略。见 [src/utils/auth.py](src/utils/auth.py) 的 `resolve_identity`。 |
 | **鉴权挂在哪，决定了「漏挂」是哪个方向**（2026-09-12） | 三条路只有一条是 fail-closed：① `@app.middleware("http")` 在**路由匹配之前**跑，拿不到「这条路由要不要鉴权」，只能手工维护路径白名单——**漏掉新路由 = 新路由默认敞开**；② `APIRouter(dependencies=...)` 要改每个 api 模块，将来新增 router 容易忘；③ **`include_router(..., dependencies=[Depends(...)])`**（本仓库采用）：`src/main.py` 是唯一的挂载点，一屏看完，**要豁免必须显式写出来**（只有 `health_api.router` 那行没加）。配套：`/docs`、`/redoc`、`/openapi.json` 是 **app 级**路由、不在任何 router 里，因此不会被拦——不用为它们开后门。兜底测试 `test_api_auth.py` 直接**枚举 `app.routes`** 断言「除豁免外每个都 401」，将来新增路由会被自动覆盖。 |
 | **「认证」不等于「授权」：挂上 `require_auth` 之后每条路由都还要问一句「谁**该**能调它」**（2026-09-13 用户实测发现） | 加鉴权时我把 5 个 router 一律挂上 `require_auth`，**默认「只要密钥有效就能调」**。绝大多数端点这么想没问题，但 `POST /alert` 不是——它把告警喂给 `RuleEngine`，而 `auto_execute: true` 的规则**直接执行写命令、不经人工审批**。于是**任何一个持有效密钥的聊天用户都能构造告警去踩那条写路径**（用户自己试出来的：拿 `alice` 的密钥发告警，200，告警还进了归档）。**规矩**：每加一个端点，除了「要不要鉴权」还要问「**要不要限定身份**」；只要它**能产生副作用**（触发执行、改状态、发钱），答案默认是「要」。修法是 `src/api/deps.py` 的 `require_alert_identity`（403，与会话那边的 404 有意区分）。**同类的那条 `/approvals` 已于同日一并修掉**（按归属隔离，见「已实现能力」）。 |
+| **`caplog.at_level(...)` 设在 `create_app()` 之前会被它冲掉**（2026-09-13 踩到） | `create_app` 会调 `configure_logging`，而它对审计 logger 执行的是 `setLevel(NOTSET)`（跟随根级别）——**在它之前设的级别会被重置**，于是 `logger.info` 在**记录产生那一层**就被丢了，caplog 里空空如也，看着像「代码没写审计」而其实是测试自己没用对。**规矩**：`caplog.set_level(...)` 必须在 `create_app()` **之后**调用；分不清是「没写」还是「没抓到」时，先手工挂个 handler 验一遍——我这次就是这样定位的。|
 | **同一个概念有两条产生路径时，钩子只挂一条 = 留残**（2026-09-13 踩到） | 待审批项有**两条**消失路径：TTL 过期（走 `ApprovalStore.purge_expired()`，由 `_purge_expired` 处理）与**容量淘汰**（在 `add()` 里发生、由它返回被挤掉的那条，`_register_pending` 处理）。我第一版只在前者挂了「收敛会话里那轮」的钩子，测试立刻抓到后者漏了——漏掉的表现是那轮会**永远**显示「有一条命令等你批」，而 `/approvals` 里根本没有它。**规矩**：加「状态变化后要同步某处」的钩子时，先把「这个状态有几种变化路径」列全，逐个挂；只挂主干那条，边缘路径就会静默留残。|
 | **Alertmanager 的凭据文件有问题时不会启动失败，而是静默不发通知**（2026-09-13 实测） | 给 webhook 配 `http_config.authorization.credentials_file` 之后，文件不存在 / 路径写错时，**Alertmanager 照常启动、Web UI 一切正常**，只是通知一条都发不出去——只在**它自己的日志**里留一条 `level=WARN ... "Notify attempt failed, will retry later"`，服务端侧完全无感。**规矩**：改完 receiver 必须**实测投递**（往 `POST /api/v2/alerts` 推一条，再查服务端 `/alerts/recent`），别把「进程起来了」当成配好了。同一轮实测的另两条事实：① `credentials_file` 的**尾随换行会被自动去掉**，文件怎么存都行；② 内联 `credentials:` 也能用，但会让密钥多抄一份进那个**常被提交进仓库 / 打进镜像**的文件，故一律用 `credentials_file`。**方法学**：这次是先用「故意写坏的配置」做**对照实验**，确认验证手法真的能测出配置错误，才发现「两种情形都启动成功」不是手法失灵、而是真结论——报「验证通过」之前先证明你的验证有效。 |
 | **`HTTPBearer(auto_error=True)` 缺头时返回 403，不是 401**（2026-09-12） | FastAPI 的已知行为。「没带凭据」语义上是 401（且必须带 `WWW-Authenticate: Bearer` 质询头，否则 Swagger/客户端走不了标准流程），403 是「认证过了但没权限」。故一律 `HTTPBearer(auto_error=False)` 自己抛 401。顺带：`auto_error=False` 时 `credentials` 为 `None` **同时覆盖了**「没带 Authorization 头」与「带了但不是 Bearer scheme」两种情况。 |
@@ -322,8 +327,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   **未做而留待将来**：多主机（host label）选择——当前写命令同样是**单目标**，
   与只读诊断的「多主机诊断」待办同规格，届时两者应一并处理。
 - ~~**给 `/approvals/*` 加「归属」维度**~~ —— **2026-09-13 已实现**（本条目由此移入「已实现能力」）。
-  剩下**未做的一半**：`POST /approvals` 仍然**不记「谁批准的」**（`logger.info` 只记 id/action），
-  审计上追不到决策人。做的时候顺带把身份写进审计行即可；**做之前先问用户**——单用户场景可能不必。
+  （决策人审计也于同日补上，见「已实现能力」。）
 - **输出通道抽象（Notifier）**：`print()` 目前只集中在 `core/agent.py` 两处（2026-09-10 已把
   `RuleEngine.print_results` 移入），真要接钉钉/企微时只需替换这一处。**届时再抽 `Notifier` Protocol，
   属设计决策而非缺陷；做之前先问用户**——`print` 内容是用户观察 `auto_execute=true` 效果的主要窗口。
@@ -728,7 +732,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 525 passed（2026-09-13 鉴权 + 审批归属 + 决策落盘后）
+python -m pytest tests -q            # 目前 533 passed（2026-09-13 鉴权 + 审批归属 + 决策落盘 + 决策人审计后）
                                      #   鉴权与归属新增：api_auth、utils_auth、session_store
                                      #     的归属契约用例、api_sessions 的建/改/越权用例
                                      #   M4 新增：sqlite_db 15、session_store 43（两种实现

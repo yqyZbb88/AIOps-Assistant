@@ -5,12 +5,16 @@
 """
 from __future__ import annotations
 
+import json
+import logging
+
 import pytest
 from fastapi.testclient import TestClient
 
 from src.interfaces.approval import ApprovalError, ApprovalOutcome, PendingApproval
 from src.main import create_app
 from src.utils.config_loader import AuthSettings, Settings
+from src.utils.logger import AUDIT_LOGGER_NAME
 
 _TOKENS = '{"k-alice": "alice", "k-bob": "bob"}'
 
@@ -216,6 +220,84 @@ def test_unknown_id_is_404_even_when_owned_by_someone_else():
         assert c.post(
             "/approvals/nope", json={"action": "approve"}, headers=_as("k-alice")
         ).status_code == 404
+
+
+# -- 决策人审计 --------------------------------------------------------------
+def _audit_lines(caplog) -> list[dict]:
+    return [
+        json.loads(r.getMessage())
+        for r in caplog.records
+        if r.name == AUDIT_LOGGER_NAME
+    ]
+
+
+def test_decision_is_audited_with_the_decider(caplog):
+    """**谁批准的**必须进审计——这是事后追责时唯一能回答它的地方。
+
+    注意 `caplog.set_level` 的位置：必须在 `create_app` **之后**。`configure_logging`
+    会把审计 logger 的级别重置成 `NOTSET`（跟随根级别，默认 WARNING），
+    在那之前设的级别会被冲掉，记录在 logger 那一层就被丢了。
+    """
+    with TestClient(_auth_app(pending_user="alice")) as c:
+        caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+        c.post(
+            "/approvals/abc123",
+            json={"action": "approve", "reason": "高峰期已过"},
+            headers=_as("k-alice"),
+        )
+
+    lines = _audit_lines(caplog)
+    assert len(lines) == 1
+    assert lines[0]["action"] == "approval_decision"
+    assert lines[0]["decided_by"] == "alice"
+    assert lines[0]["decision"] == "approve"
+    assert lines[0]["approval_id"] == "abc123"
+    assert lines[0]["reason"] == "高峰期已过"
+    assert lines[0]["commands"] == ["restart_service"], "记下这条待审批包含哪些命令"
+    assert lines[0]["decided_at"]
+
+
+def test_reject_is_audited_too(caplog):
+    """拒绝也要留痕——「谁否掉了这条写命令」同样是审计要回答的。"""
+    with TestClient(_auth_app(pending_user="alice")) as c:
+        caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+        c.post("/approvals/abc123", json={"action": "reject"}, headers=_as("k-alice"))
+
+    assert _audit_lines(caplog)[0]["decision"] == "reject"
+
+
+def test_unknown_id_leaves_no_audit_line(caplog):
+    """队列里没有的 id（打错 / 探测）**不该在审计里留下一串「批准」的假记录**。"""
+    with TestClient(_auth_app(pending_user="alice")) as c:
+        caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+        assert c.post(
+            "/approvals/nope", json={"action": "approve"}, headers=_as("k-alice")
+        ).status_code == 404
+
+    assert _audit_lines(caplog) == []
+
+
+def test_non_owner_leaves_no_audit_line(caplog):
+    """越权尝试在归属校验那一步就被 404 挡下，不该记成「bob 批准了」。"""
+    with TestClient(_auth_app(pending_user="alice")) as c:
+        caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+        c.post("/approvals/abc123", json={"action": "approve"}, headers=_as("k-bob"))
+
+    assert _audit_lines(caplog) == []
+
+
+def test_decided_by_is_empty_when_auth_is_off(caplog):
+    """鉴权关闭时没有身份可言——审计里留空串，而不是编一个假的。
+
+    「当时有没有鉴权」本身就是审计要回答的问题之一。
+    """
+    app = create_app(settings=Settings())
+    app.state.agent.chat_service._assistant = FakeApprovalAssistant(pending_user="")
+    with TestClient(app) as c:
+        caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
+        c.post("/approvals/abc123", json={"action": "approve"})
+
+    assert _audit_lines(caplog)[0]["decided_by"] == ""
 
 
 def test_approvals_routes_registered():

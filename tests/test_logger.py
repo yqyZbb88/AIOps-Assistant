@@ -1,11 +1,18 @@
 """审计日志落盘：幂等、建父目录、开关语义（全离线，写 tmp_path）。"""
 from __future__ import annotations
 
+import json
+
 import logging
 
 import pytest
 
-from src.utils.logger import _FILE_HANDLER_TAG, AUDIT_LOGGER_NAME, configure_logging
+from src.utils.logger import (
+    _FILE_HANDLER_TAG,
+    AUDIT_LOGGER_NAME,
+    configure_logging,
+    write_audit,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -140,3 +147,29 @@ def test_unwritable_path_degrades_without_raising(tmp_path, monkeypatch):
     configure_logging(level="INFO", audit=True, audit_file=str(blocker / "sub" / "audit.log"))
 
     assert _file_handlers() == []
+
+
+# -- write_audit：结构化审计的**单一**写入点 -----------------------------------
+def test_write_audit_emits_one_json_line(caplog):
+    """一行一个 JSON 对象——日志系统才解析得动（跨行会破坏按行采集）。"""
+    with caplog.at_level(logging.INFO, logger=AUDIT_LOGGER_NAME):
+        write_audit({"action": "approval_decision", "decided_by": "alice"})
+
+    assert len(caplog.records) == 1
+    record = json.loads(caplog.records[0].getMessage())
+    assert record == {"action": "approval_decision", "decided_by": "alice"}
+
+
+def test_write_audit_uses_error_level_when_asked(caplog):
+    with caplog.at_level(logging.INFO, logger=AUDIT_LOGGER_NAME):
+        write_audit({"action": "x"}, level=logging.ERROR)
+
+    assert caplog.records[0].levelno == logging.ERROR
+
+
+def test_write_audit_never_raises_on_unserialisable(caplog):
+    """审计写不进去不该让主流程炸掉——那是旁路，不是主路。"""
+    with caplog.at_level(logging.ERROR):
+        write_audit({"bad": object()})   # 不可 JSON 序列化
+
+    assert any("审计记录写入失败" in r.getMessage() for r in caplog.records)

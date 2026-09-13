@@ -513,7 +513,7 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
 时的反向告警；以及**跨身份的会话隔离**：别人读/聊/改/删一律 404、`GET /sessions` 只看得到
 自己的、**非 owner 的 DELETE 不得作废别人的待审批写命令**、存量 `user` 的可见性规则）。
 
-**当前基线：525 passed。**
+**当前基线：533 passed。**
 
 ---
 
@@ -534,6 +534,10 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
 - **动作审计**：写命令执行器（`CatalogCommandExecutor`）经 `plugins/common/audit.py` 统一向
   `ops_agent.audit` logger 写结构化记录
   `{action, host, params(打码), started_at, result/error}`，**永不包含密码**。
+- **审批决策审计**：`POST /approvals` 在命令执行**之前**记一条
+  `{action: "approval_decision", approval_id, decision, decided_by, reason, commands, decided_at}`
+  ——「谁批准了这条命令」只能在这里查到（命令本身由执行器另记 `record_execution`）。
+  鉴权关闭时 `decided_by` 为空串（当时没有身份可言）。两份都落 `logs/audit.log`。
 - **敏感打码**：日志/处置记录统一过 `utils.security.redact_sensitive`（password/token/secret/api_key → ***）。
 - **动作来源可信**：动作命令只来自 config/actions.yaml 写命令目录（管理员声明，含 sudo 与参数 schema），
   rules.yaml 只引用目录 key 并提供语义参数；多余/越权参数与非法值在进入 SSH 前被服务端拒绝，

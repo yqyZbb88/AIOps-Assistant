@@ -30,8 +30,11 @@ from src.core.agent import OpsAgent
 from src.interfaces.approval import (
     ApprovalError,
     ApprovalUnavailableError,
+    PendingApproval,
     may_decide,
 )
+from src.utils.logger import write_audit
+from src.utils.time import now_iso
 
 logger = logging.getLogger("ops_agent.api.approvals")
 
@@ -72,20 +75,46 @@ def _not_found(approval_id: str) -> HTTPException:
     )
 
 
-def _ensure_owned(agent: OpsAgent, approval_id: str, identity: str | None) -> None:
-    """归属校验：不是调用者触发的待审批项 → 404。
+def _find_owned(
+    agent: OpsAgent, approval_id: str, identity: str | None
+) -> PendingApproval | None:
+    """在调用者的可见范围里找这条待审批项。
 
-    `identity is None`（鉴权关闭）→ 不校验，行为与改造前一致。
-    队列里找不到这个 id 时不在这里报错——交给 `decide()` 走它原本的 404 路径，
-    顺带覆盖「能力不可用 → 503」那条分支（不可用时 `pending_approvals()` 恒为空）。
+    - 找到且**属于他**（或鉴权关闭）→ 返回它；
+    - 找到但**不是他的** → 404（与「未知 id」同形）；
+    - **队列里没有** → 返回 `None`。**不在这里报错**：那条路径还要分「真的没有」
+      与「能力不可用（→ 503）」两种情况，交给 `decide()` 按它原本的逻辑处理
+      （能力不可用时 `pending_approvals()` 恒为空，正好落到这里）。
+
+    返回值同时供审计用——审计要记下这条待审批包含了哪些命令。
     """
-    if identity is None:
-        return
     for pending in agent.pending_approvals():
         if pending.approval_id == approval_id:
             if not may_decide(pending, identity):
                 raise _not_found(approval_id)
-            return
+            return pending
+    return None
+
+
+def _audit_decision(
+    approval_id: str, action: str, reason: str, identity: str | None, pending: PendingApproval
+) -> None:
+    """把「**谁**、什么时候、对哪条待审批做了什么决策」写进审计日志。
+
+    **写在命令执行之前。** 写在之后的话，进程若死在执行中途就永远丢了这一条——
+    而「谁批准了这条命令」恰恰是事后追责时最需要的那一条。命令本身由执行器单独写
+    `record_execution`；两条对照就能还原完整经过（谁批的 → 跑没跑）。
+    """
+    write_audit({
+        "action": "approval_decision",
+        "approval_id": approval_id,
+        "decision": action,
+        # 空串 = 当时鉴权未启用（没有身份可言）。这一条本身就是审计要回答的问题。
+        "decided_by": identity or "",
+        "reason": reason,
+        "commands": [a.get("name") for a in pending.actions],
+        "decided_at": now_iso(),
+    })
 
 
 @router.get("/approvals", response_model=list[dict[str, Any]])
@@ -116,7 +145,11 @@ def decide(
     """
     agent = _agent(request)
     logger.info("收到审批决策 id=%s action=%s from=%s", approval_id, body.action, user)
-    _ensure_owned(agent, approval_id, user)
+    pending = _find_owned(agent, approval_id, user)
+    if pending is not None:
+        # 只对**真实存在**的待审批项写审计：队列里没有的 id（多半是打错或探测）
+        # 由下面的 decide() 报 404，不该在审计里留下一串「批准」的假记录。
+        _audit_decision(approval_id, body.action, body.reason, user, pending)
     try:
         outcome = agent.decide(approval_id, action=body.action, reason=body.reason)
     except ApprovalUnavailableError as exc:

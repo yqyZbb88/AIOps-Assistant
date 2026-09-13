@@ -9,9 +9,11 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 # 审计日志专用 logger 名：动作执行器在其 execute 前后写入
 AUDIT_LOGGER_NAME = "ops_agent.audit"
@@ -99,3 +101,20 @@ def _attach_audit_file(
 def get_audit_logger() -> logging.Logger:
     """返回动作审计 logger（见 AUDIT_LOGGER_NAME）。"""
     return logging.getLogger(AUDIT_LOGGER_NAME)
+
+
+def write_audit(record: dict[str, Any], *, level: int = logging.INFO) -> None:
+    """把一条**结构化**审计记录写进 `ops_agent.audit`（一行一个 JSON 对象）。
+
+    放在这里而不是 `plugins/common/audit.py`：审计是**跨层**的旁路通道，而两类写法
+    （动作执行、人工审批决策）分处不同层——`api/` 不能 import `plugins/`，`core/`
+    更是明令禁止。把「怎么写一条审计」收敛到 utils 这个叶子层，两边都能用，
+    格式也不会漂。
+
+    只负责序列化与投递，**不做打码**：调用方自己保证不落密码（动作那边过
+    `redact_sensitive`）。失败只记 ERROR——审计写不进去不该让主流程炸掉。
+    """
+    try:
+        get_audit_logger().log(level, "%s", json.dumps(record, ensure_ascii=False))
+    except Exception as exc:  # noqa: BLE001 - 序列化失败（如含不可序列化对象）
+        logging.getLogger("ops_agent.logger").error("审计记录写入失败: %s", exc)
