@@ -39,6 +39,8 @@ class PendingApproval:
     created_at: str
     actions: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     allowed_decisions: tuple[str, ...] = ("approve", "reject")
+    #: 触发这条写命令的**身份**（由密钥推出）；空串 = 鉴权关闭时产生的
+    user: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """转为 api 层直接可序列化的结构。"""
@@ -47,7 +49,24 @@ class PendingApproval:
             "created_at": self.created_at,
             "actions": list(self.actions),
             "allowed_decisions": list(self.allowed_decisions),
+            "user": self.user,
         }
+
+
+def may_decide(pending: PendingApproval, identity: str | None) -> bool:
+    """调用者是否有权列出 / 决策这条待审批项。
+
+    与会话那边的 `interfaces.session.is_owner` 同款语义（两条边界各有一处判定，
+    但都遵循同一条规则，别在调用点各写一遍）：
+
+    - `identity is None` → **鉴权未启用**：没有身份可比，一律放行（行为与改造前一致）；
+    - 否则要求 `pending.user` **精确匹配**。取「一律拒绝」——`user` 为空的记录
+      （鉴权关闭时产生的）**任何身份都不匹配**。
+
+    不匹配的后果是「批不了」而不是「有危险」：那条命令会一直挂到 TTL 淘汰，**永不执行**，
+    这正是 fail-safe 想要的方向。
+    """
+    return identity is None or pending.user == identity
 
 
 @dataclass(frozen=True)

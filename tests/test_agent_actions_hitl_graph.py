@@ -26,6 +26,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult  # noqa: E402
 
 from src.agent.assistant import ALLOWED_APPROVAL_DECISIONS, OpsAssistant  # noqa: E402
 from src.interfaces.approval import ApprovalError  # noqa: E402
+from src.interfaces.session import TurnResult  # noqa: E402
 from src.storage.approval import ApprovalStore  # noqa: E402
 
 
@@ -105,6 +106,69 @@ def test_reply_interrupts_and_does_not_execute(monkeypatch, fake_actions, approv
     assert len(pending) == 1
     assert pending[0].actions[0]["name"] == "restart_service"
     assert pending[0].allowed_decisions == ALLOWED_APPROVAL_DECISIONS
+
+
+# -- 待审批项的**上下文**（归属隔离与 approval_decisions 都靠它） -------------
+def test_pending_records_session_and_user_from_reply_turn_ctx(monkeypatch, fake_actions, approvals):
+    """中断登记时必须把会话与身份一并记下。
+
+    Agent 自己既不知道当前是哪个会话、也不知道调用者是谁——只能由 `reply_turn_ctx`
+    送进来。`/approvals` 的身份隔离与 `approval_decisions.session_id` 都依赖它。
+    """
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"})],
+        fake_actions=fake_actions,
+        approvals=approvals,
+    )
+
+    turn = agent.reply_turn_ctx("重启 nginx", session_id="s-1", user="alice")
+
+    rec = approvals.get(turn.approval_id)
+    assert rec is not None
+    assert rec["session_id"] == "s-1"
+    assert rec["user"] == "alice"
+    assert agent.pending_approvals()[0].user == "alice", "对外暴露的 PendingApproval 也要带"
+
+
+def test_pending_context_defaults_to_empty(monkeypatch, fake_actions, approvals):
+    """走旧入口（`reply_turn` / `reply`）时不带上下文——不报错，只是归属为空。
+
+    兼容线的价值：既有调用方与各测试假对象一行都不用改。
+    """
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"})],
+        fake_actions=fake_actions,
+        approvals=approvals,
+    )
+
+    turn = agent.reply_turn("重启 nginx")
+
+    rec = approvals.get(turn.approval_id)
+    assert rec["session_id"] is None
+    assert rec["user"] == ""
+
+
+def test_reply_turn_is_a_thin_forwarder(monkeypatch, fake_actions, approvals):
+    """`reply_turn` 只是 `reply_turn_ctx` 的简化形式——**只有一条 invoke 路径**。
+
+    用 spy 钉死这个转发关系：将来若有人把主体搬回 `reply_turn`、留下两条路径，
+    这条会立刻红。
+    """
+    agent = _build_assistant(
+        monkeypatch, [AIMessage(content="x")], fake_actions=fake_actions, approvals=approvals
+    )
+    seen: dict = {}
+
+    def spy(message, *, history=(), session_id=None, user=None):
+        seen.update(message=message, session_id=session_id, user=user)
+        return TurnResult(text="ok")
+
+    monkeypatch.setattr(agent, "reply_turn_ctx", spy)
+
+    assert agent.reply_turn("hi").text == "ok"
+    assert seen == {"message": "hi", "session_id": None, "user": None}
 
 
 def test_reply_pending_notice_is_a_plain_string(monkeypatch, fake_actions):

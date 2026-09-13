@@ -279,6 +279,21 @@ class OpsAssistant:
     ) -> TurnResult:
         """带历史跑一轮（HistoryCapable 契约）。
 
+        **只是 `reply_turn_ctx` 不带上下文的简化形式**——实现只有一条路径，
+        照 `reply` → `reply_turn` 的先例。既有调用方（含各测试假对象）无需改动。
+        """
+        return self.reply_turn_ctx(message, history=history)
+
+    def reply_turn_ctx(
+        self,
+        message: str,
+        *,
+        history: Sequence[ChatMessage] = (),
+        session_id: str | None = None,
+        user: str | None = None,
+    ) -> TurnResult:
+        """带历史 + **会话上下文**跑一轮（ApprovalContextCapable 契约）。
+
         history 是**可进模型窗口**的历史消息（只有 final 状态），由调用方从会话表取出；
         本方法**不读写任何存储**——持久化是 core 的事，Agent 只负责这一轮怎么跑。
 
@@ -286,6 +301,9 @@ class OpsAssistant:
 
         有写命令时：本轮若触发写命令会**中断**，返回 status="pending_approval" 与
         approval_id，命令尚未执行；待人工经 /approvals 决策。
+
+        `session_id` / `user` **只用于登记待审批项的归属**（`/approvals` 要按身份隔离、
+        `approval_decisions` 表要记会话），不影响这一轮怎么跑、也不进模型上下文。
 
         **每轮仍是全新的 thread_id**（路线 B）：历史由调用方每轮重新拼进来，
         checkpointer 只当「审批中断的临时草稿纸」，跑完即删——已实测：新 thread +
@@ -310,7 +328,9 @@ class OpsAssistant:
         # 「抱歉，我暂时无法回答这个问题。」，把待审批伪装成失败。
         interrupted = _extract_interrupt(response)
         if interrupted is not None:
-            approval_id = self._register_pending(thread_id, interrupted)
+            approval_id = self._register_pending(
+                thread_id, interrupted, session_id=session_id, user=user
+            )
             return TurnResult(
                 text=_render_pending(approval_id, interrupted),
                 status="pending_approval",
@@ -351,6 +371,7 @@ class OpsAssistant:
                 allowed_decisions=tuple(
                     rec.get("allowed_decisions") or ALLOWED_APPROVAL_DECISIONS
                 ),
+                user=rec.get("user") or "",
             )
             for rec in self.approvals.list()
         ]
@@ -424,8 +445,20 @@ class OpsAssistant:
             self._delete_thread(thread_id)
 
     # -- 内部：中断登记与线程清理 ------------------------------------------
-    def _register_pending(self, thread_id: str | None, interrupt_value: dict) -> str:
-        """把一次中断登记为待审批项，返回审批 id。"""
+    def _register_pending(
+        self,
+        thread_id: str | None,
+        interrupt_value: dict,
+        *,
+        session_id: str | None = None,
+        user: str | None = None,
+    ) -> str:
+        """把一次中断登记为待审批项，返回审批 id。
+
+        `session_id` / `user` 是**这条待审批的归属**：`/approvals` 靠它做身份隔离，
+        `approval_decisions` 表靠它记会话。两者都由调用方（core 层）送进来——
+        Agent 自己既不知道当前是哪个会话，也不知道调用者是谁。
+        """
         if self.approvals is None or thread_id is None:
             raise ApprovalError("写命令中断但缺少审批存储或线程信息，无法登记")
         approval_id = uuid4().hex[:12]
@@ -440,6 +473,8 @@ class OpsAssistant:
                 "actions": actions,
                 "allowed_decisions": ALLOWED_APPROVAL_DECISIONS,
                 "created_at": _now_iso(),
+                "session_id": session_id,
+                "user": user or "",
             }
         )
         if evicted is not None:

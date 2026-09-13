@@ -4,13 +4,13 @@ Agent 的写命令（config/agent_actions.yaml）在执行前会中断，等人�
 这是**唯一**能让写命令真正执行的入口。
 
 鉴权（config/settings.yaml 的 auth 段）：
-启用后本组路由要求 `Authorization: Bearer <密钥>`（见 src/api/deps.py）。
+启用后本组路由要求 `Authorization: Bearer <密钥>`（见 src/api/deps.py），并且
+**按归属隔离**——只看得到、只批得动**自己触发**的待审批项。归属由密钥推出的身份
+判定（`interfaces.approval.may_decide`，与会话那边的 `is_owner` 同款语义）。
+非本人的项一律 **404**，与「未知 / 已过期 / 已处理」同形——调用者分不出两者，
+这正是想要的。
 
-**注意 /approvals/* 没有「归属」维度**：审批记录是全局的（uuid4 键），
-`PendingApproval` 不带用户，因此**任何持有效密钥的人都能列出并批准所有人的待执行
-写命令**。多身份部署下这是个已知缺口，已登记在 PROJECT_HANDOVER 路线图。
-
-未启用 auth 时仍是**无鉴权**状态；/approvals/* 是一个「能执行白名单写命令」的句柄。
+未启用 auth 时是**无鉴权**状态：任何能访问该端口的人都能批准写命令。
 缓解措施：审批 id 为随机不可枚举值、server.host 默认仅 127.0.0.1、白名单固定。
 **注意：原设计还有一条「出厂 agent_actions.enabled=false」的缓解，但 2026-09-10 起本仓库
 已把该能力打开，这条不再成立**——写通道现在是活的。
@@ -22,11 +22,16 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from src.api.deps import require_auth
 from src.core.agent import OpsAgent
-from src.interfaces.approval import ApprovalError, ApprovalUnavailableError
+from src.interfaces.approval import (
+    ApprovalError,
+    ApprovalUnavailableError,
+    may_decide,
+)
 
 logger = logging.getLogger("ops_agent.api.approvals")
 
@@ -56,24 +61,64 @@ class ApprovalResponse(BaseModel):
     next_approval_id: str | None = None
 
 
+def _not_found(approval_id: str) -> HTTPException:
+    """统一的 404 文案。
+
+    **归属不匹配刻意用与「未知 id」完全相同的措辞**——两者对调用者不可区分，
+    不泄露「这条审批存在，只是不是你的」。
+    """
+    return HTTPException(
+        status_code=404, detail=f"未知、已过期或已被处理的审批 id: {approval_id}"
+    )
+
+
+def _ensure_owned(agent: OpsAgent, approval_id: str, identity: str | None) -> None:
+    """归属校验：不是调用者触发的待审批项 → 404。
+
+    `identity is None`（鉴权关闭）→ 不校验，行为与改造前一致。
+    队列里找不到这个 id 时不在这里报错——交给 `decide()` 走它原本的 404 路径，
+    顺带覆盖「能力不可用 → 503」那条分支（不可用时 `pending_approvals()` 恒为空）。
+    """
+    if identity is None:
+        return
+    for pending in agent.pending_approvals():
+        if pending.approval_id == approval_id:
+            if not may_decide(pending, identity):
+                raise _not_found(approval_id)
+            return
+
+
 @router.get("/approvals", response_model=list[dict[str, Any]])
-def list_approvals(request: Request) -> list[dict[str, Any]]:
-    """列出当前待人工决策的写命令调用（新的在前）。无写命令能力时返回空列表。"""
-    return [p.to_dict() for p in _agent(request).pending_approvals()]
+def list_approvals(
+    request: Request,
+    user: str | None = Depends(require_auth),
+) -> list[dict[str, Any]]:
+    """列出当前待人工决策的写命令调用（新的在前）。无写命令能力时返回空列表。
+
+    鉴权开启时**只列调用者自己的**；鉴权关闭时列全部（`user is None`），
+    后者是改造前的行为。
+    """
+    pending = _agent(request).pending_approvals()
+    return [p.to_dict() for p in pending if may_decide(p, user)]
 
 
 @router.post("/approvals/{approval_id}", response_model=ApprovalResponse)
-def decide(approval_id: str, body: ApprovalRequest, request: Request) -> ApprovalResponse:
+def decide(
+    approval_id: str,
+    body: ApprovalRequest,
+    request: Request,
+    user: str | None = Depends(require_auth),
+) -> ApprovalResponse:
     """提交一次审批决策并续跑。
 
     approve → 命令真正执行；reject → 放弃执行（两者都会让 Agent 继续把话说完）。
     审批 id 单次有效：重复提交返回 404。
     """
-    logger.info("收到审批决策 id=%s action=%s", approval_id, body.action)
+    agent = _agent(request)
+    logger.info("收到审批决策 id=%s action=%s from=%s", approval_id, body.action, user)
+    _ensure_owned(agent, approval_id, user)
     try:
-        outcome = _agent(request).decide(
-            approval_id, action=body.action, reason=body.reason
-        )
+        outcome = agent.decide(approval_id, action=body.action, reason=body.reason)
     except ApprovalUnavailableError as exc:
         # 功能没开 ≠ 找错了 id：前者是部署问题，后者是调用问题
         raise HTTPException(status_code=503, detail=str(exc)) from exc

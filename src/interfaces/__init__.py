@@ -10,11 +10,17 @@ from src.interfaces.agent_action import (
     AgentActionSource,
     render_agent_action,
 )
-from src.interfaces.approval import ApprovalError, ApprovalOutcome, PendingApproval
+from src.interfaces.approval import (
+    ApprovalError,
+    ApprovalOutcome,
+    PendingApproval,
+    may_decide,
+)
 from src.interfaces.assistant import (
-    Assistant,
     ApprovalCancellable,
     ApprovalCapable,
+    ApprovalContextCapable,
+    Assistant,
 )
 from src.interfaces.command import CommandSpec, ParamSpec
 from src.interfaces.diagnostic import (
@@ -48,9 +54,11 @@ __all__ = [
     "Assistant",
     "ApprovalCapable",
     "ApprovalCancellable",
+    "ApprovalContextCapable",
     "ApprovalError",
     "ApprovalOutcome",
     "PendingApproval",
+    "may_decide",
     "LLMClient",
     "LLMError",
     "SessionStore",

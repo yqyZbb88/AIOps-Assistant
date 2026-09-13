@@ -85,8 +85,8 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     用 [tests/conftest.py](tests/conftest.py) 的 `FakeMonitor` / `FakeLLM` / `FakeDiagnostics` 注入；
     新能力要带「屏蔽 langchain 后仍可 import + 聊天回落关键词」的回归（照
     [tests/test_no_langchain_import.py](tests/test_no_langchain_import.py) 的子进程屏蔽法写）。
-    **当前基线：496 passed**（2026-09-13 `/alert` 身份白名单完成后；当日从 411 起共增 85：
-    鉴权骨架 31 + 会话改造 45 + `/alert` 白名单 9）。鉴权骨架批次的 31 例 = `test_api_auth.py` 16、
+    **当前基线：510 passed**（2026-09-13 `/alert` 白名单 + 审批归属隔离完成后；当日从 411 起共增 99：
+    鉴权骨架 31 + 会话改造 45 + `/alert` 白名单 9 + 审批归属 14）。鉴权骨架批次的 31 例 = `test_api_auth.py` 16、
     `test_utils_auth.py` 14、既有文件 +1。
     M4 当日共增 109 例：
     `test_sqlite_db.py` 15、`test_session_store.py` 43、`test_api_sessions.py` 18、
@@ -103,7 +103,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **496**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **510**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
     | [docs/database.md](docs/database.md) | **改表结构 / 加字段 / 改字段语义 / 改清理策略时必须同步**——它是库结构的逐字段说明。迁移那节的两条硬性约束（结构指纹一致、新列加末尾）也在那里 |
     | [docs/auth.md](docs/auth.md) | **改鉴权行为时必须同步**——新增/改动密钥种类、`auth` 段语义、豁免端点、401/404 规则、Alertmanager 侧配法，都要改它。它是鉴权细节的**唯一**出处，README 只留摘要 |
@@ -168,6 +168,15 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   `auto_execute: true` 的规则**直接执行写命令、不经审批**——不设限就等于每个聊天用户
   都能触发写入。留空 = 不限制，但启动时有一条 WARNING。细节见
   [docs/auth.md](docs/auth.md) 3.9。
+- **待审批项的归属隔离**（2026-09-13）：`/approvals` 只看得到、也只批得动**自己触发**的
+  待审批项（别人的一律 404，与「未知/已过期/已处理」同形）。靠两样东西：
+  ① `ApprovalContextCapable` 新协议——`OpsAssistant.reply_turn_ctx(message, *, history,
+  session_id, user)` 把会话与身份在**中断登记那一刻**记进 `ApprovalStore` 的记录
+  （Agent 自己不知道这两者，只能由 core 层送进去）；`reply_turn` 保留并转发给它，
+  既有调用方与所有测试假对象一行未改；
+  ② `interfaces.approval.may_decide(pending, identity)`——api 两个端点共用的**唯一**判定
+  （与会话那边的 `is_owner` 同款语义）。`identity is None`（鉴权关闭）→ 不校验。
+  **未做**：`POST /approvals` 不记「谁批准的」，见路线图。
 - **会话归属（用户之间真正隔离）**（2026-09-12）：判定只有一处实现——
   [src/interfaces/session.py](src/interfaces/session.py) 的 `is_owner(info, identity)`：
   `identity is None`（鉴权关闭）不校验，否则要求 `user` **精确匹配**（取「一律拒绝」，
@@ -238,7 +247,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 | **yaml 里 `KEY: ${VAR:-}` 这种「插值成空」的写法会静默变成 `None`；写成 `{"k":"v"}` 又会被当成流式映射解成 dict**（2026-09-12 实测） | `config_loader` 的插值在 `yaml.safe_load` **之前**跑，所以插值结果的**字面形态**直接决定 YAML 怎么解析它：① 变量未设、占位不带引号 → `tokens: ` → YAML 解成 **`None`**，而 `_as_scalar` 对 `None` 提前返回，dataclass 拿到 `None` 而**不是**字段声明的 `""` 默认值（默认值只对「键缺失」生效，不管「键存在但值为 null」）；② 变量有值、占位不带引号 → `tokens: {"k":"v"}` → YAML 当**流式映射**解成 `dict`，`_as_scalar` 做 `str(dict)` 得到**单引号 repr**，下游 `json.loads` 必炸。**规矩：任何可能插值成空、或内容形如 JSON/含特殊字符的占位，一律用单引号包住**（`'${VAR:-}'`）——实测这一种写法同时解决上面两种。另外 `_ENV_REF` 的默认值部分用 `[^}]*`，**匹配不了 `}`**，所以 `${VAR:-{}}` 这种默认值也是坏的（吃不到最后一个 `}`）。 |
 | **`hmac.compare_digest` 收 `str` 且含非 ASCII 会抛 `TypeError` → 500 而不是 401**（2026-09-12 实测） | 常数时间比对有两个容易一起漏掉的点：① **先 `.encode()` 再比**，否则一个含中文的 Authorization 头会把「凭据无效」（401）变成服务端异常（500）；② **遍历全部密钥、不提前 return**，命中第一个也走完，否则响应时间泄露「第几个密钥匹配上了」＝泄露「猜的密钥前缀对不对」。密钥数量是个位数，全遍历的代价可以忽略。见 [src/utils/auth.py](src/utils/auth.py) 的 `resolve_identity`。 |
 | **鉴权挂在哪，决定了「漏挂」是哪个方向**（2026-09-12） | 三条路只有一条是 fail-closed：① `@app.middleware("http")` 在**路由匹配之前**跑，拿不到「这条路由要不要鉴权」，只能手工维护路径白名单——**漏掉新路由 = 新路由默认敞开**；② `APIRouter(dependencies=...)` 要改每个 api 模块，将来新增 router 容易忘；③ **`include_router(..., dependencies=[Depends(...)])`**（本仓库采用）：`src/main.py` 是唯一的挂载点，一屏看完，**要豁免必须显式写出来**（只有 `health_api.router` 那行没加）。配套：`/docs`、`/redoc`、`/openapi.json` 是 **app 级**路由、不在任何 router 里，因此不会被拦——不用为它们开后门。兜底测试 `test_api_auth.py` 直接**枚举 `app.routes`** 断言「除豁免外每个都 401」，将来新增路由会被自动覆盖。 |
-| **「认证」不等于「授权」：挂上 `require_auth` 之后每条路由都还要问一句「谁**该**能调它」**（2026-09-13 用户实测发现） | 加鉴权时我把 5 个 router 一律挂上 `require_auth`，**默认「只要密钥有效就能调」**。绝大多数端点这么想没问题，但 `POST /alert` 不是——它把告警喂给 `RuleEngine`，而 `auto_execute: true` 的规则**直接执行写命令、不经人工审批**。于是**任何一个持有效密钥的聊天用户都能构造告警去踩那条写路径**（用户自己试出来的：拿 `alice` 的密钥发告警，200，告警还进了归档）。**规矩**：每加一个端点，除了「要不要鉴权」还要问「**要不要限定身份**」；只要它**能产生副作用**（触发执行、改状态、发钱），答案默认是「要」。修法是 `src/api/deps.py` 的 `require_alert_identity`（403，与会话那边的 404 有意区分）。**同类未修缺口**：`/approvals` 仍然无归属——任何有效密钥都能批准所有人的待执行写命令。 |
+| **「认证」不等于「授权」：挂上 `require_auth` 之后每条路由都还要问一句「谁**该**能调它」**（2026-09-13 用户实测发现） | 加鉴权时我把 5 个 router 一律挂上 `require_auth`，**默认「只要密钥有效就能调」**。绝大多数端点这么想没问题，但 `POST /alert` 不是——它把告警喂给 `RuleEngine`，而 `auto_execute: true` 的规则**直接执行写命令、不经人工审批**。于是**任何一个持有效密钥的聊天用户都能构造告警去踩那条写路径**（用户自己试出来的：拿 `alice` 的密钥发告警，200，告警还进了归档）。**规矩**：每加一个端点，除了「要不要鉴权」还要问「**要不要限定身份**」；只要它**能产生副作用**（触发执行、改状态、发钱），答案默认是「要」。修法是 `src/api/deps.py` 的 `require_alert_identity`（403，与会话那边的 404 有意区分）。**同类的那条 `/approvals` 已于同日一并修掉**（按归属隔离，见「已实现能力」）。 |
 | **Alertmanager 的凭据文件有问题时不会启动失败，而是静默不发通知**（2026-09-13 实测） | 给 webhook 配 `http_config.authorization.credentials_file` 之后，文件不存在 / 路径写错时，**Alertmanager 照常启动、Web UI 一切正常**，只是通知一条都发不出去——只在**它自己的日志**里留一条 `level=WARN ... "Notify attempt failed, will retry later"`，服务端侧完全无感。**规矩**：改完 receiver 必须**实测投递**（往 `POST /api/v2/alerts` 推一条，再查服务端 `/alerts/recent`），别把「进程起来了」当成配好了。同一轮实测的另两条事实：① `credentials_file` 的**尾随换行会被自动去掉**，文件怎么存都行；② 内联 `credentials:` 也能用，但会让密钥多抄一份进那个**常被提交进仓库 / 打进镜像**的文件，故一律用 `credentials_file`。**方法学**：这次是先用「故意写坏的配置」做**对照实验**，确认验证手法真的能测出配置错误，才发现「两种情形都启动成功」不是手法失灵、而是真结论——报「验证通过」之前先证明你的验证有效。 |
 | **`HTTPBearer(auto_error=True)` 缺头时返回 403，不是 401**（2026-09-12） | FastAPI 的已知行为。「没带凭据」语义上是 401（且必须带 `WWW-Authenticate: Bearer` 质询头，否则 Swagger/客户端走不了标准流程），403 是「认证过了但没权限」。故一律 `HTTPBearer(auto_error=False)` 自己抛 401。顺带：`auto_error=False` 时 `credentials` 为 `None` **同时覆盖了**「没带 Authorization 头」与「带了但不是 Bearer scheme」两种情况。 |
 | **必填字段的 `after` 校验器返回 `None` 会**真的**得到 `None`——pydantic v2 不重校验返回值**（2026-09-12 实测） | 写 `session_id: str = Field(...)` + 一个「空白就返回 `None`」的校验器，模型里会实实在在存进 `None`（不是报错、也不会回落到默认值）。后果是下游 `if session_id:` 为假 → 走到「没给 id」的分支 → **白开一段会话**，还顺带把 `DELETE` 的语义架空。**规矩**：必填字段的校验器**只能抛 `ValueError`（→422），绝不能用「返回 None」表达「没填」**。只有**可选**字段才可以把空白折成 `None`（那时候类型本来就是 `str | None`）。两种语义不能混用——`session_name` 可选所以折成 None，`session_id` 必填所以必须 422。 |
@@ -300,14 +309,9 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   + `HumanInTheLoopMiddleware` + `InMemorySaver` + `api/approvals.py`。
   **未做而留待将来**：多主机（host label）选择——当前写命令同样是**单目标**，
   与只读诊断的「多主机诊断」待办同规格，届时两者应一并处理。
-- **给 `/approvals/*` 加「归属」维度**（2026-09-12 登记；鉴权落地时发现的缺口）。
-  审批记录是**全局**的（uuid4 键），`PendingApproval` 不带用户，因此启用 `auth` 后
-  **任何持有效密钥的人都能列出并批准所有人的待执行写命令**。多身份部署下这是真实缺口，
-  单身份时无意义（所有人本就是同一个身份）。修法要点：`_register_pending` 把身份一并记进
-  `ApprovalStore` 的记录（[storage/approval.py](src/storage/approval.py) 的 `add()` 收自由 dict，
-  已有 `session_id` 先例），`GET /approvals` 与 `POST /approvals/{id}` 按身份过滤。
-  **同一处还有第二个缺口**：`POST /approvals` **不记「谁批准的」**（`logger.info` 只记 id/action），
-  审计上追不到决策人。两件都在同一片代码里，建议一并做。**做之前先问用户**——单用户场景可能不必。
+- ~~**给 `/approvals/*` 加「归属」维度**~~ —— **2026-09-13 已实现**（本条目由此移入「已实现能力」）。
+  剩下**未做的一半**：`POST /approvals` 仍然**不记「谁批准的」**（`logger.info` 只记 id/action），
+  审计上追不到决策人。做的时候顺带把身份写进审计行即可；**做之前先问用户**——单用户场景可能不必。
 - **输出通道抽象（Notifier）**：`print()` 目前只集中在 `core/agent.py` 两处（2026-09-10 已把
   `RuleEngine.print_results` 移入），真要接钉钉/企微时只需替换这一处。**届时再抽 `Notifier` Protocol，
   属设计决策而非缺陷；做之前先问用户**——`print` 内容是用户观察 `auto_execute=true` 效果的主要窗口。
@@ -487,10 +491,9 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   （`WriteToolBundle`）；不得引入 `edit` 决策；`config/agent_actions.yaml` 的 `approval` 段
   不得新增开关键；审批护栏只许加在 **Agent 路径**，绝不下沉进 `execute()`/`run()` 内部
   （否则 `RuleEngine` 的无头自动处置会被连带影响）。
-  **已知残余风险**：`/approvals/*` **没有「归属」维度**——审批记录是全局的（uuid4 键），
-  `PendingApproval` 不带用户，因此启用 `auth` 后**任何持有效密钥的人都仍能列出并批准所有人
-  的待执行写命令**；未启用 `auth` 时则是任何能访问该端口的人都能批准。见 README「安全说明」，
-  绑 `0.0.0.0` 前必须先打开 `auth`；给审批加 user 维度已登记路线图。
+  **已知残余风险**：未启用 `auth` 时，任何能访问该端口的人都能批准写命令。启用 `auth` 后
+  **按归属隔离**（只看得到、也只批得动自己触发的，见「已实现能力」）。见 README「安全说明」，
+  绑 `0.0.0.0` 前必须先打开 `auth`。
 
 ---
 
@@ -726,7 +729,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 ```bash
 # 全量离线单测（仓库根，conda langchain1.2）——不碰真实 DeepSeek/Prometheus/SSH
-python -m pytest tests -q            # 目前 496 passed（2026-09-13 /alert 身份白名单后）
+python -m pytest tests -q            # 目前 510 passed（2026-09-13 /alert 白名单 + 审批归属后）
                                      #   鉴权与归属新增：api_auth、utils_auth、session_store
                                      #     的归属契约用例、api_sessions 的建/改/越权用例
                                      #   M4 新增：sqlite_db 15、session_store 43（两种实现

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.interfaces.approval import PendingApproval, may_decide
 from src.storage.approval import ApprovalStore
 
 
@@ -127,3 +128,29 @@ def test_created_at_is_stamped_when_missing():
     store = ApprovalStore()
     store.add({"approval_id": "a", "thread_id": "t"})
     assert store.get("a")["created_at"]
+
+
+# -- may_decide：api 两个端点共用的**唯一**归属判定 ---------------------------
+def _pending(user: str) -> PendingApproval:
+    return PendingApproval(approval_id="a", created_at="t", user=user)
+
+
+def test_may_decide_allows_everything_when_auth_is_off():
+    """`identity is None` = 鉴权未启用 → 不校验，行为与改造前一致。"""
+    assert may_decide(_pending("alice"), None) is True
+    assert may_decide(_pending(""), None) is True
+
+
+def test_may_decide_requires_exact_match():
+    assert may_decide(_pending("alice"), "alice") is True
+    assert may_decide(_pending("alice"), "bob") is False
+    assert may_decide(_pending("alice"), "Alice") is False, "身份是精确串：大小写敏感"
+
+
+def test_may_decide_rejects_unowned_for_any_identity():
+    """`user` 为空的记录（鉴权关闭时产生的）**任何身份都不匹配**。
+
+    拒绝的后果是「批不了」而不是「有危险」——那条命令会挂到 TTL 淘汰，永不执行。
+    """
+    assert may_decide(_pending(""), "alice") is False
+    assert may_decide(_pending(""), "bob") is False

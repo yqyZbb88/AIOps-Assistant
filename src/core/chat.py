@@ -31,7 +31,12 @@ from src.interfaces.approval import (
     ApprovalUnavailableError,
     PendingApproval,
 )
-from src.interfaces.assistant import ApprovalCancellable, ApprovalCapable, Assistant
+from src.interfaces.assistant import (
+    ApprovalCancellable,
+    ApprovalCapable,
+    ApprovalContextCapable,
+    Assistant,
+)
 from src.interfaces.monitor import MonitorSource
 from src.interfaces.session import (
     DEFAULT_MESSAGE_WINDOW,
@@ -186,7 +191,9 @@ class ChatService:
         assistant = self._ensure_assistant()
         if assistant is not None:
             try:
-                turn = self._agent_turn(assistant, message, history)
+                turn = self._agent_turn(
+                    assistant, message, history, session_id=sid, user=user
+                )
             except Exception as exc:  # Agent 调用失败（网络等）→ 本轮回落关键词
                 logger.warning("Agent 回复异常，回落关键词引擎: %s", exc)
         if turn is None:
@@ -205,14 +212,29 @@ class ChatService:
     # ------------------------------------------------------------------
     @staticmethod
     def _agent_turn(
-        assistant: Assistant, message: str, history: list[ChatMessage]
+        assistant: Assistant,
+        message: str,
+        history: list[ChatMessage],
+        *,
+        session_id: str | None = None,
+        user: str | None = None,
     ) -> TurnResult:
-        """让 Agent 跑一轮。
+        """让 Agent 跑一轮，**三级分派**：
 
-        支持历史的实现走 reply_turn；只实现了 reply 的旧对象退回单轮
-        （**必须靠 isinstance 分派，不能给 reply 加 history kwarg**：runtime_checkable
-        只查方法名不查签名，加 kwarg 时旧对象会被误判为支持，然后在调用处 TypeError）。
+        1. `ApprovalContextCapable` → 连会话上下文一起传。`/approvals` 的身份隔离与
+           `approval_decisions` 的 `session_id` 都靠这一级——Agent 自己既不知道当前是
+           哪个会话，也不知道调用者是谁，只能由这里送进去；
+        2. `HistoryCapable` → 只传历史（老实现，行为不变）；
+        3. 其余 → 退回单轮 `reply`。
+
+        **必须靠 isinstance 分派，不能给既有方法加 kwarg**：runtime_checkable 只查
+        方法名不查签名，加 kwarg 时只实现旧签名的对象会被误判为支持，然后在调用处
+        TypeError。这也是新能力一律「新方法名 + 新 Protocol」的原因。
         """
+        if isinstance(assistant, ApprovalContextCapable):
+            return assistant.reply_turn_ctx(
+                message, history=history, session_id=session_id, user=user
+            )
         if isinstance(assistant, HistoryCapable):
             return assistant.reply_turn(message, history=history)
         return TurnResult(text=assistant.reply(message))

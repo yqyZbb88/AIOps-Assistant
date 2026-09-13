@@ -10,9 +10,10 @@ core/chat.py 的 ChatService 只需「给一条消息、拿回一段文本」，
 """
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Sequence, runtime_checkable
 
 from src.interfaces.approval import ApprovalOutcome, PendingApproval
+from src.interfaces.session import ChatMessage, TurnResult
 
 
 class Assistant(Protocol):
@@ -60,4 +61,36 @@ class ApprovalCancellable(Protocol):
 
     def cancel_pending(self, approval_id: str) -> bool:
         """作废一条待审批项（其命令永不执行）；命中返回 True，未知/已处理返回 False。"""
+        ...
+
+
+@runtime_checkable
+class ApprovalContextCapable(Protocol):
+    """跑一轮时**顺便记下上下文**的 Agent（可选能力）。
+
+    与 `HistoryCapable` 只差一点：多接收 `session_id` 与 `user`，并把它们记进这一轮
+    触发的待审批项。为什么需要——
+
+    - `/approvals` 要能**按身份隔离**：否则任何持有效密钥的人都能列出并批准**所有人**
+      的待执行写命令；
+    - `approval_decisions` 表要记 `session_id`，没有它那张表根本写不进去。
+
+    两件事要的是同一样东西：**「这条待审批是谁、在哪个会话里触发的」必须是审批记录
+    自身的属性**，而不能靠外部关联去反推（反推不出时只剩 fail-open 或 fail-closed
+    两个坏选择）。
+
+    **为什么不给 `HistoryCapable.reply_turn` 直接加 kwarg**：`runtime_checkable` 只校验
+    方法名、不校验签名，给既有方法加参数会让只实现旧签名的对象被**误判为支持**，然后
+    在调用处 TypeError——这与 `ApprovalCancellable` 另立协议是同一条理由。
+    """
+
+    def reply_turn_ctx(
+        self,
+        message: str,
+        *,
+        history: Sequence[ChatMessage] = (),
+        session_id: str | None = None,
+        user: str | None = None,
+    ) -> TurnResult:
+        """同 `HistoryCapable.reply_turn`，额外把 `session_id` / `user` 记进待审批项。"""
         ...
