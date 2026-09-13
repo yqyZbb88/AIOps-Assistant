@@ -516,9 +516,7 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
   请求体里自报的用户名一律不采信。密钥 → 身份 的映射走 `.env` 的 `OPS_API_TOKENS`。
   `auth.enabled: true` 却解析不出任何密钥会**拒绝启动**（绝不「空密钥 = 放行」）。
   **关闭时下面列的所有残余风险全部成立**，`server.host` 默认仅 127.0.0.1 是唯一的缓解。
-  ⚠️ **打开后必须同步配置 Alertmanager**：`POST /alert` 也挂了鉴权，要在 receiver 的
-  `webhook_configs` 里加 `http_config.authorization`（Bearer），否则告警会静默 401——
-  服务侧一条都收不到，只有 Alertmanager 的日志看得到。
+  ⚠️ **打开前必须先配好 Alertmanager**——`POST /alert` 也挂了鉴权，配方见下节。
 - **⚠️ `/sessions/*` 会吐出对话原文**：可能含主机名、报错原文、运维细节与写命令的参数。
   未启用 `auth` 时 `GET /sessions` 会把**所有**会话的 id 直接列出来，任何能访问该端口的人
   都能读到全部对话。启用 `auth` 后按身份过滤（只能看到自己的）。
@@ -548,6 +546,69 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
   **注意：原设计里还有一条「出厂 `enabled: false`」的缓解，但 2026-09-10 起本仓库已把该能力打开，
   这条保护不再成立**——写通道现在是活的。
   **绑 `0.0.0.0` 前必须先打开 `auth`**，或把 `agent_actions.yaml` 的 `enabled` 改回 `false`。
+### 开启 `auth` 之前：把 Alertmanager 侧配好
+
+`POST /alert` 也挂了鉴权。**先配 Alertmanager、确认告警照常入库，最后才打开 `auth.enabled`**
+——鉴权关闭时服务端会忽略那个头，所以这个顺序是零停机、可随时回退的。
+
+**第 1 步 · 给 webhook 一条专用密钥。** 别跟人共用：`alertmanager.yml` 常被提交进运维仓库
+或打进镜像，泄漏面比服务自己的 `.env` 大得多；专用令牌泄漏只丢一个告警入口。
+
+```bash
+# 生成一条随机令牌（值自己留着，别贴进任何会被提交的文件）
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+写进 `.env` 的 `OPS_API_TOKENS`，身份名用一个专用标识：
+
+```jsonc
+OPS_API_TOKENS={"k-alice-9f3a": "alice", "k-am-7c21b0": "alertmanager"}
+//                                             ↑ webhook 专用，与人分开
+```
+
+**第 2 步 · 把同一个令牌写进一个凭据文件**（Alertmanager 要读它；尾随换行会被自动去掉）：
+
+```bash
+printf '%s' '<第 1 步生成的令牌>' > 'D:/Prometheus/alertmanager-0.33.1.windows-amd64/ops_agent_token'
+```
+
+**第 3 步 · 在 receiver 上加 `http_config.authorization`**（路径按你的实际部署改）：
+
+```yaml
+receivers:
+  - name: 'web.hook'
+    webhook_configs:
+      - url: 'http://127.0.0.1:8000/alert'
+        send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: 'D:/Prometheus/alertmanager-0.33.1.windows-amd64/ops_agent_token'
+```
+
+用 `credentials_file` 而不是内联 `credentials:`——后者等于把密钥又抄一份进那个文件里。
+
+**第 4 步 · 重启并验证。**
+
+> ⚠️ **实测（alertmanager 0.33.1）：凭据文件缺失/路径写错时，Alertmanager 照常启动**，
+> 只是通知一条都发不出去——只在**它自己的日志**里留一条
+> `level=WARN ... "Notify attempt failed, will retry later"`，服务端侧完全无感。
+> 所以这一步不能省。
+
+```bash
+# ① 重启 Alertmanager 后，手动推一条告警进去
+curl -s -X POST localhost:9093/api/v2/alerts -H 'Content-Type: application/json' \
+     -d '[{"labels":{"alertname":"AuthCheck","severity":"warning"},"startsAt":"2026-09-13T00:00:00Z"}]'
+
+# ② 确认服务端真的收到了（此时 auth 还没开，不需要凭据）
+curl -s localhost:8000/alerts/recent
+
+# ③ 看到了 AuthCheck 再打开 auth；打开之后同样的请求要带密钥了
+```
+
+若第 ② 步没收到，先去 **Alertmanager 的日志**里找 `Notify attempt failed`——那就是凭据
+文件的问题（不存在、路径不对、内容不对）。
+
 - **SSH host key**：演示环境使用 `AutoAddPolicy`；生产建议核对 known_hosts 后改用 RejectPolicy。
 - **提交前**：`.env` 与含密钥文件不要进版本库。仓库已于 2026-09-10 完成 `git init`，
   `.gitignore` 已忽略 `.env` / `__pycache__` / `.pytest_cache` / `.venv` / `参考/` /
