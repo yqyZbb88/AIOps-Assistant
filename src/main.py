@@ -104,7 +104,12 @@ def _check_auth(settings: Settings) -> None:
       但用户很可能**以为自己受保护了**，值得在启动日志里说一句。
     """
     try:
-        ensure_usable(settings.auth.enabled, settings.auth.tokens)
+        ensure_usable(
+            settings.auth.enabled,
+            settings.auth.tokens,
+            approval_mode=settings.auth.approval_mode,
+            approvers_raw=settings.auth.approver_identities,
+        )
     except AuthConfigError as exc:
         raise RuntimeError(f"鉴权配置有误，拒绝启动：{exc}") from exc
 

@@ -6,6 +6,7 @@ import pytest
 from src.utils.auth import (
     AuthConfigError,
     ensure_usable,
+    parse_approvers,
     parse_tokens,
     resolve_identity,
 )
@@ -49,6 +50,31 @@ def test_non_mapping_is_rejected():
 def test_empty_or_nonstring_entries_are_rejected(raw):
     with pytest.raises(AuthConfigError):
         parse_tokens(raw)
+
+
+def test_parse_approvers_is_strict_and_deduplicates():
+    assert parse_approvers("") == ()
+    assert parse_approvers('["alice", "bob", "alice"]') == ("alice", "bob")
+    with pytest.raises(AuthConfigError, match="必须是 JSON 数组"):
+        parse_approvers('{"alice": true}')
+    with pytest.raises(AuthConfigError, match="非空字符串"):
+        parse_approvers('["alice", ""]')
+
+
+def test_approvers_only_requires_approvers():
+    with pytest.raises(AuthConfigError, match="必须至少配置一个审批人"):
+        ensure_usable(
+            True,
+            _TOKENS,
+            approval_mode="approvers_only",
+            approvers_raw="[]",
+        )
+    ensure_usable(
+        True,
+        _TOKENS,
+        approval_mode="approvers_only",
+        approvers_raw='["bob"]',
+    )
 
 
 # -- 身份解析 ---------------------------------------------------------------

@@ -126,6 +126,11 @@ class AuthSettings:
     enabled: bool = False
     tokens: str = ""
 
+    #: 审批模式：owner = 触发者本人可批准；approvers_only = 只有显式审批人可批准。
+    approval_mode: str = "owner"
+    #: JSON 数组字符串，例如 ["alice","audit-bot"]；approvers_only 模式下必填。
+    approver_identities: str = "[]"
+
     #: `POST /alert`（Alertmanager webhook）**只接受这个身份**的密钥；留空 = 不限制。
     #:
     #: 为什么需要：`/alert` 不是只读的——它把告警喂给 `RuleEngine`，而

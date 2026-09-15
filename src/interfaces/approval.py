@@ -12,7 +12,7 @@ Agent 写命令在真正执行前会**中断**（LangGraph interrupt），等待
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Collection
 
 
 class ApprovalError(Exception):
@@ -53,20 +53,24 @@ class PendingApproval:
         }
 
 
-def may_decide(pending: PendingApproval, identity: str | None) -> bool:
+def may_decide(
+    pending: PendingApproval,
+    identity: str | None,
+    *,
+    approvers: Collection[str] = (),
+    approvers_only: bool = False,
+) -> bool:
     """调用者是否有权列出 / 决策这条待审批项。
 
-    与会话那边的 `interfaces.session.is_owner` 同款语义（两条边界各有一处判定，
-    但都遵循同一条规则，别在调用点各写一遍）：
-
-    - `identity is None` → **鉴权未启用**：没有身份可比，一律放行（行为与改造前一致）；
-    - 否则要求 `pending.user` **精确匹配**。取「一律拒绝」——`user` 为空的记录
-      （鉴权关闭时产生的）**任何身份都不匹配**。
-
-    不匹配的后果是「批不了」而不是「有危险」：那条命令会一直挂到 TTL 淘汰，**永不执行**，
-    这正是 fail-safe 想要的方向。
+    - 鉴权未启用：没有身份可比，一律放行；
+    - ``approvers_only=True``：只允许显式审批人，支持职责分离；
+    - 默认模式：要求 ``pending.user`` 精确匹配，保持既有行为。
     """
-    return identity is None or pending.user == identity
+    if identity is None:
+        return True
+    if approvers_only:
+        return identity in set(approvers)
+    return pending.user == identity
 
 
 @dataclass(frozen=True)

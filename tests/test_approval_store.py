@@ -202,3 +202,13 @@ def test_may_decide_rejects_unowned_for_any_identity():
     """
     assert may_decide(_pending(""), "alice") is False
     assert may_decide(_pending(""), "bob") is False
+
+
+def test_may_decide_approvers_only_supports_separation_of_duties():
+    pending = _pending("alice")
+    assert may_decide(
+        pending, "alice", approvers=("bob",), approvers_only=True
+    ) is False
+    assert may_decide(
+        pending, "bob", approvers=("bob",), approvers_only=True
+    ) is True

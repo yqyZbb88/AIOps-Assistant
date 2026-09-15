@@ -222,6 +222,39 @@ def test_unknown_id_is_404_even_when_owned_by_someone_else():
         ).status_code == 404
 
 
+def _approvers_only_app(pending_user: str = "alice"):
+    app = create_app(
+        settings=Settings(
+            auth=AuthSettings(
+                enabled=True,
+                tokens=_TOKENS,
+                approval_mode="approvers_only",
+                approver_identities='["bob"]',
+            )
+        )
+    )
+    app.state.agent.chat_service._assistant = FakeApprovalAssistant(pending_user=pending_user)
+    return app
+
+
+def test_approvers_only_blocks_requester_and_allows_approver():
+    with TestClient(_approvers_only_app()) as c:
+        assert c.get("/approvals", headers=_as("k-alice")).json() == []
+        assert c.get("/approvals", headers=_as("k-bob")).json()[0]["approval_id"] == "abc123"
+        assert c.post(
+            "/approvals/abc123",
+            json={"action": "approve"},
+            headers=_as("k-alice"),
+        ).status_code == 404
+        resp = c.post(
+            "/approvals/abc123",
+            json={"action": "approve"},
+            headers=_as("k-bob"),
+        )
+
+    assert resp.status_code == 200
+
+
 # -- 决策人审计 --------------------------------------------------------------
 def _audit_lines(caplog) -> list[dict]:
     return [

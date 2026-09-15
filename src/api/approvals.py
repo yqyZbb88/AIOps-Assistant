@@ -34,6 +34,7 @@ from src.interfaces.approval import (
     may_decide,
 )
 from src.utils.logger import write_audit
+from src.utils.auth import AuthConfigError, parse_approvers
 from src.utils.time import now_iso
 
 logger = logging.getLogger("ops_agent.api.approvals")
@@ -75,8 +76,22 @@ def _not_found(approval_id: str) -> HTTPException:
     )
 
 
+def _approval_policy(request: Request) -> tuple[tuple[str, ...], bool]:
+    auth = request.app.state.settings.auth
+    try:
+        approvers = parse_approvers(auth.approver_identities)
+    except AuthConfigError as exc:
+        raise HTTPException(status_code=500, detail=f"审批人配置无效: {exc}") from exc
+    return approvers, auth.approval_mode == "approvers_only"
+
+
 def _find_owned(
-    agent: OpsAgent, approval_id: str, identity: str | None
+    agent: OpsAgent,
+    approval_id: str,
+    identity: str | None,
+    *,
+    approvers: tuple[str, ...] = (),
+    approvers_only: bool = False,
 ) -> PendingApproval | None:
     """在调用者的可见范围里找这条待审批项。
 
@@ -90,7 +105,12 @@ def _find_owned(
     """
     for pending in agent.pending_approvals():
         if pending.approval_id == approval_id:
-            if not may_decide(pending, identity):
+            if not may_decide(
+                pending,
+                identity,
+                approvers=approvers,
+                approvers_only=approvers_only,
+            ):
                 raise _not_found(approval_id)
             return pending
     return None
@@ -128,7 +148,17 @@ def list_approvals(
     后者是改造前的行为。
     """
     pending = _agent(request).pending_approvals()
-    return [p.to_dict() for p in pending if may_decide(p, user)]
+    approvers, approvers_only = _approval_policy(request)
+    return [
+        p.to_dict()
+        for p in pending
+        if may_decide(
+            p,
+            user,
+            approvers=approvers,
+            approvers_only=approvers_only,
+        )
+    ]
 
 
 @router.post("/approvals/{approval_id}", response_model=ApprovalResponse)
@@ -145,7 +175,14 @@ def decide(
     """
     agent = _agent(request)
     logger.info("收到审批决策 id=%s action=%s from=%s", approval_id, body.action, user)
-    pending = _find_owned(agent, approval_id, user)
+    approvers, approvers_only = _approval_policy(request)
+    pending = _find_owned(
+        agent,
+        approval_id,
+        user,
+        approvers=approvers,
+        approvers_only=approvers_only,
+    )
     if pending is not None:
         # 只对**真实存在**的待审批项写审计：队列里没有的 id（多半是打错或探测）
         # 由下面的 decide() 报 404，不该在审计里留下一串「批准」的假记录。

@@ -72,6 +72,11 @@ auth:
   # 流式映射解析成 dict；两者都会让启动校验失败。
   tokens: '${OPS_API_TOKENS:-}'
 
+  # owner = 触发者本人可批准；approvers_only = 只有下面列出的身份可批准。
+  approval_mode: owner
+  # JSON 数组字符串，例如 ["alice","audit-bot"]；approvers_only 模式下必填。
+  approver_identities: '${OPS_APPROVER_IDENTITIES:-[]}'
+
   # POST /alert（Alertmanager webhook）**只接受这个身份**的密钥；留空 = 不限制。
   # 为什么需要：/alert 会把告警喂给规则引擎，而 auto_execute: true 的规则会直接
   # 执行写命令、不经人工审批——不限制的话，任何持有效密钥的聊天用户都能构造告警

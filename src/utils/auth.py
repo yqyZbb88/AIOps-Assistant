@@ -50,6 +50,28 @@ def parse_tokens(raw: str | None) -> tuple[tuple[str, str], ...]:
     return tuple(pairs)
 
 
+@lru_cache(maxsize=8)
+def parse_approvers(raw: str | None) -> tuple[str, ...]:
+    """解析审批人身份 JSON 数组；空配置为 ()，结构不合法立即拒绝启动。"""
+    text = (raw or "").strip()
+    if not text:
+        return ()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AuthConfigError(f"auth.approver_identities 不是合法 JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise AuthConfigError('auth.approver_identities 必须是 JSON 数组（形如 ["alice"]）')
+    values: list[str] = []
+    for identity in data:
+        if not isinstance(identity, str) or not identity.strip():
+            raise AuthConfigError("auth.approver_identities 只能包含非空字符串")
+        value = identity.strip()
+        if value not in values:
+            values.append(value)
+    return tuple(values)
+
+
 def resolve_identity(
     tokens: tuple[tuple[str, str], ...], provided: str
 ) -> str | None:
@@ -70,16 +92,28 @@ def resolve_identity(
     return matched
 
 
-def ensure_usable(enabled: bool, raw: str | None) -> None:
-    """启动期快速失败：**启用了鉴权却没有任何可用密钥 → 抛异常，拒绝启动**。
-
-    绝不接受「空密钥 = 放行」—— 那会让一次配置漏填变成服务全开，而失败方向恰好是
-    最坏的那一侧。非法配置也在这一步就暴露，而不是等第一个请求打进来才发现。
-    """
+def ensure_usable(
+    enabled: bool,
+    raw: str | None,
+    *,
+    approval_mode: str = "owner",
+    approvers_raw: str | None = None,
+) -> None:
+    """启动期快速失败：鉴权或审批策略配置不确定时拒绝启动。"""
+    if approval_mode not in {"owner", "approvers_only"}:
+        raise AuthConfigError(
+            "auth.approval_mode 只支持 owner / approvers_only，"
+            f"得到: {approval_mode!r}"
+        )
     if not enabled:
         return
     if not parse_tokens(raw):
         raise AuthConfigError(
             "auth.enabled 为 true，但 auth.tokens 解析不出任何密钥。"
             "请把密钥映射写进 .env 的 OPS_API_TOKENS，或把 auth.enabled 改回 false。"
+        )
+    if approval_mode == "approvers_only" and not parse_approvers(approvers_raw):
+        raise AuthConfigError(
+            "auth.approval_mode=approvers_only 时，"
+            "auth.approver_identities 必须至少配置一个审批人。"
         )
