@@ -43,89 +43,47 @@ from src.interfaces.diagnostic import (
     DiagnosticSource,
     render_diag,
 )
+from src.interfaces.metric import MetricDefinition, MetricsConfig
 from src.interfaces.monitor import MonitorSource
+from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG, tool_name
+from src.utils.metrics_config import default_metrics_config
 
 logger = logging.getLogger("ops_agent.tools")
 
 
-def build_tools(monitor: MonitorSource) -> list:
-    """按注入的 MonitorSource 构建监控工具列表（模型按需调用取数）。
-
-    四个 @tool 只做「暴露给模型 + 闭包注入 monitor」的薄接线；查询与格式化的
-    真正实现收编在 src/core/capabilities.py——Agent 工具与关键词兜底（core/chat.py）
-    转发同一批纯函数，因此无论是否走 LLM，返回的都是同一套规范文案。
-
-    Args:
-        monitor: 监控源实现（接口 MonitorSource），如 PrometheusMonitor / FakeMonitor
-    Returns:
-        四个 @tool 的列表：cpu_usage / memory_usage / disk_usage / active_alerts
-    """
+def build_tools(
+    monitor: MonitorSource,
+    metrics_config: MetricsConfig | None = None,
+    *,
+    catalog: tuple[MetricDefinition, ...] = METRIC_CATALOG,
+) -> list:
+    """按注入监控源和 metrics.yaml 的 chat surface 动态生成只读工具。"""
     if monitor is None:
         raise ValueError("build_tools 需要传入 monitor 参数（MonitorSource 实现）")
+    config = metrics_config or default_metrics_config()
+    definitions = {definition.metric_id: definition for definition in catalog}
+    tools: list = []
 
-    @tool
-    def cpu_usage() -> str:
-        """查询当前 CPU 使用率（%）。
+    for runtime in config.selected("chat"):
+        definition = definitions.get(runtime.metric_id)
+        if definition is None:
+            continue
 
-        Args:
-            无
+        def _run(_definition=definition) -> str:
+            return capabilities.metric_text(monitor, _definition)
 
-        Returns:
-            如 "CPU 使用率：45.2%"；Prometheus 不可达或无数据时返回"查询失败/暂无数据"说明
-
-        Examples:
-            cpu_usage() 返回 "CPU 使用率：45.2%"
-        """
-        return capabilities.cpu_usage_text(monitor)
-
-    @tool
-    def memory_usage() -> str:
-        """查询当前内存使用率（%）。
-
-        Args:
-            无
-
-        Returns:
-            如 "内存使用率：72.3%"；Prometheus 不可达或无数据时返回"查询失败/暂无数据"说明
-
-        Examples:
-            memory_usage() 返回 "内存使用率：72.3%"
-        """
-        return capabilities.memory_usage_text(monitor)
-
-    @tool
-    def disk_usage() -> str:
-        """查询各挂载点的磁盘使用率（%），按使用率从高到低排列。
-
-        Args:
-            无
-
-        Returns:
-            如 "磁盘使用率：/ 45.2%，/data 88.1%"；无数据时返回"暂无数据"说明
-
-        Examples:
-            disk_usage() 返回 "磁盘使用率：/ 45.2%，/data 88.1%"
-        """
-        return capabilities.disk_usage_text(monitor)
-
-    @tool
-    def active_alerts() -> str:
-        """查询当前处于 pending / firing 状态的告警。
-
-        Args:
-            无
-
-        Returns:
-            无活动告警时返回 "当前没有 pending/firing 的告警"；
-            有则逐条列出告警名、级别、实例与状态
-
-        Examples:
-            active_alerts() 返回 "当前告警（firing 1 条 / pending 0 条）：[▲ firing] HighCPUUsage ..."
-        """
-        return capabilities.active_alerts_text(monitor)
-
-    return [cpu_usage, memory_usage, disk_usage, active_alerts]
-
+        tools.append(
+            StructuredTool.from_function(
+                func=_run,
+                name=tool_name(definition),
+                description=(
+                    f"查询{definition.display_name}，单位 {definition.unit}。"
+                    f"指标分组：{definition.group}。"
+                    "Prometheus 不可达或无数据时返回可读的失败说明。"
+                ),
+            )
+        )
+    return tools
 
 # ---------------------------------------------------------------------------
 # 只读诊断工具（按 config/diagnostics.yaml 白名单动态生成）

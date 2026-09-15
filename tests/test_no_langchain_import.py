@@ -30,6 +30,8 @@ from src.storage.memory import AlertStore    # noqa: F401
 from src.storage.approval import ApprovalStore  # noqa: F401
 from src.storage.models import Alert, AlertmanagerPayload, ActionRule  # noqa: F401
 from src.utils import security, config_loader, logger  # noqa: F401
+from src.interfaces.metric import MetricSample  # noqa: F401
+from src.metrics import catalog as metric_catalog  # noqa: F401
 from src.plugins.monitors import prometheus_monitor  # noqa: F401
 from src.plugins.actions import catalog, executor  # noqa: F401
 # M3：Agent 写命令族与审批契约也必须能在无 langchain 环境导入
@@ -59,6 +61,18 @@ class FakeMonitor:
         return []
     def active_alerts(self):
         return []
+    def query_metric(self, metric_id, *, selector=None):
+        if metric_id == "cpu.usage":
+            return [MetricSample(metric_id, {}, 12.3)]
+        if metric_id == "memory.usage":
+            return []
+        if metric_id == "disk.usage":
+            return []
+        if metric_id == "alerts.active_count":
+            return [MetricSample(metric_id, {"state": "firing"}, 0.0)]
+        return []
+    def query_metric_trend(self, metric_id, instance, *, minutes=60, step="5m", selector=None):
+        return {}
     def instance_trend(self, instance, *, minutes=60, step="5m"):
         return {}
 

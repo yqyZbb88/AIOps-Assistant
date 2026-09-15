@@ -92,47 +92,21 @@ class AlertSettings:
 
 
 @dataclass(frozen=True)
-class PercentageCheckSettings:
-    """百分比指标的巡检阈值。"""
+class MetricsSettings:
+    """统一指标目录配置。空 file = 使用代码内默认运行配置。"""
 
-    enabled: bool = True
-    warning: float = 80.0
-    critical: float = 90.0
-
-
-@dataclass(frozen=True)
-class ActiveAlertCheckSettings:
-    """活动告警巡检阈值；数量包含 pending + firing。"""
-
-    enabled: bool = True
-    warning_count: int = 1
-    critical_count: int = 3
-
-
-@dataclass(frozen=True)
-class InspectionChecksSettings:
-    cpu: PercentageCheckSettings = field(default_factory=PercentageCheckSettings)
-    memory: PercentageCheckSettings = field(
-        default_factory=lambda: PercentageCheckSettings(warning=85.0, critical=95.0)
-    )
-    disk: PercentageCheckSettings = field(default_factory=PercentageCheckSettings)
-    active_alerts: ActiveAlertCheckSettings = field(default_factory=ActiveAlertCheckSettings)
+    file: str = ""
 
 
 @dataclass(frozen=True)
 class InspectionSettings:
-    """固定指标巡检配置。
-
-    dataclass 默认关闭，避免 `Settings()` / `create_app(Settings())` 在测试或嵌入式
-    调用中意外启动后台线程。`config/settings.yaml` 才决定出厂是否开启。
-    """
+    """固定指标巡检调度与归档配置；具体指标来自 metrics.yaml。"""
 
     enabled: bool = False
     interval_seconds: int = 300
     run_on_start: bool = True
     ttl_hours: int = 168
     max_rows: int = 1000
-    checks: InspectionChecksSettings = field(default_factory=InspectionChecksSettings)
 
 
 @dataclass(frozen=True)
@@ -214,6 +188,7 @@ class Settings:
     agent: AgentSettings = AgentSettings()
     alert: AlertSettings = AlertSettings()
     chat: ChatSettings = ChatSettings()
+    metrics: MetricsSettings = MetricsSettings()
     inspection: InspectionSettings = InspectionSettings()
     storage: StorageSettings = StorageSettings()
     logging: LoggingSettings = LoggingSettings()
@@ -230,6 +205,7 @@ _SUB_MODELS: dict[str, type] = {
     "agent": AgentSettings,
     "alert": AlertSettings,
     "chat": ChatSettings,
+    "metrics": MetricsSettings,
     "inspection": InspectionSettings,
     "storage": StorageSettings,
     "logging": LoggingSettings,
@@ -349,22 +325,6 @@ def _validate_settings(settings: Settings) -> None:
     if ins.max_rows < 1:
         raise ConfigError("inspection.max_rows 必须大于等于 1")
 
-    checks = ins.checks
-    if ins.enabled and not any(
-        (checks.cpu.enabled, checks.memory.enabled, checks.disk.enabled, checks.active_alerts.enabled)
-    ):
-        raise ConfigError("inspection.enabled=true 时至少启用一个巡检指标")
-
-    for name, check in (("cpu", checks.cpu), ("memory", checks.memory), ("disk", checks.disk)):
-        if not 0 <= check.warning < check.critical <= 100:
-            raise ConfigError(
-                f"inspection.checks.{name} 必须满足 0 <= warning < critical <= 100"
-            )
-    alerts = checks.active_alerts
-    if alerts.warning_count < 1 or alerts.critical_count <= alerts.warning_count:
-        raise ConfigError(
-            "inspection.checks.active_alerts 必须满足 1 <= warning_count < critical_count"
-        )
 
 
 def _build_settings(data: dict[str, Any]) -> Settings:

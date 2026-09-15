@@ -9,6 +9,7 @@ from src.core.analysis import AlertAnalyzer
 from src.core.chat import ChatService, DEFAULT_REPLY
 from src.core.rule_engine import RuleEngine, SKIP_MARK
 from src.interfaces.action import ActionExecutor, ActionError
+from src.interfaces.metric import MetricRuntimeConfig, MetricSurfaceConfig, MetricsConfig
 from src.interfaces.monitor import MonitorError
 
 from tests.conftest import FakeLLM, make_alert, make_payload
@@ -32,6 +33,29 @@ def test_chat_fallback_monitor_error(fakemonitor):
     svc = ChatService(fakemonitor)
     reply = svc.reply("CPU")
     assert reply.startswith("查询 CPU 使用率失败")
+
+
+def test_chat_and_tools_follow_metric_surface_config(fakemonitor):
+    config = MetricsConfig(
+        metrics={
+            "cpu.usage": MetricRuntimeConfig(
+                metric_id="cpu.usage",
+                surfaces=MetricSurfaceConfig(chat=True),
+            ),
+            "memory.usage": MetricRuntimeConfig(
+                metric_id="memory.usage",
+                surfaces=MetricSurfaceConfig(chat=False),
+            ),
+        }
+    )
+
+    svc = ChatService(fakemonitor, metrics_config=config)
+    assert "CPU 使用率" in svc.reply("CPU")
+    assert svc.reply("内存") == DEFAULT_REPLY
+
+    from src.agent.tools import build_tools
+
+    assert [tool.name for tool in build_tools(fakemonitor, config)] == ["cpu_usage"]
 
 
 def test_chat_fallback_disk_and_alerts_and_status(fakemonitor):

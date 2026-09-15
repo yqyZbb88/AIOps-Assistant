@@ -37,7 +37,10 @@ from src.interfaces.assistant import (
     ApprovalContextCapable,
     Assistant,
 )
+from src.interfaces.metric import MetricDefinition, MetricsConfig
 from src.interfaces.monitor import MonitorSource
+from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
+from src.utils.metrics_config import default_metrics_config
 from src.interfaces.session import (
     DEFAULT_MESSAGE_WINDOW,
     STATUS_ABANDONED,
@@ -115,6 +118,8 @@ class ChatService:
         assistant_factory: Callable[[], Assistant] | None = None,
         sessions: SessionStore | None = None,
         message_window: int = DEFAULT_MESSAGE_WINDOW,
+        metrics_config: MetricsConfig | None = None,
+        catalog: tuple[MetricDefinition, ...] = METRIC_CATALOG,
     ) -> None:
         self.monitor = monitor
         # 注入的 Agent 工厂：返回 Assistant 契约对象；失败抛异常即回落
@@ -126,33 +131,31 @@ class ChatService:
         # 会话存储（可选）：None = 不落库，聊天与兜底全部照常
         self._sessions = sessions
         self._message_window = max(int(message_window), 1)
-        # 规则按优先级从高到低排列，第一条命中生效；动态 handler 与 Agent 工具转发
-        # 同一批 capabilities 纯函数（src/core/capabilities.py），无 LLM 时产出同款规范文案
-        self._rules = [
-            Rule(
-                "CPU",
-                handler=lambda: capabilities.cpu_usage_text(self.monitor),
-                description="查询 CPU 使用率",
-            ),
-            Rule(
-                "内存",
-                handler=lambda: capabilities.memory_usage_text(self.monitor),
-                description="查询内存使用率",
-            ),
-            Rule(
-                "磁盘",
-                handler=lambda: capabilities.disk_usage_text(self.monitor),
-                description="查询磁盘使用率",
-            ),
-            # 告警状态：主动查询监控源（/api/v1/alerts），支持中文/英文触发词
-            Rule(
-                ("告警", "pending", "firing"),
-                handler=lambda: capabilities.active_alerts_text(self.monitor),
-                description="查询当前 pending/firing 告警",
-            ),
-            Rule("状态", reply="系统运行正常（模拟）", description="查询系统运行状态"),
-            Rule("帮助", reply=HELP_TEXT, description="显示帮助信息"),
-        ]
+        self._metrics_config = metrics_config or default_metrics_config()
+        definitions = {definition.metric_id: definition for definition in catalog}
+        self._rules = []
+        for runtime in self._metrics_config.selected("chat"):
+            definition = definitions.get(runtime.metric_id)
+            if definition is None:
+                continue
+
+            def _handler(_definition=definition) -> str:
+                return capabilities.metric_text(self.monitor, _definition)
+
+            keywords = tuple(dict.fromkeys((definition.display_name, *definition.aliases)))
+            self._rules.append(
+                Rule(
+                    keywords,
+                    handler=_handler,
+                    description=f"查询{definition.display_name}",
+                )
+            )
+        self._rules.extend(
+            [
+                Rule("状态", reply="系统运行正常（模拟）", description="查询系统运行状态"),
+                Rule("帮助", reply=HELP_TEXT, description="显示帮助信息"),
+            ]
+        )
 
     # ------------------------------------------------------------------
     # 主入口

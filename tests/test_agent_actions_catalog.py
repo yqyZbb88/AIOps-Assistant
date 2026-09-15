@@ -174,10 +174,12 @@ def test_colliding_keys():
     assert colliding_keys([], RESERVED_AGENT_TOOL_NAMES) == frozenset()
 
 
-def test_reserved_names_are_monitor_tool_names():
-    """保留名必须与监控工具集一致——不一致则冲突检测会漏。"""
+def test_reserved_names_cover_all_possible_monitor_tools():
+    """保留名覆盖所有代码指标，避免用户启用新 chat surface 时发生工具重名。"""
     from tests.conftest import FakeMonitor
     from src.agent.tools import build_tools
+    from src.metrics.catalog import METRIC_CATALOG, tool_name
 
     names = {t.name for t in build_tools(FakeMonitor())}
-    assert names == set(RESERVED_AGENT_TOOL_NAMES)
+    assert names <= set(RESERVED_AGENT_TOOL_NAMES)
+    assert set(RESERVED_AGENT_TOOL_NAMES) == {tool_name(d) for d in METRIC_CATALOG}

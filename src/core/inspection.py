@@ -1,11 +1,11 @@
-"""固定指标巡检：阈值判断、汇总格式化与后台调度。"""
+"""统一指标目录驱动的固定指标巡检。"""
 from __future__ import annotations
 
 import logging
 import math
 import threading
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from src.interfaces.inspection import (
     LEVEL_CRITICAL,
@@ -17,79 +17,116 @@ from src.interfaces.inspection import (
     InspectionStore,
     max_level,
 )
+from src.interfaces.metric import MetricDefinition, MetricRuntimeConfig, MetricsConfig
 from src.interfaces.monitor import MonitorSource
+from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
 from src.utils.config_loader import InspectionSettings
 from src.utils.logger import get_inspection_logger
 
 logger = logging.getLogger("ops_agent.inspection.runner")
+
+_LEGACY_LABELS = {
+    "cpu.usage": "cpu",
+    "memory.usage": "memory",
+    "disk.usage": "disk",
+    "alerts.active_count": "active_alerts",
+}
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _percent_level(value: float, *, warning: float, critical: float) -> str:
-    if value >= critical:
-        return LEVEL_CRITICAL
-    if value >= warning:
-        return LEVEL_WARNING
+def _fmt_value(value: Any, unit: str) -> str:
+    if not isinstance(value, (int, float)):
+        return str(value)
+    if unit == "%":
+        return f"{value:.1f}%"
+    if unit == "bytes":
+        return f"{value:.0f}B"
+    if unit == "MiB/s":
+        return f"{value:.1f}MiB/s"
+    if unit in {"errors/s", "load/core"}:
+        return f"{value:.3f}{unit}"
+    return f"{value:g}{unit}"
+
+
+def _threshold_level(
+    value: float,
+    runtime: MetricRuntimeConfig,
+    definition: MetricDefinition,
+) -> str:
+    if not runtime.severity_enabled or definition.direction == "observe":
+        return LEVEL_NORMAL
+    warning = runtime.warning
+    critical = runtime.critical
+    if warning is None or critical is None:
+        return LEVEL_NORMAL
+    if definition.direction == "above":
+        if value >= critical:
+            return LEVEL_CRITICAL
+        if value >= warning:
+            return LEVEL_WARNING
+    elif definition.direction == "below":
+        if value <= critical:
+            return LEVEL_CRITICAL
+        if value <= warning:
+            return LEVEL_WARNING
     return LEVEL_NORMAL
-
-
-def _fmt_percent(value: Any) -> str:
-    return f"{value:.1f}%" if isinstance(value, (int, float)) else str(value)
 
 
 def format_inspection_summary(result: InspectionResult) -> str:
     """把一轮结果压成一条可读日志，保留指标值、阈值和错误信息。"""
     parts = [f"[巡检] level={result.level}", f"checked_at={result.checked_at}"]
-    snap = result.snapshot
-
-    for key, label in (("cpu", "cpu"), ("memory", "memory")):
-        item = snap.get(key) or {}
+    for metric_id, item in result.snapshot.items():
         if not item.get("enabled"):
             continue
-        parts.append(
-            f"{label}={_fmt_percent(item.get('value'))}"
-            f"(level={item.get('level')},warn>={item.get('warning')},crit>={item.get('critical')})"
-        )
-
-    disk = snap.get("disk") or {}
-    if disk.get("enabled"):
-        mounts = disk.get("mounts") or []
+        label = _LEGACY_LABELS.get(metric_id, metric_id)
+        unit = str(item.get("unit") or "")
+        samples = item.get("samples") or []
+        if metric_id == "alerts.active_count":
+            parts.append(
+                f"{label}={item.get('count', 0)}"
+                f"(level={item.get('level')},warn>={item.get('warning')},crit>={item.get('critical')})"
+            )
+            continue
         shown = ", ".join(
-            f"{m.get('mountpoint')}={_fmt_percent(m.get('usage'))}({m.get('level')})"
-            for m in mounts
+            f"{_sample_label(sample)}={_fmt_value(sample.get('value'), unit)}({sample.get('level')})"
+            for sample in samples
         ) or "无数据"
         parts.append(
-            f"disk=[{shown}](warn>={disk.get('warning')},crit>={disk.get('critical')})"
+            f"{label}=[{shown}]"
+            f"(warn>={item.get('warning')},crit>={item.get('critical')},"
+            f"level={item.get('level')})"
         )
-
-    alerts = snap.get("active_alerts") or {}
-    if alerts.get("enabled"):
-        parts.append(
-            f"active_alerts={alerts.get('count')}"
-            f"(level={alerts.get('level')},warn>={alerts.get('warning_count')},"
-            f"crit>={alerts.get('critical_count')})"
-        )
-
     if result.error:
         parts.append(f"errors={result.error}")
     return " | ".join(parts)
 
 
+def _sample_label(sample: Mapping[str, Any]) -> str:
+    labels = sample.get("labels") or {}
+    if not labels:
+        return "value"
+    return ",".join(f"{key}={value}" for key, value in labels.items())
+
+
 class InspectionChecker:
-    """按配置顺序执行内置指标的只读巡检。"""
+    """按 metrics.yaml 顺序执行所有 inspection surface 指标。"""
 
     def __init__(
         self,
         monitor: MonitorSource,
         settings: InspectionSettings,
+        metrics_config: MetricsConfig,
         *,
+        catalog: tuple[MetricDefinition, ...] = METRIC_CATALOG,
         clock: Callable[[], str] | None = None,
     ) -> None:
         self.monitor = monitor
         self.settings = settings
+        self.metrics_config = metrics_config
+        self.catalog = {definition.metric_id: definition for definition in catalog}
         self._clock = clock or _now_iso
 
     def run_once(self) -> InspectionResult:
@@ -99,34 +136,22 @@ class InspectionChecker:
         errors: list[str] = []
         levels: list[str] = []
 
-        checks = self.settings.checks
-        if checks.cpu.enabled:
-            levels.append(
-                self._check_percentage(
-                    "cpu", self.monitor.cpu_usage, checks.cpu, snapshot, findings, errors
+        for runtime in self.metrics_config.selected("inspection"):
+            definition = self.catalog.get(runtime.metric_id)
+            if definition is None:
+                message = f"巡检指标未注册: {runtime.metric_id}"
+                errors.append(message)
+                findings.append(InspectionFinding(runtime.metric_id, LEVEL_ERROR, message))
+                levels.append(LEVEL_ERROR)
+                continue
+            if definition.kind == "alert_count":
+                levels.append(
+                    self._check_active_alerts(definition, runtime, snapshot, findings, errors)
                 )
-            )
-        else:
-            snapshot["cpu"] = {"enabled": False}
-
-        if checks.memory.enabled:
-            levels.append(
-                self._check_percentage(
-                    "memory", self.monitor.memory_usage, checks.memory, snapshot, findings, errors
+            else:
+                levels.append(
+                    self._check_metric(definition, runtime, snapshot, findings, errors)
                 )
-            )
-        else:
-            snapshot["memory"] = {"enabled": False}
-
-        if checks.disk.enabled:
-            levels.append(self._check_disk(checks.disk, snapshot, findings, errors))
-        else:
-            snapshot["disk"] = {"enabled": False}
-
-        if checks.active_alerts.enabled:
-            levels.append(self._check_active_alerts(snapshot, findings, errors))
-        else:
-            snapshot["active_alerts"] = {"enabled": False}
 
         overall = max_level(*levels, LEVEL_ERROR if errors else LEVEL_NORMAL)
         return InspectionResult(
@@ -137,134 +162,90 @@ class InspectionChecker:
             error="; ".join(errors),
         )
 
-    def _check_percentage(
+    def _check_metric(
         self,
-        metric: str,
-        getter: Callable[[], float | None],
-        check,
+        definition: MetricDefinition,
+        runtime: MetricRuntimeConfig,
         snapshot: dict[str, Any],
         findings: list[InspectionFinding],
         errors: list[str],
     ) -> str:
-        base = {
+        base: dict[str, Any] = {
             "enabled": True,
-            "warning": check.warning,
-            "critical": check.critical,
-            "value": None,
+            "display_name": definition.display_name,
+            "group": definition.group,
+            "unit": definition.unit,
+            "warning": runtime.warning,
+            "critical": runtime.critical,
+            "severity_enabled": runtime.severity_enabled,
+            "samples": [],
             "level": LEVEL_ERROR,
         }
         try:
-            value = getter()
-        except Exception as exc:  # noqa: BLE001 - 单项失败不阻断其它指标
-            message = f"{metric} 查询失败: {exc}"
+            samples = self.monitor.query_metric(definition.metric_id)
+        except Exception as exc:  # noqa: BLE001 - 单项失败继续后续指标
+            message = f"{definition.metric_id} 查询失败: {exc}"
             errors.append(message)
-            findings.append(InspectionFinding(metric, LEVEL_ERROR, message))
-            snapshot[metric] = base
+            findings.append(InspectionFinding(definition.metric_id, LEVEL_ERROR, message))
+            snapshot[definition.metric_id] = base
             return LEVEL_ERROR
 
-        try:
-            numeric = None if value is None else float(value)
-        except (TypeError, ValueError):
-            numeric = None
-        if numeric is None or not math.isfinite(numeric):
-            message = f"{metric} 无有效数据"
+        if not samples:
+            message = f"{definition.metric_id} 无有效数据"
             errors.append(message)
-            findings.append(InspectionFinding(metric, LEVEL_ERROR, message))
-            snapshot[metric] = base
+            findings.append(InspectionFinding(definition.metric_id, LEVEL_ERROR, message))
+            snapshot[definition.metric_id] = base
             return LEVEL_ERROR
 
-        value = numeric
-        level = _percent_level(value, warning=check.warning, critical=check.critical)
-        base.update({"value": value, "level": level})
-        snapshot[metric] = base
-        if level != LEVEL_NORMAL:
-            threshold = check.critical if level == LEVEL_CRITICAL else check.warning
-            findings.append(
-                InspectionFinding(
-                    metric,
-                    level,
-                    f"{metric} 使用率 {_fmt_percent(value)} 达到 {level} 阈值 {threshold}%",
-                    value=value,
-                    threshold=threshold,
-                )
-            )
-        return level
-
-    def _check_disk(
-        self,
-        check,
-        snapshot: dict[str, Any],
-        findings: list[InspectionFinding],
-        errors: list[str],
-    ) -> str:
-        base = {
-            "enabled": True,
-            "warning": check.warning,
-            "critical": check.critical,
-            "mounts": [],
-            "level": LEVEL_ERROR,
-        }
-        try:
-            mounts = self.monitor.disk_usage()
-        except Exception as exc:  # noqa: BLE001
-            message = f"disk 查询失败: {exc}"
-            errors.append(message)
-            findings.append(InspectionFinding("disk", LEVEL_ERROR, message))
-            snapshot["disk"] = base
-            return LEVEL_ERROR
-
-        if not mounts:
-            message = "disk 无有效数据"
-            errors.append(message)
-            findings.append(InspectionFinding("disk", LEVEL_ERROR, message))
-            snapshot["disk"] = base
-            return LEVEL_ERROR
-
-        levels: list[str] = []
         rendered: list[dict[str, Any]] = []
-        for item in mounts:
-            try:
-                usage = float(item["usage"])
-                mountpoint = str(item.get("mountpoint") or "unknown")
-                if not math.isfinite(usage):
-                    raise ValueError("usage 不是有限数字")
-            except (KeyError, TypeError, ValueError) as exc:
-                message = f"disk 挂载点数据无效: {item!r} ({exc})"
-                errors.append(message)
-                findings.append(InspectionFinding("disk", LEVEL_ERROR, message, value=item))
-                levels.append(LEVEL_ERROR)
-                continue
-            level = _percent_level(usage, warning=check.warning, critical=check.critical)
+        levels: list[str] = []
+        for sample in samples:
+            value = float(sample.value)
+            level = _threshold_level(value, runtime, definition)
             levels.append(level)
-            rendered.append({"mountpoint": mountpoint, "usage": usage, "level": level})
+            rendered.append(
+                {
+                    "labels": dict(sample.labels),
+                    "value": value,
+                    "timestamp": sample.timestamp,
+                    "level": level,
+                }
+            )
             if level != LEVEL_NORMAL:
-                threshold = check.critical if level == LEVEL_CRITICAL else check.warning
+                threshold = runtime.critical if level == LEVEL_CRITICAL else runtime.warning
                 findings.append(
                     InspectionFinding(
-                        "disk",
+                        definition.metric_id,
                         level,
-                        f"磁盘 {mountpoint} 使用率 {_fmt_percent(usage)} 达到 {level} 阈值 {threshold}%",
-                        value=usage,
+                        f"{definition.display_name} "
+                        f"{_fmt_value(value, definition.unit)} 达到 {level} 阈值 "
+                        f"{_fmt_value(threshold, definition.unit)}",
+                        value=value,
                         threshold=threshold,
                     )
                 )
 
-        overall = max_level(*levels, LEVEL_ERROR if errors else LEVEL_NORMAL)
-        base.update({"mounts": rendered, "level": overall})
-        snapshot["disk"] = base
+        overall = max_level(*levels)
+        base.update({"samples": rendered, "level": overall})
+        snapshot[definition.metric_id] = base
         return overall
 
     def _check_active_alerts(
         self,
+        definition: MetricDefinition,
+        runtime: MetricRuntimeConfig,
         snapshot: dict[str, Any],
         findings: list[InspectionFinding],
         errors: list[str],
     ) -> str:
-        check = self.settings.checks.active_alerts
-        base = {
+        base: dict[str, Any] = {
             "enabled": True,
-            "warning_count": check.warning_count,
-            "critical_count": check.critical_count,
+            "display_name": definition.display_name,
+            "group": definition.group,
+            "unit": definition.unit,
+            "warning": runtime.warning,
+            "critical": runtime.critical,
+            "severity_enabled": runtime.severity_enabled,
             "count": 0,
             "pending": 0,
             "firing": 0,
@@ -273,24 +254,15 @@ class InspectionChecker:
         try:
             alerts = self.monitor.active_alerts()
         except Exception as exc:  # noqa: BLE001
-            message = f"active_alerts 查询失败: {exc}"
+            message = f"{definition.metric_id} 查询失败: {exc}"
             errors.append(message)
-            findings.append(InspectionFinding("active_alerts", LEVEL_ERROR, message))
-            snapshot["active_alerts"] = base
+            findings.append(InspectionFinding(definition.metric_id, LEVEL_ERROR, message))
+            snapshot[definition.metric_id] = base
             return LEVEL_ERROR
 
         visible = [a for a in alerts if a.get("state") in ("pending", "firing")]
         count = len(visible)
-        if count >= check.critical_count:
-            level = LEVEL_CRITICAL
-            threshold = check.critical_count
-        elif count >= check.warning_count:
-            level = LEVEL_WARNING
-            threshold = check.warning_count
-        else:
-            level = LEVEL_NORMAL
-            threshold = None
-
+        level = _threshold_level(float(count), runtime, definition)
         base.update(
             {
                 "count": count,
@@ -299,11 +271,12 @@ class InspectionChecker:
                 "level": level,
             }
         )
-        snapshot["active_alerts"] = base
+        snapshot[definition.metric_id] = base
         if level != LEVEL_NORMAL:
+            threshold = runtime.critical if level == LEVEL_CRITICAL else runtime.warning
             findings.append(
                 InspectionFinding(
-                    "active_alerts",
+                    definition.metric_id,
                     level,
                     f"活动告警 {count} 条达到 {level} 阈值 {threshold}",
                     value=count,
@@ -356,7 +329,6 @@ class InspectionScheduler:
         self._thread = None
 
     def run_once(self) -> InspectionResult:
-        """执行一轮；日志和异常归档失败都不能让调度线程退出。"""
         with self._run_lock:
             try:
                 result = self.checker.run_once()

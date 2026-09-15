@@ -11,7 +11,9 @@ points 表示有效采样点数；全 None + points=0 表示该指标无数据�
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Mapping
+
+from src.interfaces.metric import MetricSample
 
 # 单个指标的近端趋势汇总结构（见 module docstring）
 TrendSummary = dict[str, Any]
@@ -23,6 +25,27 @@ class MonitorError(Exception):
 
 class MonitorSource(ABC):
     """监控源接口：聊天 / 工具 / 告警分析共用的取数契约。"""
+
+    def query_metric(
+        self,
+        metric_id: str,
+        *,
+        selector: Mapping[str, str] | None = None,
+    ) -> list[MetricSample]:
+        """通用即时指标查询；默认实现表示当前监控源未支持。"""
+        raise MonitorError(f"监控源不支持通用指标查询: {metric_id}")
+
+    def query_metric_trend(
+        self,
+        metric_id: str,
+        instance: str,
+        *,
+        minutes: int = 60,
+        step: str = "5m",
+        selector: Mapping[str, str] | None = None,
+    ) -> TrendSummary:
+        """通用指标趋势查询；默认实现表示当前监控源未支持。"""
+        raise MonitorError(f"监控源不支持通用趋势查询: {metric_id}")
 
     @abstractmethod
     def cpu_usage(self) -> float | None:

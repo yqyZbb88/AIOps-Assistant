@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from src.core.analysis import AlertAnalyzer, build_alert_context
+from src.interfaces.metric import MetricRuntimeConfig, MetricSurfaceConfig, MetricsConfig
 from src.interfaces.monitor import MonitorError
 
 from tests.conftest import FakeLLM, FakeMonitor, make_alert
@@ -15,7 +16,7 @@ from tests.conftest import FakeLLM, FakeMonitor, make_alert
 class _EmptyTrendMonitor(FakeMonitor):
     """监控源对任何实例都返回空趋势（模拟 Prometheus 不可达）。"""
 
-    def instance_trend(self, instance, *, minutes=60, step="5m"):
+    def query_metric_trend(self, metric_id, instance, *, minutes=60, step="5m", selector=None):
         return {}
 
 
@@ -53,7 +54,7 @@ def test_context_trend_error_degrades_not_raises():
     """
 
     class BoomTrend(FakeMonitor):
-        def instance_trend(self, instance, *, minutes=60, step="5m"):
+        def query_metric_trend(self, metric_id, instance, *, minutes=60, step="5m", selector=None):
             raise MonitorError("Prometheus 连接失败（模拟）")
 
     ctx = build_alert_context(make_alert("A"), BoomTrend())
@@ -75,6 +76,27 @@ def test_context_trend_minutes_is_honored():
     ctx = build_alert_context(make_alert("A"), FakeMonitor(), trend_minutes=15)
     assert "近 15 分钟趋势" in ctx
     assert "近 60 分钟趋势" not in ctx
+
+
+def test_context_respects_alert_analysis_metric_limit():
+    config = MetricsConfig(
+        max_alert_analysis_metrics=1,
+        metrics={
+            "cpu.usage": MetricRuntimeConfig(
+                metric_id="cpu.usage",
+                surfaces=MetricSurfaceConfig(alert_analysis=True),
+            ),
+            "memory.usage": MetricRuntimeConfig(
+                metric_id="memory.usage",
+                surfaces=MetricSurfaceConfig(alert_analysis=True),
+            ),
+        },
+    )
+
+    ctx = build_alert_context(make_alert("A"), FakeMonitor(), metrics_config=config)
+
+    assert "CPU使用率近" in ctx
+    assert "内存使用率近" not in ctx
 
 
 # ---------------------------------------------------------------------------

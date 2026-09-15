@@ -28,6 +28,7 @@ from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.history import HistoryStore
 from src.interfaces.inspection import InspectionStore
+from src.interfaces.metric import MetricsConfig
 from src.interfaces.monitor import MonitorSource
 from src.interfaces.session import SessionStore
 from src.registry import registry
@@ -46,6 +47,7 @@ class Container:
         self.settings: Settings = settings or load_settings()
         self._ops_agent: OpsAgent | None = None
         self._monitor: MonitorSource | None = None
+        self._metrics_config: MetricsConfig | None = None
         self._llm: LLMClient | None = None
         self._executors: dict[str, ActionExecutor] | None = None
         self._execution_guard: RuleExecutionGuard | None = None
@@ -63,6 +65,14 @@ class Container:
         self._db_ready = False
 
     # -- 组件（惰性 + 缓存） ----------------------------------------------
+    def metrics_config(self) -> MetricsConfig:
+        """加载统一指标运行配置；file 为空时使用代码目录默认值。"""
+        if self._metrics_config is None:
+            from src.utils.metrics_config import load_metrics_config
+
+            self._metrics_config = load_metrics_config(self.settings.metrics.file or None)
+        return self._metrics_config
+
     def monitor(self) -> MonitorSource:
         """按 settings.monitor.provider 从 registry 取监控源实现并实例化。"""
         if self._monitor is None:
@@ -77,6 +87,7 @@ class Container:
             self._monitor = cls(
                 base_url=self.settings.prometheus.base_url,
                 timeout=self.settings.prometheus.timeout,
+                metrics_config=self.metrics_config(),
             )
         return self._monitor
 
@@ -315,7 +326,11 @@ class Container:
             from src.core.inspection import InspectionChecker, InspectionScheduler
 
             self._inspection_scheduler = InspectionScheduler(
-                InspectionChecker(self.monitor(), self.settings.inspection),
+                InspectionChecker(
+                    self.monitor(),
+                    self.settings.inspection,
+                    self.metrics_config(),
+                ),
                 self.settings.inspection,
                 store=self.inspection_store(),
             )
@@ -374,6 +389,7 @@ class Container:
             )
         return OpsAssistant(
             monitor=self.monitor(),
+            metrics_config=self.metrics_config(),
             diag=self.diagnostics(),
             agent_actions=write_source,
             approvals=approvals,
@@ -406,11 +422,13 @@ class Container:
             assistant_factory=assistant_factory,
             sessions=self.sessions(),  # 未启用/打不开 → None，聊天照常
             message_window=settings.storage.message_window,
+            metrics_config=self.metrics_config(),
         )
         analyzer = AlertAnalyzer(
             monitor=monitor,
             llm=llm,
             trend_minutes=settings.alert.trend_minutes,
+            metrics_config=self.metrics_config(),
         )
         self._ops_agent = OpsAgent(
             monitor=monitor,

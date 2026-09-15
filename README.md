@@ -2,17 +2,17 @@
 
 基于 **Python + FastAPI + LangChain Agent** 的智能运维 Agent。已实现能力：
 
-- **AI 对话**：DeepSeek Agent 自主调用监控工具（CPU / 内存 / 磁盘 / 活动告警）回答问题；
+- **AI 对话**：DeepSeek Agent 按 `metrics.yaml` 的 chat surface 自主调用监控工具回答问题；
 - **AI 只读主机诊断**：监控指标解释不了的怪现象，Agent 可调用 config/diagnostics.yaml 白名单只读命令
   （free / df / ps / systemctl / journalctl）到目标主机排查；命令模板与参数校验全部配置化，凭据只进 .env；
 - **关键词兜底**：无 LLM 环境照常答复 CPU/内存/磁盘/告警/状态/帮助；
-- **Prometheus 指标查询**：即时值 + 按实例历史趋势；
+- **统一 Prometheus 指标目录**：CPU/Memory/Disk/Network/System 共 17 个内置指标，支持即时值、趋势、instance 与标签 selector；
 - **告警状态主动查询**：pending / firing（`/alerts/active`）；
 - **Alertmanager 告警接收**（`/alert` webhook）+ 最近记录（`/alerts/recent`）；
 - **告警自动处置**：规则库（rules.yaml）引用 **config/actions.yaml 写命令目录** → 通用执行器按目录 key
   执行命令（模板 + 参数校验 + sudo 声明 + 审计日志）；「写命令」与「只读诊断」共用 SSH/审计内核，边界分离；
 - **告警 AI 分析**：无自动处理规则的告警 → LLM 给出根因假设与处理建议。
-- **固定指标自动巡检**：按全局周期检查 CPU / 内存 / 磁盘 / 活动告警，按配置阈值生成
+- **固定指标自动巡检**：按全局周期检查 `metrics.yaml` 的 inspection surface 指标，按配置阈值生成
   `normal / warning / critical / error`；每轮写 `logs/inspection.log`，异常轮次写 SQLite，
   可通过 `/inspections/recent` 查询。巡检不调用 AI，也不执行写操作。
 - **Agent 写命令（强制人工审批）**：Agent 可申请执行 config/agent_actions.yaml 声明的写命令
@@ -37,6 +37,7 @@ Assitant/
 ├── init.py                    # 用户模板（只读）：init_chat_model 单一模型入口
 ├── config/
 │   ├── settings.yaml          # 全局配置（支持 ${ENV} / ${ENV:-default} 插值）
+│   ├── metrics.yaml           # 统一指标目录：启用范围、阈值、instance、selector
 │   ├── rules.yaml             # 自动处置规则库（引用 actions.yaml 写命令；密码以环境变量占位）
 │   ├── actions.yaml           # 写命令目录：规则（rules.yaml）自动处置用，无头执行
 │   ├── agent_actions.yaml     # Agent 写命令白名单（独立一份）：每次调用强制人工审批
@@ -62,8 +63,10 @@ Assitant/
 │   │   ├── analysis.py        #   告警 LLM 分析（上下文组装 + LLM 编排）
 │   │   ├── inspection.py      #   ★ 固定指标巡检、阈值判定、汇总日志、后台调度
 │   │   └── exceptions.py      #   业务异常基类
+│   ├── metrics/               # ★ 代码内置 Prometheus 指标定义目录（17 个）
 │   ├── interfaces/            # 抽象接口层（core 只依赖这里）
-│   │   ├── monitor.py         #   MonitorSource + MonitorError
+│   │   ├── metric.py          #   MetricDefinition / MetricSample / MetricsConfig
+│   │   ├── monitor.py         #   MonitorSource + 通用查询接口
 │   │   ├── action.py          #   ActionExecutor + ActionError
 │   │   ├── command.py         #   CommandSpec / ParamSpec（命令元信息，读/写边界共用）
 │   │   ├── llm_client.py      #   LLMClient + LLMError
@@ -209,10 +212,9 @@ pip install -r requirements.txt
 | `agent.enabled/name/debug/recursion_limit` | 聊天 Agent 总开关 / 归因名 / debug / 单轮图步骤上限 |
 | `chat.max_message_chars` | 单条聊天消息上限，超限返回 413 |
 | `alert.recent_limit/trend_minutes/trend_step` | 最近告警缓冲上限 / AI 分析趋势窗口 |
+| `metrics.file` | 统一指标目录文件，默认 `config/metrics.yaml`；为空时使用代码目录默认配置 |
 | `inspection.enabled/interval_seconds/run_on_start` | 巡检总开关、全局周期、是否启动即跑一轮（仅单 worker） |
 | `inspection.ttl_hours/max_rows` | 异常巡检归档保留时长 / 最大行数 |
-| `inspection.checks.cpu/memory/disk` | 各百分比指标的开关与 warning/critical 阈值 |
-| `inspection.checks.active_alerts` | 活动告警开关及 warning_count/critical_count |
 | `storage.enabled` | SQLite 持久化总开关（代码里 dataclass 默认 false，本文件才是出厂值） |
 | `storage.db_path` | 库文件路径（相对仓库根，默认 `data/ops_agent.db`；WAL 会生成 `-wal`/`-shm`） |
 | `storage.session_ttl_hours/max_sessions` | 会话过期时长 / 会话数上限 |
@@ -229,6 +231,42 @@ pip install -r requirements.txt
 | `auth.alert_identity` | `POST /alert` 只接受的**身份名**（默认 `alertmanager`）；留空 = 不限制，且启动时有一条 WARNING。**必须与 `.env` 里某个密钥映射到的身份一致** |
 | `auth.approval_mode` | `owner`（触发者本人审批，兼容旧行为）或 `approvers_only`（职责分离，只允许显式审批人） |
 | `auth.approver_identities` | 审批人身份 JSON 数组，如 `["alice","audit-bot"]`；真实值可用 `OPS_APPROVER_IDENTITIES` 注入 |
+
+### config/metrics.yaml（统一指标目录）
+
+PromQL、指标类型、计算方向和多标签分组方式固定在代码目录
+`src/metrics/catalog.py`；用户只在本文件选择实际启用指标和阈值：
+
+```yaml
+version: 1
+instance: 192.168.20.128:9100
+max_alert_analysis_metrics: 8
+
+metrics:
+  cpu.usage:
+    enabled: true
+    surfaces: { inspection: true, chat: true, alert_analysis: true }
+    warning: 80
+    critical: 90
+    severity_enabled: true
+
+  disk.io_util:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+```
+
+代码目录内置 CPU、Memory、Disk、Network、System 共 17 个指标。每个指标可配置：
+
+- `enabled`：是否启用
+- `surfaces.inspection/chat/alert_analysis`：分别控制巡检、聊天工具、告警 AI 趋势
+- `warning/critical/severity_enabled`：阈值与是否参与巡检等级
+- `selector`：Prometheus 标签 matcher，可覆盖全局 `instance`
+- `max_alert_analysis_metrics`：限制告警 AI 最多查询多少条趋势
+
+`observe` 指标只记录不参与等级；所有 `*_bytes` 使用 `rate()`；未知指标 ID、非法阈值或未知字段会拒绝启动。
+`rules.yaml` 仍按 Alertmanager alertname 匹配，`diagnostics.yaml` SSH 只读命令体系不受本文件影响。
+修改后需重启服务。
 
 ### config/actions.yaml（写命令目录，WRITE 边界）
 

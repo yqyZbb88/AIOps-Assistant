@@ -32,14 +32,11 @@ logger = logging.getLogger("ops_agent.agent_actions.catalog")
 # 默认配置文件：<仓库根>/config/agent_actions.yaml（可用 OPS_AGENT_ACTIONS_FILE 覆盖）
 DEFAULT_AGENT_ACTIONS_FILE: Path = ROOT_DIR / "config" / "agent_actions.yaml"
 
-#: 已被监控工具占用的 Agent 工具名（src/agent/tools.py::build_tools 产出）。
-#: 写命令 key 与这些名字冲突会被静默遮蔽（create_agent 对重名工具不报错），
-#: 故容器层在装配前做冲突检测，命中即关闭本能力。
-RESERVED_AGENT_TOOL_NAMES: tuple[str, ...] = (
-    "cpu_usage",
-    "memory_usage",
-    "disk_usage",
-    "active_alerts",
+#: 统一指标目录可能生成的 Agent 工具名；无论当前是否启用，写命令一律不得重名。
+from src.metrics.catalog import METRIC_CATALOG, tool_name
+
+RESERVED_AGENT_TOOL_NAMES: tuple[str, ...] = tuple(
+    tool_name(definition) for definition in METRIC_CATALOG
 )
 
 #: approval 段唯一允许出现的键（写入即配置错误——「关掉审批」在配置层不存在）

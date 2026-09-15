@@ -127,6 +127,8 @@ agent:
   recursion_limit: 7
 chat:
   max_message_chars: 123
+metrics:
+  file: config/custom_metrics.yaml
 """, encoding="utf-8")
 
     settings = load_settings(cfg)
@@ -134,127 +136,7 @@ chat:
     assert settings.agent.enabled is False
     assert settings.agent.recursion_limit == 7
     assert settings.chat.max_message_chars == 123
-
-
-def test_inspection_defaults_disabled():
-    settings = Settings()
-    assert settings.inspection.enabled is False
-    assert settings.inspection.interval_seconds == 300
-    assert settings.inspection.checks.cpu.enabled is True
-
-
-def test_nested_inspection_config_is_parsed(tmp_path):
-    cfg = tmp_path / "settings.yaml"
-    cfg.write_text("""auth:
-  enabled: false
-inspection:
-  enabled: true
-  interval_seconds: 60
-  run_on_start: false
-  ttl_hours: 24
-  max_rows: 100
-  checks:
-    cpu:
-      enabled: true
-      warning: 70
-      critical: 80
-    memory:
-      enabled: false
-      warning: 75
-      critical: 85
-    disk:
-      enabled: true
-      warning: 85
-      critical: 95
-    active_alerts:
-      enabled: true
-      warning_count: 2
-      critical_count: 4
-""", encoding="utf-8")
-
-    settings = load_settings(cfg)
-
-    assert settings.inspection.enabled is True
-    assert settings.inspection.interval_seconds == 60
-    assert settings.inspection.run_on_start is False
-    assert settings.inspection.checks.cpu.warning == 70.0
-    assert settings.inspection.checks.memory.enabled is False
-    assert settings.inspection.checks.active_alerts.critical_count == 4
-
-
-def test_inspection_unknown_nested_field_is_rejected(tmp_path):
-    import pytest
-
-    cfg = tmp_path / "settings.yaml"
-    cfg.write_text("""auth:
-  enabled: false
-inspection:
-  enabled: true
-  checks:
-    cpu:
-      warning: 70
-      critical: 80
-      warningg: 75
-""", encoding="utf-8")
-
-    with pytest.raises(ConfigError, match="inspection.checks.cpu 存在未知字段: warningg"):
-        load_settings(cfg)
-
-
-def test_inspection_threshold_order_is_rejected(tmp_path):
-    import pytest
-
-    cfg = tmp_path / "settings.yaml"
-    cfg.write_text("""auth:
-  enabled: false
-inspection:
-  enabled: true
-  checks:
-    cpu:
-      warning: 90
-      critical: 80
-""", encoding="utf-8")
-
-    with pytest.raises(ConfigError, match="warning < critical"):
-        load_settings(cfg)
-
-
-def test_inspection_interval_minimum_is_enforced(tmp_path):
-    import pytest
-
-    cfg = tmp_path / "settings.yaml"
-    cfg.write_text("""auth:
-  enabled: false
-inspection:
-  enabled: true
-  interval_seconds: 1
-""", encoding="utf-8")
-
-    with pytest.raises(ConfigError, match="30~86400"):
-        load_settings(cfg)
-
-
-def test_enabled_inspection_requires_a_check(tmp_path):
-    import pytest
-
-    cfg = tmp_path / "settings.yaml"
-    cfg.write_text("""auth:
-  enabled: false
-inspection:
-  enabled: true
-  checks:
-    cpu:
-      enabled: false
-    memory:
-      enabled: false
-    disk:
-      enabled: false
-    active_alerts:
-      enabled: false
-""", encoding="utf-8")
-
-    with pytest.raises(ConfigError, match="至少启用一个巡检指标"):
-        load_settings(cfg)
+    assert settings.metrics.file == "config/custom_metrics.yaml"
 
 
 def test_default_settings():

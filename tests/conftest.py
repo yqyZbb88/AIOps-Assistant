@@ -68,6 +68,7 @@ from src.interfaces.diagnostic import (
     ParamSpec,
 )  # noqa: E402
 from src.interfaces.llm_client import LLMClient  # noqa: E402
+from src.interfaces.metric import MetricSample  # noqa: E402
 from src.interfaces.monitor import MonitorError, MonitorSource  # noqa: E402
 from src.storage.models import Alert, AlertmanagerPayload  # noqa: E402
 
@@ -88,12 +89,14 @@ class FakeMonitor(MonitorSource):
         alerts: list[dict] | None = None,
         *,
         raise_cpu: bool = False,
+        metric_samples: dict[str, list[MetricSample]] | None = None,
     ) -> None:
         self._cpu = cpu
         self._memory = memory
         self._disks = disks if disks is not None else []
         self._alerts = alerts if alerts is not None else []
         self._raise_cpu = raise_cpu
+        self._metric_samples = metric_samples or {}
 
     def cpu_usage(self) -> float | None:
         if self._raise_cpu:
@@ -108,6 +111,54 @@ class FakeMonitor(MonitorSource):
 
     def active_alerts(self) -> list[dict]:
         return list(self._alerts)
+
+    def query_metric(self, metric_id: str, *, selector=None) -> list[MetricSample]:
+        if metric_id in self._metric_samples:
+            return list(self._metric_samples[metric_id])
+        if metric_id == "cpu.usage":
+            if self._raise_cpu:
+                raise MonitorError("Prometheus 连接失败（模拟）")
+            if self._cpu is None:
+                return []
+            return [MetricSample(metric_id, {"instance": "h:9100"}, self._cpu)]
+        if metric_id == "memory.usage":
+            if self._memory is None:
+                return []
+            return [MetricSample(metric_id, {"instance": "h:9100"}, self._memory)]
+        if metric_id == "disk.usage":
+            return [
+                MetricSample(
+                    metric_id,
+                    {"mountpoint": str(item.get("mountpoint", "unknown"))},
+                    float(item["usage"]),
+                )
+                for item in self._disks
+            ]
+        if metric_id == "alerts.active_count":
+            visible = [a for a in self._alerts if a.get("state") in ("pending", "firing")]
+            return [
+                MetricSample(
+                    metric_id,
+                    {"state": state},
+                    float(sum(1 for a in visible if a.get("state") == state)),
+                )
+                for state in ("firing", "pending")
+            ]
+        raise MonitorError(f"FakeMonitor 未配置指标: {metric_id}")
+
+    def query_metric_trend(
+        self, metric_id: str, instance: str, *, minutes: int = 60, step: str = "5m", selector=None
+    ) -> dict:
+        if metric_id == "cpu.usage":
+            return dict(_TREND_OK)
+        if metric_id == "memory.usage":
+            return dict(_TREND_EMPTY)
+        if metric_id == "disk.usage":
+            return dict(_TREND_OK)
+        if metric_id in self._metric_samples and self._metric_samples[metric_id]:
+            value = self._metric_samples[metric_id][0].value
+            return {"latest": value, "min": value, "max": value, "avg": value, "points": 1}
+        raise MonitorError(f"FakeMonitor 未配置趋势: {metric_id}")
 
     def instance_trend(
         self, instance: str, *, minutes: int = 60, step: str = "5m"

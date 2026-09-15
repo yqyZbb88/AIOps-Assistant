@@ -324,7 +324,7 @@ ORDER BY d.decided_at DESC;
 | `id` | INTEGER 主键 | 自增记录 id |
 | `checked_at` | TEXT | 本轮巡检时间（UTC） |
 | `level` | TEXT | `warning` / `critical` / `error`，normal 不落库 |
-| `snapshot_json` | TEXT | CPU、内存、磁盘、活动告警的结构化快照 |
+| `snapshot_json` | TEXT | 统一指标 ID 为键的结构化巡检快照（CPU/Memory/Disk/Network/System 等已启用指标） |
 | `findings_json` | TEXT | 超出阈值或查询失败的明细列表 |
 | `error_text` | TEXT | 查询失败、无数据等错误汇总 |
 

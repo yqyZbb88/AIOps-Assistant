@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
+from src.interfaces.metric import MetricDefinition
 from src.interfaces.monitor import MonitorError, MonitorSource
 
 logger = logging.getLogger("ops_agent.capabilities")
@@ -105,3 +106,38 @@ def active_alerts_text(monitor: MonitorSource) -> str:
             line += f"：{a['summary']}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def metric_text(monitor: MonitorSource, definition: MetricDefinition) -> str:
+    """统一指标目录的查询与格式化入口。"""
+    if definition.kind == "alert_count":
+        return active_alerts_text(monitor)
+    try:
+        samples = monitor.query_metric(definition.metric_id)
+    except MonitorError as exc:
+        logger.warning("查询 %s 失败: %s", definition.display_name, exc)
+        return f"查询 {definition.display_name}失败：{exc}"
+    if not samples:
+        return f"{definition.display_name}：{_NO_DATA_HINT}"
+
+    def fmt(value: float) -> str:
+        if definition.unit == "%":
+            return f"{value:.1f}%"
+        if definition.unit == "bytes":
+            return f"{value:.0f} B"
+        if definition.unit == "MiB/s":
+            return f"{value:.2f} MiB/s"
+        if definition.unit == "errors/s":
+            return f"{value:.3f} errors/s"
+        if definition.unit == "load/core":
+            return f"{value:.3f} load/core"
+        return f"{value:g} {definition.unit}".rstrip()
+
+    if len(samples) == 1 and set(samples[0].labels).issubset({"instance"}):
+        return f"{definition.display_name}：{fmt(samples[0].value)}"
+
+    details: list[str] = []
+    for sample in samples:
+        label = ", ".join(f"{key}={value}" for key, value in sample.labels.items()) or "value"
+        details.append(f"{label} {fmt(sample.value)}")
+    return f"{definition.display_name}：" + "；".join(details)

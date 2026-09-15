@@ -16,7 +16,10 @@ from typing import Any
 
 from src.core.prompts import ALERT_ANALYSIS_SYSTEM
 from src.interfaces.llm_client import LLMClient
+from src.interfaces.metric import MetricDefinition, MetricsConfig
 from src.interfaces.monitor import MonitorSource
+from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
+from src.utils.metrics_config import default_metrics_config
 from src.storage.models import Alert
 
 logger = logging.getLogger("ops_agent.analysis")
@@ -30,9 +33,20 @@ _ANALYSIS_QUESTION = "请分析下面这条告警，给出根因假设与处理�
 # ---------------------------------------------------------------------------
 # 上下文纯组装
 # ---------------------------------------------------------------------------
-def _fmt_pct(value: float | None) -> str:
-    """格式化百分比值；None 给占位符（正常不应走到，防御性处理）。"""
-    return f"{value:.1f}%" if value is not None else "未知"
+def _fmt_value(value: float | None, unit: str) -> str:
+    if value is None:
+        return "未知"
+    if unit == "%":
+        return f"{value:.1f}%"
+    if unit == "bytes":
+        return f"{value:.0f} B"
+    if unit == "MiB/s":
+        return f"{value:.2f} MiB/s"
+    if unit == "errors/s":
+        return f"{value:.3f} errors/s"
+    if unit == "load/core":
+        return f"{value:.3f} load/core"
+    return f"{value:g} {unit}".rstrip()
 
 
 def build_alert_context(
@@ -40,6 +54,8 @@ def build_alert_context(
     monitor: MonitorSource,
     *,
     trend_minutes: int = 60,
+    metrics_config: MetricsConfig | None = None,
+    catalog: tuple[MetricDefinition, ...] = METRIC_CATALOG,
 ) -> str:
     """组装一条告警的 LLM 分析上下文：告警详情 + 实例近 trend_minutes 分钟趋势。
 
@@ -64,30 +80,44 @@ def build_alert_context(
     instance = alert.instance
     if not instance or instance == "unknown":
         lines.append("[实例趋势]\n- 实例信息缺失，无法查询历史趋势")
-    else:
-        lines.append(f"[实例 {instance} 近 {trend_minutes} 分钟趋势（node_exporter）]")
+        return "\n".join(lines)
+
+    config = metrics_config or default_metrics_config()
+    definitions = {definition.metric_id: definition for definition in catalog}
+    selected = config.selected("alert_analysis")[: config.max_alert_analysis_metrics]
+    lines.append(f"[实例 {instance} 近 {trend_minutes} 分钟趋势（node_exporter）]")
+    for runtime in selected:
+        definition = definitions.get(runtime.metric_id)
+        if definition is None:
+            continue
+        title = definition.display_name.replace(" ", "")
         try:
-            trend = monitor.instance_trend(instance, minutes=trend_minutes)
-        except Exception as exc:  # 尽力而为：监控源异常也不让分析上下文整体失败
-            logger.debug("告警趋势取数失败 instance=%s: %s", instance, exc)
-            trend = {}
-        for title, metric in trend.items():
-            lines.append(_trend_line(title, metric, trend_minutes=trend_minutes))
-        # 监控源未返回的指标名（如自定义实现只给部分）也补一行不可用占位
-        for title in ("CPU使用率", "内存使用率", "磁盘使用率"):
-            if title not in trend:
-                lines.append(f"- {title}近 {trend_minutes} 分钟趋势：{_UNAVAILABLE}")
+            metric = monitor.query_metric_trend(
+                definition.metric_id,
+                instance,
+                minutes=trend_minutes,
+            )
+        except Exception as exc:  # 尽力而为：单项失败不影响整体
+            logger.debug("告警趋势取数失败 metric=%s instance=%s: %s", definition.metric_id, instance, exc)
+            metric = {}
+        lines.append(_trend_line(title, metric, trend_minutes=trend_minutes, unit=definition.unit))
 
     return "\n".join(lines)
 
 
-def _trend_line(title: str, summary: dict[str, Any], *, trend_minutes: int) -> str:
+def _trend_line(
+    title: str,
+    summary: dict[str, Any],
+    *,
+    trend_minutes: int,
+    unit: str,
+) -> str:
     """把单指标趋势汇总拼成一行文本。"""
     if not summary or not summary.get("points"):
         return f"- {title}近 {trend_minutes} 分钟趋势：{_UNAVAILABLE}"
     return (
-        f"- {title}近 {trend_minutes} 分钟趋势：当前 {_fmt_pct(summary['latest'])} "
-        f"（最低 {_fmt_pct(summary['min'])} / 最高 {_fmt_pct(summary['max'])}，"
+        f"- {title}近 {trend_minutes} 分钟趋势：当前 {_fmt_value(summary['latest'], unit)} "
+        f"（最低 {_fmt_value(summary['min'], unit)} / 最高 {_fmt_value(summary['max'], unit)}，"
         f"近 {summary['points']} 个采样点）"
     )
 
@@ -105,11 +135,13 @@ class AlertAnalyzer:
         *,
         trend_minutes: int = 60,
         system: str | None = None,
+        metrics_config: MetricsConfig | None = None,
     ) -> None:
         self.monitor = monitor
         self.llm = llm
         self.trend_minutes = trend_minutes
         self.system = system or ALERT_ANALYSIS_SYSTEM
+        self.metrics_config = metrics_config or default_metrics_config()
 
     def analyze(self, alert: Alert) -> dict[str, Any]:
         """对单条告警生成 AI 建议条目；失败（未配置 / 网络 / 空返回）抛 LLMError。"""
@@ -117,7 +149,10 @@ class AlertAnalyzer:
             raise _LLMUnavailable("LLM 未配置（settings.llm.enabled=false 或无 provider）")
 
         context = build_alert_context(
-            alert, self.monitor, trend_minutes=self.trend_minutes
+            alert,
+            self.monitor,
+            trend_minutes=self.trend_minutes,
+            metrics_config=self.metrics_config,
         )
         prompt = f"{_ANALYSIS_QUESTION}\n\n{context}"
         advice = self.llm.complete(prompt, system=self.system)

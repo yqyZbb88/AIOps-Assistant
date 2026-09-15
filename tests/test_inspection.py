@@ -1,4 +1,4 @@
-"""固定指标巡检：阈值、等级、日志与调度。"""
+"""统一指标目录驱动的巡检：阈值、等级、日志与调度。"""
 from __future__ import annotations
 
 import logging
@@ -15,30 +15,46 @@ from src.interfaces.inspection import (
     LEVEL_ERROR,
     LEVEL_NORMAL,
     LEVEL_WARNING,
+    InspectionFinding,
     InspectionResult,
     InspectionStore,
 )
-from src.interfaces.monitor import MonitorError
-from src.utils.config_loader import (
-    ActiveAlertCheckSettings,
-    InspectionChecksSettings,
-    InspectionSettings,
-    PercentageCheckSettings,
+from src.interfaces.metric import (
+    MetricRuntimeConfig,
+    MetricSample,
+    MetricSurfaceConfig,
+    MetricsConfig,
 )
+from src.utils.config_loader import InspectionSettings
 from tests.conftest import FakeMonitor
 
 
-def _settings(**check_overrides) -> InspectionSettings:
-    checks = InspectionChecksSettings(
-        disk=PercentageCheckSettings(warning=80, critical=90),
-        **check_overrides,
-    )
-    return InspectionSettings(
+def _runtime(metric_id: str, warning=None, critical=None, severity=True, inspection=True):
+    return MetricRuntimeConfig(
+        metric_id=metric_id,
         enabled=True,
-        interval_seconds=30,
-        run_on_start=True,
-        checks=checks,
+        surfaces=MetricSurfaceConfig(inspection=inspection),
+        warning=warning,
+        critical=critical,
+        severity_enabled=severity,
     )
+
+
+def _config(*runtime: MetricRuntimeConfig) -> MetricsConfig:
+    return MetricsConfig(metrics={item.metric_id: item for item in runtime})
+
+
+def _default_config() -> MetricsConfig:
+    return _config(
+        _runtime("cpu.usage", 80, 90),
+        _runtime("memory.usage", 85, 95),
+        _runtime("disk.usage", 80, 90),
+        _runtime("alerts.active_count", 1, 3),
+    )
+
+
+def _settings() -> InspectionSettings:
+    return InspectionSettings(enabled=True, interval_seconds=30, run_on_start=True)
 
 
 def _monitor(**kwargs) -> FakeMonitor:
@@ -50,27 +66,31 @@ def _monitor(**kwargs) -> FakeMonitor:
 
 
 def test_normal_round_contains_all_metric_snapshots():
-    result = InspectionChecker(_monitor(), _settings()).run_once()
+    result = InspectionChecker(_monitor(), _settings(), _default_config()).run_once()
 
     assert result.level == LEVEL_NORMAL
-    assert result.snapshot["cpu"]["level"] == LEVEL_NORMAL
-    assert result.snapshot["memory"]["level"] == LEVEL_NORMAL
-    assert result.snapshot["disk"]["level"] == LEVEL_NORMAL
-    assert result.snapshot["active_alerts"]["level"] == LEVEL_NORMAL
+    assert result.snapshot["cpu.usage"]["level"] == LEVEL_NORMAL
+    assert result.snapshot["memory.usage"]["level"] == LEVEL_NORMAL
+    assert result.snapshot["disk.usage"]["level"] == LEVEL_NORMAL
+    assert result.snapshot["alerts.active_count"]["level"] == LEVEL_NORMAL
     assert result.findings == ()
 
 
 def test_percentage_thresholds_are_inclusive():
-    warning = InspectionChecker(_monitor(cpu=80.0), _settings()).run_once()
-    critical = InspectionChecker(_monitor(cpu=90.0), _settings()).run_once()
+    warning = InspectionChecker(
+        _monitor(cpu=80.0), _settings(), _default_config()
+    ).run_once()
+    critical = InspectionChecker(
+        _monitor(cpu=90.0), _settings(), _default_config()
+    ).run_once()
 
     assert warning.level == LEVEL_WARNING
-    assert warning.snapshot["cpu"]["level"] == LEVEL_WARNING
+    assert warning.snapshot["cpu.usage"]["level"] == LEVEL_WARNING
     assert critical.level == LEVEL_CRITICAL
-    assert critical.snapshot["cpu"]["level"] == LEVEL_CRITICAL
+    assert critical.snapshot["cpu.usage"]["level"] == LEVEL_CRITICAL
 
 
-def test_disk_uses_highest_mount_level():
+def test_disk_uses_highest_sample_level():
     monitor = _monitor(
         disks=[
             {"mountpoint": "/", "usage": 50.0},
@@ -78,11 +98,11 @@ def test_disk_uses_highest_mount_level():
         ]
     )
 
-    result = InspectionChecker(monitor, _settings()).run_once()
+    result = InspectionChecker(monitor, _settings(), _default_config()).run_once()
 
     assert result.level == LEVEL_CRITICAL
-    assert result.snapshot["disk"]["level"] == LEVEL_CRITICAL
-    assert any(f.metric == "disk" and f.level == LEVEL_CRITICAL for f in result.findings)
+    assert result.snapshot["disk.usage"]["level"] == LEVEL_CRITICAL
+    assert any(f.metric == "disk.usage" and f.level == LEVEL_CRITICAL for f in result.findings)
 
 
 def test_active_alert_count_maps_to_configured_levels():
@@ -92,46 +112,71 @@ def test_active_alert_count_maps_to_configured_levels():
             {"state": "pending", "alertname": "B"},
         ]
     )
-    settings = _settings(
-        active_alerts=ActiveAlertCheckSettings(
-            enabled=True, warning_count=1, critical_count=3
-        )
-    )
 
-    result = InspectionChecker(monitor, settings).run_once()
+    result = InspectionChecker(monitor, _settings(), _default_config()).run_once()
 
     assert result.level == LEVEL_WARNING
-    assert result.snapshot["active_alerts"]["count"] == 2
-    assert result.snapshot["active_alerts"]["pending"] == 1
-    assert result.snapshot["active_alerts"]["firing"] == 1
+    assert result.snapshot["alerts.active_count"]["count"] == 2
+    assert result.snapshot["alerts.active_count"]["pending"] == 1
+    assert result.snapshot["alerts.active_count"]["firing"] == 1
+
+
+def test_observe_metric_does_not_change_overall_level():
+    monitor = _monitor(metric_samples={"cpu.load1": [MetricSample("cpu.load1", {}, 99.0)]})
+    config = _config(
+        _runtime("cpu.load1", severity=False),
+        _runtime("cpu.usage", 80, 90),
+    )
+
+    result = InspectionChecker(monitor, _settings(), config).run_once()
+
+    assert result.level == LEVEL_NORMAL
+    assert result.snapshot["cpu.load1"]["level"] == LEVEL_NORMAL
+    assert result.snapshot["cpu.load1"]["samples"][0]["value"] == 99.0
+
+
+def test_below_direction_uses_low_thresholds():
+    monitor = _monitor(
+        metric_samples={
+            "memory.available": [MetricSample("memory.available", {}, 300.0)]
+        }
+    )
+    config = _config(
+        _runtime("memory.available", warning=1000, critical=500),
+    )
+
+    result = InspectionChecker(monitor, _settings(), config).run_once()
+
+    assert result.level == LEVEL_CRITICAL
 
 
 def test_single_query_failure_is_error_but_other_checks_continue():
     monitor = _monitor(raise_cpu=True)
 
-    result = InspectionChecker(monitor, _settings()).run_once()
+    result = InspectionChecker(monitor, _settings(), _default_config()).run_once()
 
     assert result.level == LEVEL_ERROR
-    assert result.snapshot["cpu"]["level"] == LEVEL_ERROR
-    assert result.snapshot["memory"]["level"] == LEVEL_NORMAL
-    assert "cpu 查询失败" in result.error
+    assert result.snapshot["cpu.usage"]["level"] == LEVEL_ERROR
+    assert result.snapshot["memory.usage"]["level"] == LEVEL_NORMAL
+    assert "cpu.usage 查询失败" in result.error
 
 
 def test_no_data_is_error():
-    result = InspectionChecker(_monitor(cpu=None), _settings()).run_once()
+    result = InspectionChecker(_monitor(cpu=None), _settings(), _default_config()).run_once()
 
     assert result.level == LEVEL_ERROR
-    assert "cpu 无有效数据" in result.error
+    assert "cpu.usage 无有效数据" in result.error
 
 
 def test_format_summary_contains_level_values_and_thresholds():
-    result = InspectionChecker(_monitor(cpu=85.0), _settings()).run_once()
+    result = InspectionChecker(_monitor(cpu=85.0), _settings(), _default_config()).run_once()
 
     text = format_inspection_summary(result)
 
     assert "level=warning" in text
-    assert "cpu=85.0%" in text
-    assert "warn>=80.0" in text
+    assert "cpu=[" in text
+    assert "85.0%" in text
+    assert "warn>=80" in text
     assert "active_alerts=0" in text
 
 
@@ -152,7 +197,7 @@ class RecordingStore(InspectionStore):
 def test_scheduler_logs_and_stores_only_abnormal(caplog):
     normal_store = RecordingStore()
     normal = InspectionScheduler(
-        InspectionChecker(_monitor(), _settings()),
+        InspectionChecker(_monitor(), _settings(), _default_config()),
         _settings(),
         store=normal_store,
     )
@@ -163,7 +208,7 @@ def test_scheduler_logs_and_stores_only_abnormal(caplog):
 
     warning_store = RecordingStore()
     warning = InspectionScheduler(
-        InspectionChecker(_monitor(cpu=85.0), _settings()),
+        InspectionChecker(_monitor(cpu=85.0), _settings(), _default_config()),
         _settings(),
         store=warning_store,
     )
@@ -198,18 +243,7 @@ def test_scheduler_run_on_start_and_stop():
             calls.set()
             return InspectionResult(checked_at="t", level=LEVEL_NORMAL)
 
-    settings = InspectionSettings(
-        enabled=True,
-        interval_seconds=60,
-        run_on_start=True,
-        checks=InspectionChecksSettings(
-            cpu=PercentageCheckSettings(enabled=True),
-            memory=PercentageCheckSettings(enabled=False),
-            disk=PercentageCheckSettings(enabled=False),
-            active_alerts=ActiveAlertCheckSettings(enabled=False),
-        ),
-    )
-    scheduler = InspectionScheduler(Checker(), settings)
+    scheduler = InspectionScheduler(Checker(), _settings())
     scheduler.start()
     try:
         assert calls.wait(timeout=1)
@@ -228,17 +262,7 @@ def test_scheduler_run_on_start_false_waits_for_interval():
             count["n"] += 1
             return InspectionResult(checked_at="t", level=LEVEL_NORMAL)
 
-    settings = InspectionSettings(
-        enabled=True,
-        interval_seconds=60,
-        run_on_start=False,
-        checks=InspectionChecksSettings(
-            cpu=PercentageCheckSettings(enabled=True),
-            memory=PercentageCheckSettings(enabled=False),
-            disk=PercentageCheckSettings(enabled=False),
-            active_alerts=ActiveAlertCheckSettings(enabled=False),
-        ),
-    )
+    settings = InspectionSettings(enabled=True, interval_seconds=60, run_on_start=False)
     scheduler = InspectionScheduler(Checker(), settings)
     scheduler.start()
     time.sleep(0.05)

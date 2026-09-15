@@ -237,3 +237,46 @@ def test_base_url_normalized_and_default():
     """base_url 尾部斜杠规整；空值回落 localhost:9090。"""
     assert PrometheusMonitor(base_url="http://x:9090/").base_url == "http://x:9090"
     assert PrometheusMonitor(base_url="").base_url == "http://localhost:9090"
+
+
+# ---------------------------------------------------------------------------
+# 通用指标目录查询
+# ---------------------------------------------------------------------------
+def test_query_metric_returns_structured_samples(monkeypatch, monitor):
+    _patch_query(
+        monkeypatch,
+        [{"metric": {"instance": "h:9100", "device": "eth0"}, "value": [1, "2.5"]}],
+    )
+
+    samples = monitor.query_metric("network.rx_bytes")
+
+    assert samples[0].metric_id == "network.rx_bytes"
+    assert samples[0].labels == {"instance": "h:9100", "device": "eth0"}
+    assert samples[0].value == 2.5
+
+
+def test_query_metric_renders_global_instance_and_escapes_labels(monitor):
+    definition = monitor._definition("cpu.usage")
+    expr = monitor._render_expr(definition, instance='h"1')
+    assert 'instance="h\\\"1"' in expr
+
+
+def test_query_metric_trend_chooses_worst_series(monkeypatch, monitor):
+    _patch_range(
+        monkeypatch,
+        [
+            {"values": [[1, "10"], [2, "20"]]},
+            {"values": [[1, "60"], [2, "80"]]},
+        ],
+    )
+
+    trend = monitor.query_metric_trend("cpu.usage", "h:9100")
+
+    assert trend["latest"] == 80.0
+    assert trend["max"] == 80.0
+    assert trend["points"] == 2
+
+
+def test_query_metric_unknown_id_is_monitor_error(monitor):
+    with pytest.raises(MonitorError, match="未知指标"):
+        monitor.query_metric("missing.metric")

@@ -47,6 +47,7 @@ from src.interfaces.approval import (
     PendingApproval,
 )
 from src.interfaces.diagnostic import DiagnosticSource
+from src.interfaces.metric import MetricsConfig
 from src.interfaces.monitor import MonitorSource
 from src.interfaces.session import ApprovalLedger, ChatMessage, TurnResult
 from src.storage.approval import ApprovalStore
@@ -201,6 +202,7 @@ class OpsAssistant:
         self,
         monitor: MonitorSource,
         *,
+        metrics_config: MetricsConfig | None = None,
         diag: DiagnosticSource | None = None,
         agent_actions: AgentActionSource | None = None,
         approvals: ApprovalStore | None = None,
@@ -235,7 +237,7 @@ class OpsAssistant:
         self.checkpointer = None
 
         # 监控工具 + 只读诊断工具（诊断源为 None 时不注册，Agent 看不到该能力）
-        self.tools = build_tools(monitor)
+        self.tools = build_tools(monitor, metrics_config)
         if diag is not None:
             self.tools = [*self.tools, *build_diag_tools(diag)]
 
