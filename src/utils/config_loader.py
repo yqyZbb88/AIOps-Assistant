@@ -201,31 +201,73 @@ def interpolate(text: str) -> str:
 # ---------------------------------------------------------------------------
 # YAML → dataclass
 # ---------------------------------------------------------------------------
-def _as_scalar(value: Any, typ: type) -> Any:
-    """把 YAML 值规约到目标标量类型（字符串→bool 做常见词解析）。"""
-    if value is None or isinstance(value, typ):
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+_FALSE_WORDS = frozenset({"0", "false", "no", "off"})
+
+
+def _as_scalar(value: Any, typ: type, *, what: str) -> Any:
+    """把 YAML 值严格规约到目标标量类型；非法值抛 ConfigError。
+
+    安全相关配置不能走 ``bool("tru") == True`` 那类宽松转换，更不能把无法识别的
+    字符串静默当成 False。例如 ``auth.enabled: tru`` 过去会关闭鉴权，属于 fail-open。
+    """
+    if typ is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in _TRUE_WORDS:
+                return True
+            if text in _FALSE_WORDS:
+                return False
+        raise ConfigError(f"{what} 必须是布尔值 true/false，得到: {value!r}")
+    if typ is str:
+        if not isinstance(value, str):
+            raise ConfigError(f"{what} 必须是字符串，得到: {value!r}")
         return value
-    if typ is bool and isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return typ(value)
+    if typ is int:
+        if isinstance(value, bool):
+            raise ConfigError(f"{what} 必须是整数，得到: {value!r}")
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"{what} 必须是整数，得到: {value!r}") from exc
+    try:
+        return typ(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{what} 类型无效，得到: {value!r}") from exc
 
 
 def _build_settings(data: dict[str, Any]) -> Settings:
-    """从解析后的 dict 构造 Settings；缺节时用对应默认 dataclass。"""
+    """从解析后的 dict 构造 Settings；缺节时用默认，未知字段一律拒绝。"""
+    unknown_top = set(data) - set(_SUB_MODELS)
+    if unknown_top:
+        raise ConfigError(
+            "settings.yaml 存在未知顶层配置: " + ", ".join(sorted(unknown_top))
+        )
+
     kwargs: dict[str, Any] = {}
     for key, model_type in _SUB_MODELS.items():
         section = data.get(key)
-        if isinstance(section, dict):
-            hints = get_type_hints(model_type)
-            kwargs[key] = model_type(
-                **{
-                    f.name: _as_scalar(section[f.name], hints[f.name])
-                    for f in fields(model_type)
-                    if f.name in section
-                }
-            )
-        else:
+        if section is None:
             kwargs[key] = model_type()  # 缺节 → 默认值
+            continue
+        if not isinstance(section, dict):
+            raise ConfigError(f"配置节 {key} 必须是映射，得到: {section!r}")
+        hints = get_type_hints(model_type)
+        allowed = {f.name for f in fields(model_type)}
+        unknown = set(section) - allowed
+        if unknown:
+            raise ConfigError(
+                f"配置节 {key} 存在未知字段: " + ", ".join(sorted(unknown))
+            )
+        kwargs[key] = model_type(
+            **{
+                f.name: _as_scalar(section[f.name], hints[f.name], what=f"{key}.{f.name}")
+                for f in fields(model_type)
+                if f.name in section
+            }
+        )
     return Settings(**kwargs)
 
 
@@ -241,20 +283,18 @@ def load_settings(path: str | Path | None = None) -> Settings:
     """读取并解析 config/settings.yaml，返回 Settings。
 
     - 解析前先尽力加载根目录 .env（python-dotenv 可选，失败忽略）；
-    - 文件缺失 / pyyaml 未装 / 解析失败 → 记日志并返回默认 Settings。
+    - 文件缺失 / pyyaml 未装 / 解析失败 → 抛 ConfigError，拒绝带着不确定配置启动。
     """
     _load_dotenv_if_available()
 
     file_path = Path(path) if path else Path(os.getenv("OPS_SETTINGS_FILE", DEFAULT_SETTINGS_FILE))
     if not file_path.is_file():
-        logger.warning("配置文件不存在，使用默认配置: %s", file_path)
-        return default_settings()
+        raise ConfigError(f"配置文件不存在: {file_path}")
 
     try:
         import yaml
-    except ImportError:
-        logger.error("缺少可选依赖 pyyaml，使用默认配置：pip install pyyaml")
-        return default_settings()
+    except ImportError as exc:
+        raise ConfigError("缺少配置依赖 pyyaml，请先安装：pip install pyyaml") from exc
 
     try:
         with open(file_path, encoding="utf-8") as fh:
@@ -262,12 +302,13 @@ def load_settings(path: str | Path | None = None) -> Settings:
         data = yaml.safe_load(interpolate(raw)) or {}
         if not isinstance(data, dict):
             raise ConfigError("配置顶层必须是映射")
+        if "auth" not in data:
+            raise ConfigError("settings.yaml 必须显式声明 auth 配置，拒绝隐式无鉴权启动")
         settings = _build_settings(data)
     except ConfigError:
         raise
-    except Exception as exc:  # yaml 语法 / 类型规约等错误统一收敛为默认
-        logger.error("配置文件解析失败（%s），使用默认配置: %s", exc, file_path)
-        return default_settings()
+    except Exception as exc:  # yaml 语法 / 类型规约等错误统一拒绝
+        raise ConfigError(f"配置文件解析失败（{file_path}）: {exc}") from exc
 
     logger.info("已加载配置: %s（app=%s v%s）", file_path, settings.app.name, settings.app.version)
     return settings
