@@ -149,8 +149,10 @@ class PrometheusMonitor(MonitorSource):
         if not template:
             raise MonitorError(f"指标 {definition.metric_id} 不支持该查询")
         selector = self._effective_selector(definition, instance=instance)
-        fragment = "".join(f",{_matcher_text(key, value)}" for key, value in selector.items())
-        return template.replace("__SELECTORS__", fragment)
+        matchers = ",".join(_matcher_text(key, value) for key, value in selector.items())
+        # 纯动态 matcher 直接放进 {}；固定 matcher 后面才需要一个前导逗号。
+        expr = template.replace("__SELECTOR_COMMA__", f",{matchers}" if matchers else "")
+        return expr.replace("__SELECTORS__", matchers)
 
     def query_metric(
         self,

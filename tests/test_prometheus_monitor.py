@@ -261,6 +261,23 @@ def test_query_metric_renders_global_instance_and_escapes_labels(monitor):
     assert 'instance="h\\\"1"' in expr
 
 
+def test_rendered_promql_has_no_empty_matcher_comma(monitor):
+    from dataclasses import replace
+
+    monitor.metrics_config = replace(monitor.metrics_config, instance="h:9100")
+    cpu = monitor._render_expr(monitor._definition("cpu.usage"))
+    memory = monitor._render_expr(monitor._definition("memory.usage"))
+    load = monitor._render_expr(monitor._definition("cpu.load1"))
+    disk = monitor._render_expr(monitor._definition("disk.usage"))
+
+    for expr in (cpu, memory, load, disk):
+        assert "{," not in expr
+    assert '{mode="idle",instance=' in cpu
+    assert "{instance=" in memory
+    assert '{mode="idle",instance=' in load
+    assert '{fstype!~"tmpfs|overlay",instance=' in disk
+
+
 def test_query_metric_trend_chooses_worst_series(monkeypatch, monitor):
     _patch_range(
         monkeypatch,

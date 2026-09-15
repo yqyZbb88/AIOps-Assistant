@@ -15,10 +15,10 @@ CPU_USAGE = MetricDefinition(
     kind="percentage",
     direction="above",
     expr_template=(
-        '100 - avg by(instance)(rate(node_cpu_seconds_total{mode="idle"__SELECTORS__}[5m])) * 100'
+        '100 - avg by(instance)(rate(node_cpu_seconds_total{mode="idle"__SELECTOR_COMMA__}[5m])) * 100'
     ),
     range_expr_template=(
-        '100 - avg by(instance)(rate(node_cpu_seconds_total{mode="idle"__SELECTORS__}[5m])) * 100'
+        '100 - avg by(instance)(rate(node_cpu_seconds_total{mode="idle"__SELECTOR_COMMA__}[5m])) * 100'
     ),
     group_by=("instance",),
     aliases=("CPU", "cpu", "处理器"),
@@ -40,11 +40,11 @@ CPU_LOAD1 = MetricDefinition(
     direction="above",
     expr_template=(
         'avg by(instance)(node_load1{__SELECTORS__}) / '
-        'count by(instance)(node_cpu_seconds_total{mode="idle"__SELECTORS__})'
+        'count by(instance)(node_cpu_seconds_total{mode="idle"__SELECTOR_COMMA__})'
     ),
     range_expr_template=(
         'avg by(instance)(node_load1{__SELECTORS__}) / '
-        'count by(instance)(node_cpu_seconds_total{mode="idle"__SELECTORS__})'
+        'count by(instance)(node_cpu_seconds_total{mode="idle"__SELECTOR_COMMA__})'
     ),
     group_by=("instance",),
     aliases=("负载", "load1", "系统负载"),
@@ -58,10 +58,10 @@ CPU_IOWAIT = MetricDefinition(
     kind="percentage",
     direction="above",
     expr_template=(
-        'avg by(instance)(rate(node_cpu_seconds_total{mode="iowait"__SELECTORS__}[5m])) * 100'
+        'avg by(instance)(rate(node_cpu_seconds_total{mode="iowait"__SELECTOR_COMMA__}[5m])) * 100'
     ),
     range_expr_template=(
-        'avg by(instance)(rate(node_cpu_seconds_total{mode="iowait"__SELECTORS__}[5m])) * 100'
+        'avg by(instance)(rate(node_cpu_seconds_total{mode="iowait"__SELECTOR_COMMA__}[5m])) * 100'
     ),
     group_by=("instance",),
     aliases=("iowait", "IO等待"),
@@ -137,13 +137,13 @@ DISK_USAGE = MetricDefinition(
     kind="percentage",
     direction="above",
     expr_template=(
-        '100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"__SELECTORS__} / '
-        'node_filesystem_size_bytes{fstype!~"tmpfs|overlay"__SELECTORS__}) * 100'
+        '100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"__SELECTOR_COMMA__} / '
+        'node_filesystem_size_bytes{fstype!~"tmpfs|overlay"__SELECTOR_COMMA__}) * 100'
     ),
     range_expr_template=(
         'avg by(instance)(100 - '
-        '(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"__SELECTORS__} / '
-        'node_filesystem_size_bytes{fstype!~"tmpfs|overlay"__SELECTORS__}) * 100)'
+        '(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"__SELECTOR_COMMA__} / '
+        'node_filesystem_size_bytes{fstype!~"tmpfs|overlay"__SELECTOR_COMMA__}) * 100)'
     ),
     group_by=("instance", "mountpoint", "device", "fstype"),
     aliases=("磁盘", "disk"),
@@ -264,12 +264,12 @@ NETWORK_TX_ERRORS = MetricDefinition(
 
 SYSTEM_PROCESS_COUNT = MetricDefinition(
     metric_id="system.process_count",
-    display_name="进程数量",
+    display_name="运行进程数",
     group="System",
     unit="processes",
     kind="gauge",
     direction="observe",
-    expr_template='sum by(instance)(node_processes_state{__SELECTORS__})',
+    expr_template='sum by(instance)(node_procs_running{__SELECTORS__})',
     group_by=("instance",),
     aliases=("进程数", "process count"),
 )
