@@ -120,12 +120,27 @@ r = httpx.get("http://127.0.0.1:8000/sessions",
 | `GET/PATCH/DELETE /sessions/{id}` | `user` 不匹配 → **404**（与「未知 id」同形，不泄露 id 是否存在） |
 | `POST /chat` | 会话 `user` 不匹配 → 404 |
 | **`POST /alert`** | **要求身份是 `auth.alert_identity`**（见 3.9），其他有效密钥 → **403** |
-| **`/approvals`** | **按归属隔离**：只看得到、也只批得动**自己触发**的待审批项；别人的一律 **404** |
+| **`/approvals`** | 默认只看得到、也只批得动自己触发的项；`approvers_only` 模式下只对显式审批人可见/可批 |
 | **`POST /approvals/{id}`** | 决策**记名**：往审计日志写一条 `approval_decision`，`decided_by` 就是这里的身份名。鉴权关闭时为空串 |
 | `/alerts/*` | 只校验「密钥有效」，不看身份名（三个都是只读端点） |
 
 > **身份名是精确串、大小写敏感**，不做任何归一化（`Alice` ≠ `alice`）。
 > 一个身份可以对应**多条**密钥（比如一个人换了新密钥还没删旧的）。
+
+### 3.6.1 审批职责分离
+
+默认 `auth.approval_mode: owner` 保持旧行为：待审批项只对它自己的触发者可见、可批。
+多用户生产环境建议改成：
+
+```yaml
+auth:
+  approval_mode: approvers_only
+  approver_identities: '["alice", "audit-bot"]'
+```
+
+对应环境变量可写 `OPS_APPROVER_IDENTITIES=["alice","audit-bot"]`。
+此时只有列出的身份能查看和批准待审批项，触发者本人不能批准自己的写命令。
+`approvers_only` 模式若审批人数组为空，服务会拒绝启动。
 
 ### 3.7 新增 / 轮换 / 吊销
 
@@ -153,7 +168,7 @@ r = httpx.get("http://127.0.0.1:8000/sessions",
 | `/docs` `/redoc` `/openapi.json` | FastAPI 自建的 app 级路由，**本来就不在任何 router 里**，不受影响 |
 | 别人会话的 `id` 存在与否 | 都无法区分，一律 **404** |
 | 密钥有效但身份不是 `auth.alert_identity`，且调的是 `/alert` | **403**（已认证、无权限——与会话那边的 404 有意区分） |
-| 密钥有效但不是待审批项的触发者，调 `/approvals` | 列表里看不到它；对它提交决策 → **404**（与「未知 id」同形） |
+| 密钥有效但不是当前审批策略允许的人，调 `/approvals` | 默认模式是触发者本人；`approvers_only` 模式是非审批人。均看不到且不能决策 → **404** |
 | 待审批项的 `user` 为空（鉴权关闭时产生的） | 开启鉴权后**任何身份都批不了**——它挂到 TTL 淘汰、命令永不执行（fail-safe 的方向） |
 | 密钥含非 ASCII 字符 | 不会 500——比对前统一编码过 |
 

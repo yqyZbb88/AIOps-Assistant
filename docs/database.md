@@ -1,6 +1,6 @@
 # 数据库结构说明
 
-本文档说明 ops-agent 的 SQLite 持久化库：**六张表、每个字段的含义、以及它们之间的关系**。
+本文档说明 ops-agent 的 SQLite 持久化库：**七张表、每个字段的含义、以及它们之间的关系**。
 
 > 实现代码见 [src/storage/db.py](../src/storage/db.py)（建表与连接）与
 > [src/storage/session.py](../src/storage/session.py)、[src/storage/history.py](../src/storage/history.py)（读写）。
@@ -16,7 +16,7 @@
 | 位置 | 默认 `data/ops_agent.db`（相对仓库根，由 `storage.db_path` 配置） |
 | 伴生文件 | WAL 模式下同目录会有 `ops_agent.db-wal` 与 `ops_agent.db-shm`（**同样是运行时产物，不要提交**） |
 | 日志模式 | `wal`（同步盘/网络盘上开不起来时自动回落 `delete`，不影响使用） |
-| schema 版本 | 当前 **v4**，记在 `PRAGMA user_version` 里 |
+| schema 版本 | 当前 **v5**，记在 `PRAGMA user_version` 里 |
 | 总开关 | `storage.enabled`。关掉 / 打不开 → **服务照常启动**，只是不落盘，行为与引入本功能前完全一致 |
 | 清理 | TTL + 容量上限，**惰性 + 节流**触发（写入时顺带，默认 60 秒最多一次），无后台线程 |
 
@@ -42,7 +42,7 @@ sqlite> .quit
 
 ## 二、表之间的关系
 
-六张表分成两组，**两组之间没有任何关联**（对话与告警是两条独立的业务线）。
+七张表分成三条业务线：对话、告警状态日志、执行/审批台账；各业务线之间没有外键关联。
 
 ### 第一组：对话（2 张）
 
@@ -77,8 +77,14 @@ alert_key = fingerprint（若告警带了）否则 "告警名|实例|开始时�
 
 ### `approval_decisions`（独立的一张）
 
-它不属于上面任何一组：不与告警关联，而是**挂在对话那一组的 `messages.approval_id` 上**——
-记录某条待审批的写命令「决策有没有提交过」。详见第四节末尾。
+它不与告警关联，而是**挂在对话那一组的 `messages.approval_id` 上**——记录某条待审批的
+写命令「决策有没有提交过」。详见第四节末尾。
+
+### `remediation_claims`（独立的一张）
+
+它是自动处置的幂等抢占表：同一告警事件的同一动作在数据库中只能成功抢占一次。
+Alertmanager 重投 webhook、多 worker 同时处理时，只有第一个 `INSERT OR IGNORE`
+成功者可以执行写命令。它不参与告警、处置、AI 建议三表的关联查询。
 
 ---
 
@@ -292,6 +298,19 @@ ORDER BY d.decided_at DESC;
 ```
 
 ---
+
+### `remediation_claims` —— 自动处置幂等抢占
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `alert_key` | TEXT | 告警关联键，与 `alerts.alert_key` 一致 |
+| `action` | TEXT | `actions.yaml` 中的动作 key |
+| `alert_status` | TEXT | 抢占时的告警状态；当前自动处置只处理 `firing` |
+| `starts_at` | TEXT | Alertmanager 的 `startsAt`，区分同一告警的不同生命周期 |
+| `claimed_at` | TEXT | 抢占时间（UTC） |
+
+四列组成联合主键。规则引擎在执行写命令前先抢占；抢占失败或数据库异常时一律不执行，
+不会因为存储故障而退化成重复执行。
 
 ## 五、常见查询
 

@@ -5,6 +5,12 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.pytest_tmp*/
+.patch.tmp
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # 配置中可能产生的本地覆盖
 *.local.yaml

@@ -19,7 +19,7 @@ python-dotenv>=1.0
 
 # ---------- 可选 ② SSH 动作执行与只读诊断（plugins/actions/、plugins/diagnostics/） ----------
 #   需要执行 restart_service / run_command，或启用 config/diagnostics.yaml 的 AI 只读诊断时安装。
-paramiko>=3.0,<4.0
+paramiko>=3.0,<6.0
 
 # ---------- 可选 ③ 测试 ----------
-pytest>=8.0
+pytest>=8.0,<10.0

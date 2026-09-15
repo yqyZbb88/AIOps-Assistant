@@ -199,7 +199,8 @@ pip install -r requirements.txt
 | `prometheus.base_url/timeout` | 数据源地址与超时；base_url 支持 `${PROMETHEUS_URL:-http://localhost:9090}` |
 | `monitor.provider` | 监控源插件名（registry：prometheus） |
 | `llm.provider/enabled` | LLM 插件与开关（false 则告警 AI 分析跳过） |
-| `agent.name/debug` | Agent 归因名 / create_agent debug（预留） |
+| `agent.enabled/name/debug/recursion_limit` | 聊天 Agent 总开关 / 归因名 / debug / 单轮图步骤上限 |
+| `chat.max_message_chars` | 单条聊天消息上限，超限返回 413 |
 | `alert.recent_limit/trend_minutes/trend_step` | 最近告警缓冲上限 / AI 分析趋势窗口 |
 | `storage.enabled` | SQLite 持久化总开关（代码里 dataclass 默认 false，本文件才是出厂值） |
 | `storage.db_path` | 库文件路径（相对仓库根，默认 `data/ops_agent.db`；WAL 会生成 `-wal`/`-shm`） |
@@ -213,6 +214,8 @@ pip install -r requirements.txt
 | `auth.enabled` | 共享密钥鉴权开关（代码里 dataclass 默认 `false`，本文件才是出厂值） |
 | `auth.tokens` | 「密钥 → 身份」的 **JSON 映射**，形如 `{"k-alice-9f3a":"alice"}`；真实值走 `.env` 的 `OPS_API_TOKENS`。**yaml 里的占位符必须用单引号包住**（`'${OPS_API_TOKENS:-}'`），否则变量有值时会被 YAML 当成流式映射解析成 dict |
 | `auth.alert_identity` | `POST /alert` 只接受的**身份名**（默认 `alertmanager`）；留空 = 不限制，且启动时有一条 WARNING。**必须与 `.env` 里某个密钥映射到的身份一致** |
+| `auth.approval_mode` | `owner`（触发者本人审批，兼容旧行为）或 `approvers_only`（职责分离，只允许显式审批人） |
+| `auth.approver_identities` | 审批人身份 JSON 数组，如 `["alice","audit-bot"]`；真实值可用 `OPS_APPROVER_IDENTITIES` 注入 |
 
 ### config/actions.yaml（写命令目录，WRITE 边界）
 
@@ -341,10 +344,13 @@ commands:
 
 | 变量 | 用途 |
 |---|---|
-| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` | DeepSeek 模型（init.py 读取） |
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` | DeepSeek 凭据、地址与模型名（init.py 读取） |
+| `DEEPSEEK_TIMEOUT` / `DEEPSEEK_MAX_RETRIES` / `DEEPSEEK_MAX_TOKENS` | 模型超时、重试与输出上限 |
 | `PROMETHEUS_URL` | Prometheus 地址（缺省 localhost:9090） |
 | `SSH_PASSWORD_192_168_20_128` | 目标主机 root 密码：规则 SSH 动作、只读诊断、Agent 写命令三处共用 |
+| `SSH_KNOWN_HOSTS` | known_hosts 文件路径；留空使用系统 `~/.ssh/known_hosts`。未知主机默认拒绝 |
 | `OPS_API_TOKENS` | **API 共享密钥 → 身份** 的 JSON 映射，如 `{"k-alice-9f3a":"alice"}`。配合 `settings.yaml` 的 `auth.enabled`；用随机值生成（`python -c "import secrets;print(secrets.token_urlsafe(32))"`）。留空且 `auth.enabled: true` → **拒绝启动** |
+| `OPS_APPROVER_IDENTITIES` | `approvers_only` 模式下的审批人身份 JSON 数组 |
 | `LANGSMITH_*`（4 个） | LangChain 链路追踪（`TRACING` / `ENDPOINT` / `API_KEY` / `PROJECT`）；由 langchain 直接读取，本仓库代码不引用，不配则只是不追踪 |
 
 ---
@@ -563,11 +569,12 @@ SQLite 与内存两套实现、**会话名的 user 作用域与重名复用**、
   **注意：原设计里还有一条「出厂 `enabled: false`」的缓解，但 2026-09-10 起本仓库已把该能力打开，
   这条保护不再成立**——写通道现在是活的。
   **绑 `0.0.0.0` 前必须先打开 `auth`**，或把 `agent_actions.yaml` 的 `enabled` 改回 `false`。
+  多用户生产环境建议设置 `auth.approval_mode: approvers_only`，避免“自己申请、自己批准”。
 - **⚠️ 打开 `auth` 前必须先配好 Alertmanager**：`POST /alert` 也要求密钥。配方（含
   「凭据文件缺失时 Alertmanager 照常启动、但通知静默发不出去」这条实测坑）见
   [docs/auth.md](docs/auth.md) 第四节。**顺序**：先配 Alertmanager、确认告警照常入库，
   最后才打开 `auth.enabled`——鉴权关闭时服务端会忽略那个头，所以零停机、可随时回退。
-- **SSH host key**：演示环境使用 `AutoAddPolicy`；生产建议核对 known_hosts 后改用 RejectPolicy。
+- **SSH host key**：默认使用 `RejectPolicy`，加载系统 known_hosts（可用 `SSH_KNOWN_HOSTS` 覆盖）；未登记主机一律拒绝连接。生产仍应定期核对和轮换 known_hosts。
 - **提交前**：`.env` 与含密钥文件不要进版本库。仓库已于 2026-09-10 完成 `git init`，
   `.gitignore` 已忽略 `.env` / `__pycache__` / `.pytest_cache` / `.venv` / `参考/` /
   `.claude/settings.local.json`。提交纪律：先确认 `git status --short` 干净，且
@@ -604,7 +611,5 @@ notifiers（钉钉/企微通知）、docker/、插件目录自动扫描发现、
 > 审批中断落 pending 与审批后回填、会话删除作废未决审批、孤儿审批回收、`/sessions` 三端点；
 > 告警/处置/AI 建议三表归档 + `/alerts/history`；审计落文件并轮转。
 >
-> **Agent 现在支持多轮对话**——传回上次的 `session_id` 即可续聊；不传则新建会话
-> （与改造前行为一致）。服务在持久化层**不再是无状态的**，但**不传 session_id 时仍无状态**。
->
-> 持久化整体可关（`storage.enabled=false`）或自动降级：关掉后行为与改造前完全一致。
+> **Agent 多轮对话采用显式会话**：先 `POST /sessions`，之后 `/chat` 必须携带 `session_id`。
+> 服务在持久化层不是无状态的；持久化关闭时会话能力降级，但关键词/LLM 回复仍可工作。

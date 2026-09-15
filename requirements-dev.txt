@@ -1,0 +1,2 @@
+# 开发/CI 依赖；运行时依赖仍以 requirements.txt 为准。
+pytest>=8,<10
