@@ -33,6 +33,7 @@ Assitant/
 ├── README.md / requirements.txt / .env.example
 ├── docs/
 │   ├── database.md            # SQLite 库结构详解（八张表逐字段说明 + 常用查询）
+│   ├── configuration.md       # ★ 所有运行时 YAML 配置字段、默认值、约束与示例
 │   └── auth.md                # 鉴权与密钥（密钥怎么来/放哪/怎么用、Alertmanager 侧、排查）
 ├── init.py                    # 用户模板（只读）：init_chat_model 单一模型入口
 ├── config/
@@ -121,6 +122,7 @@ Assitant/
 | 文档 | 内容 |
 |---|---|
 | **README.md**（本文） | 项目结构 / 分层职责 / 配置 / 路由 / 扩展指南（**结构权威文档**） |
+| [docs/configuration.md](docs/configuration.md) | **YAML 配置权威指南**：六个运行时配置文件的字段、类型、默认值、校验与示例 |
 | [PROJECT_HANDOVER.md](PROJECT_HANDOVER.md) | 开发约束 / 安全不变量 / 已踩的坑 / 既定决策 / 路线图 |
 | [docs/database.md](docs/database.md) | **SQLite 库结构详解**：八张表逐字段说明、表间关系、常用查询、迁移与备份 |
 | [docs/auth.md](docs/auth.md) | **鉴权与密钥**：本项目有哪些密钥、怎么生成、怎么用、Alertmanager 侧怎么配、故障排查 |
@@ -199,6 +201,8 @@ pip install -r requirements.txt
 
 **不可关闭的**：Agent 写命令的**人工审批**。`agent_actions.yaml` 的 `approval` 段写任何多余键
 （形如 `enabled`）都会导致校验失败、能力整体关闭——配置层不存在「绕过审批」这个选项（见下节）。
+
+各 YAML 文件的完整字段说明见 [docs/configuration.md](docs/configuration.md)。
 
 ### config/settings.yaml（可变参数，不再硬编码）
 

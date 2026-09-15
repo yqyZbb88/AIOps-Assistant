@@ -11,6 +11,7 @@
 > - [README.md](./README.md)：结构树 / 分层职责 / 配置 / 启动 / 安装 / 扩展指南（**权威结构文档**，
 >   目录树只此一份，本文件不再复制，避免两处对不上）；
 > - **本文件**：硬性约束 / 安全不变量 / 已踩的坑 / 既定决策 / 路线图待办 / 验证方式；
+> - [docs/configuration.md](./docs/configuration.md)：所有运行时 YAML 配置字段、默认值、约束与示例。
 > - [docs/database.md](./docs/database.md)：SQLite 库结构详解（八张表逐字段含义、表间关系、
 >   常用查询、清理与迁移规则）。**改表结构时同步它。**
 > - [docs/auth.md](./docs/auth.md)：鉴权与密钥（本项目的密钥清单、生成、配法、用法、
