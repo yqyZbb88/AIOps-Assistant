@@ -291,6 +291,23 @@ def test_create_app_health_endpoint_responds():
     assert resp.json() == {"status": "ok", "storage": "ok"}
 
 
+def test_create_app_health_reflects_history_degradation(tmp_path):
+    """归档存储损坏时，/health 必须降级，不能只盯 sessions。"""
+    from fastapi.testclient import TestClient
+
+    from src.main import create_app
+
+    settings = Settings(
+        storage=StorageSettings(enabled=True, db_path=str(tmp_path / "ops.db"))
+    )
+    app = create_app(settings=settings)
+    app.state.container.history()._healthy = False  # type: ignore[union-attr]
+    with TestClient(app) as client:
+        resp = client.get("/health")
+
+    assert resp.json() == {"status": "degraded", "storage": "degraded"}
+
+
 # ---------------------------------------------------------------------------
 # agent_actions：Agent 写命令装配（默认关；冲突检测）
 # ---------------------------------------------------------------------------

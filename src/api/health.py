@@ -20,7 +20,11 @@ def health(request: Request) -> dict[str, str]:
     误当成「模型最近记性变差」的那类故障。
     """
     container = getattr(request.app.state, "container", None)
-    store = container.sessions() if container is not None else None
-    # 值必须仍是 str（该路由的 response_model 是 dict[str, str]，属追加而非改契约）
-    storage = "ok" if store is None or store.healthy else "degraded"
-    return {"status": "ok", "storage": storage}
+    stores = []
+    if container is not None:
+        # sessions / history 共享数据库实例，但各自维护「最近一次操作是否成功」，
+        # 因此必须一起看。只看 sessions 会让「归档坏了、聊天还正常」显示为全绿。
+        stores = [container.sessions(), container.history()]
+    storage_ok = all(store is None or store.healthy for store in stores)
+    storage = "ok" if storage_ok else "degraded"
+    return {"status": storage, "storage": storage}
