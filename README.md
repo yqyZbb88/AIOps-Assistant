@@ -170,6 +170,8 @@ pip install -r requirements.txt
 | Agent 只读诊断 | [diagnostics.yaml](config/diagnostics.yaml) · `enabled` | `true` | `false` → Agent 不注册诊断工具 |
 | Agent 写命令 | [agent_actions.yaml](config/agent_actions.yaml) · `enabled` | `true`（**已启用**） | 原设计为出厂关闭，**2026-09-10 起本仓库已打开**；每次调用仍需人工审批 |
 | 告警 AI 分析 | [settings.yaml](config/settings.yaml) · `llm.enabled` | `true` | `false` → 跳过 LLM 分析，告警接收不受影响 |
+| 固定指标巡检 | settings.yaml · `inspection.enabled` | `true` | 周期检查 CPU/内存/磁盘/活动告警；**不调用 AI、不执行写命令**，仅单 worker |
+| 巡检日志落盘 | settings.yaml · `logging.inspection_file` | `logs/inspection.log` | 每轮汇总都写；异常轮次另写 SQLite，normal 不入库 |
 | 动作审计日志 | settings.yaml · `logging.audit` | `true` | `false` → **只记失败**，成功执行静默（**非完全关闭**） |
 | 审计落盘 | settings.yaml · `logging.audit_file` | `logs/audit.log` | 留空则只进 console（重启即丢；审计的用处恰是事后追查） |
 | SQLite 持久化 | settings.yaml · `storage.enabled` | `true`（**yaml 里**） | 代码里 dataclass 默认 `false`，看出厂值以本文件为准；`false`/打不开 → 服务照常起，只是不落盘 |
