@@ -213,7 +213,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   - 增加 `agent.enabled`、递归上限、聊天消息上限、模型超时/重试/Token 上限；
   - `auth.approval_mode=approvers_only` 支持审批职责分离；
   - 新增固定指标自动巡检、独立轮转日志与异常归档（schema v6）；
-  - CI + pyproject 测试配置 + 文档同步。
+  - CI + 文档同步。
 
 - **固定指标自动巡检**（2026-09-15）：应用 lifespan 启动单进程后台线程，按全局周期只读检查
   `metrics.yaml` 的 inspection surface（代码目录内置 CPU/Memory/Disk/Network/System 17 个指标）；每类指标可独立开关并配置 warning/critical 阈值。每轮写
