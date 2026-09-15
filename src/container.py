@@ -348,6 +348,7 @@ class Container:
             ledger=self.sessions(),
             debug=self.settings.agent.debug,
             name=self.settings.agent.name,
+            recursion_limit=self.settings.agent.recursion_limit,
         )
 
     # -- 主控制器 ---------------------------------------------------------
@@ -363,9 +364,12 @@ class Container:
         rule_engine = RuleEngine(
             executors=self.executors(), execution_guard=self.execution_guard()
         )
+        assistant_factory = self._assistant_factory if settings.agent.enabled else None
+        if assistant_factory is None:
+            logger.info("聊天 Agent 未启用（settings.agent.enabled=false），仅使用关键词兜底")
         chat_service = ChatService(
             monitor=monitor,
-            assistant_factory=self._assistant_factory,
+            assistant_factory=assistant_factory,
             sessions=self.sessions(),  # 未启用/打不开 → None，聊天照常
             message_window=settings.storage.message_window,
         )

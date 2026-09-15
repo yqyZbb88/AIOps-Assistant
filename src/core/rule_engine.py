@@ -211,9 +211,12 @@ class RuleEngine:
 
         try:
             result = self.executors[rule.action].execute(params)
+            result_text = str(result)
+            if len(result_text) > 1000:
+                result_text = result_text[:1000] + "…（结果过长已截断）"
             record["status"] = "ok"
-            record["detail"] = f"动作执行成功: {result}"
-            logger.info("自动处置成功 %s -> %s: %s", alert.alertname, rule.action, result)
+            record["detail"] = f"动作执行成功: {result_text}"
+            logger.info("自动处置成功 %s -> %s: %s", alert.alertname, rule.action, result_text)
         except ActionError as exc:
             record["status"] = "failed"
             record["detail"] = f"动作执行失败: {exc}"

@@ -118,6 +118,24 @@ def test_load_settings_rejects_malformed_yaml(tmp_path):
         load_settings(cfg)
 
 
+def test_runtime_controls_are_parsed(tmp_path):
+    cfg = tmp_path / "settings.yaml"
+    cfg.write_text("""auth:
+  enabled: false
+agent:
+  enabled: false
+  recursion_limit: 7
+chat:
+  max_message_chars: 123
+""", encoding="utf-8")
+
+    settings = load_settings(cfg)
+
+    assert settings.agent.enabled is False
+    assert settings.agent.recursion_limit == 7
+    assert settings.chat.max_message_chars == 123
+
+
 def test_default_settings():
     s = Settings()
     assert s.server.port == 8000

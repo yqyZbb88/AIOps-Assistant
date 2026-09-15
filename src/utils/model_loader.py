@@ -40,7 +40,7 @@ def get_model() -> Any:
             try:
                 from dotenv import load_dotenv
 
-                load_dotenv(ROOT_DIR / ".env", override=True)
+                load_dotenv(ROOT_DIR / ".env", override=False)
             except Exception:  # 未安装 python-dotenv 时忽略，交给 init.py 处理
                 pass
             if str(ROOT_DIR) not in sys.path:

@@ -26,8 +26,13 @@ llm:
   enabled: true            # false 时告警 AI 分析直接跳过，不阻塞告警接收
 
 agent:
+  enabled: true            # false 时聊天只走关键词兜底，不构建/调用 LLM Agent
   name: ops_assistant      # Agent trace/日志归因名（预留，聊天 Agent 构建用）
   debug: false             # create_agent 的 debug 开关（预留）
+  recursion_limit: 25      # 单轮 Agent 最多执行的图步骤数，防止工具调用无限循环
+
+chat:
+  max_message_chars: 8000  # 单条聊天消息上限，超限返回 413
 
 alert:
   recent_limit: 100        # 最近告警内存缓冲上限（条）

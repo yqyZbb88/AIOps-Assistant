@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,7 +20,7 @@ class Alert(BaseModel):
 
     model_config = ConfigDict(extra="ignore")  # 忽略未知字段，兼容版本差异
 
-    status: str = "firing"  # firing（触发中）| resolved（已解决）
+    status: Literal["firing", "resolved"] = "firing"
     labels: dict[str, str] = Field(default_factory=dict)
     annotations: dict[str, str] = Field(default_factory=dict)
     startsAt: str = ""
@@ -67,7 +67,7 @@ class AlertmanagerPayload(BaseModel):
 
     status: str = ""  # 整组状态：firing / resolved
     receiver: str = ""
-    alerts: list[Alert] = Field(default_factory=list)
+    alerts: list[Alert] = Field(default_factory=list, max_length=200)
     externalURL: str = ""
     version: str = ""
     groupKey: str = ""

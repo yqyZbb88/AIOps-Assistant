@@ -18,6 +18,7 @@ from src.container import Container
 from src.core.agent import OpsAgent
 from src.storage.session import InMemorySessionStore, SqliteSessionStore
 from src.utils.config_loader import (
+    AgentSettings,
     LLMSettings,
     MonitorSettings,
     PrometheusSettings,
@@ -75,6 +76,15 @@ def test_llm_enabled_returns_client():
     llm = c.llm()
     assert llm is not None and llm.name == "deepseek"
     assert c.llm() is llm
+
+
+def test_agent_can_be_disabled_without_building_model():
+    """agent.enabled=false 时 ChatService 不持有工厂，只走关键词兜底。"""
+    c = Container(settings=Settings(agent=AgentSettings(enabled=False)))
+    agent = c.ops_agent()
+
+    assert agent.chat_service._assistant_factory is None
+    assert agent.chat_service._agent_broken is True
 
 
 # ---------------------------------------------------------------------------

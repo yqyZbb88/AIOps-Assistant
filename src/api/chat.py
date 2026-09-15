@@ -45,7 +45,10 @@ class ChatRequest(BaseModel):
 
     message: str = Field(..., min_length=1, description="用户输入的消息")
     session_id: str = Field(
-        ..., min_length=1, description="会话 id，来自 POST /sessions（须已存在且属于你）"
+        ...,
+        min_length=1,
+        max_length=128,
+        description="会话 id，来自 POST /sessions（须已存在且属于你）",
     )
 
     @field_validator("session_id")
@@ -88,6 +91,12 @@ def chat(
     未知 / 不属于调用者的 `session_id` → 404。
     """
     agent: OpsAgent = request.app.state.agent
+    max_chars = int(request.app.state.settings.chat.max_message_chars)
+    if len(req.message) > max_chars:
+        raise HTTPException(
+            status_code=413,
+            detail=f"message 超过上限 {max_chars} 字符",
+        )
     logger.info(
         "收到消息 from=%s session_id=%s: %s", user, req.session_id, req.message
     )

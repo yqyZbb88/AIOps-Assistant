@@ -70,8 +70,17 @@ class LLMSettings:
 
 @dataclass(frozen=True)
 class AgentSettings:
+    enabled: bool = True
     name: str = "ops_assistant"
     debug: bool = False
+    recursion_limit: int = 25
+
+
+@dataclass(frozen=True)
+class ChatSettings:
+    """聊天请求级保护。"""
+
+    max_message_chars: int = 8000
 
 
 @dataclass(frozen=True)
@@ -151,6 +160,7 @@ class Settings:
     llm: LLMSettings = LLMSettings()
     agent: AgentSettings = AgentSettings()
     alert: AlertSettings = AlertSettings()
+    chat: ChatSettings = ChatSettings()
     storage: StorageSettings = StorageSettings()
     logging: LoggingSettings = LoggingSettings()
     auth: AuthSettings = AuthSettings()
@@ -165,6 +175,7 @@ _SUB_MODELS: dict[str, type] = {
     "llm": LLMSettings,
     "agent": AgentSettings,
     "alert": AlertSettings,
+    "chat": ChatSettings,
     "storage": StorageSettings,
     "logging": LoggingSettings,
     "auth": AuthSettings,

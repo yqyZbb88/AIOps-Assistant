@@ -334,6 +334,16 @@ def test_rename_keeps_messages_and_updated_at(chat_client):
     assert body["message_count"] == before["message_count"] == 2
 
 
+def test_chat_rejects_oversized_message(disabled_client):
+    resp = disabled_client.post(
+        "/chat",
+        json={"message": "x" * 8001, "session_id": "whatever"},
+    )
+
+    assert resp.status_code == 413
+    assert "超过上限" in resp.json()["detail"]
+
+
 # -- /chat 多轮（M4 第二批接线） --------------------------------------------
 @pytest.fixture
 def chat_client(tmp_path):

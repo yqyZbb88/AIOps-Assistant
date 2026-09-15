@@ -51,7 +51,7 @@ class ApprovalRequest(BaseModel):
     # 用 Literal 而非 str：edit 之类的值在入参校验阶段就 422，
     # 永远到不了 resume —— 非法负载会**永久毒化** LangGraph 线程（已实测）。
     action: Literal["approve", "reject"] = Field(..., description="审批决策")
-    reason: str = Field("", description="审批理由（仅记日志，不影响命令内容）")
+    reason: str = Field("", max_length=1000, description="审批理由（仅记日志，不影响命令内容）")
 
 
 class ApprovalResponse(BaseModel):

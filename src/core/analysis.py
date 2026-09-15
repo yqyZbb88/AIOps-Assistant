@@ -121,6 +121,8 @@ class AlertAnalyzer:
         )
         prompt = f"{_ANALYSIS_QUESTION}\n\n{context}"
         advice = self.llm.complete(prompt, system=self.system)
+        if len(advice) > 8000:
+            advice = advice[:8000] + "\n…（AI 建议过长已截断）"
 
         return {
             "alert_key": alert.alert_key,  # 与归档表的关联键（见 storage/models.py）

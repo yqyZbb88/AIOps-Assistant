@@ -209,6 +209,7 @@ class OpsAssistant:
         system_prompt: str | None = None,
         response_format=None,
         debug: bool = False,
+        recursion_limit: int = 25,
     ) -> None:
         # 本构造会触发 langchain / init.py 惰性导入；失败向上抛，由调用方回落
         from src.agent.prompts import (
@@ -230,6 +231,7 @@ class OpsAssistant:
         self.name = name or AGENT_NAME
         self.system_prompt = system_prompt or OPS_SYSTEM_PROMPT
         self.debug = debug
+        self.recursion_limit = max(int(recursion_limit), 1)
         self.checkpointer = None
 
         # 监控工具 + 只读诊断工具（诊断源为 None 时不注册，Agent 看不到该能力）
@@ -330,7 +332,11 @@ class OpsAssistant:
         payload = [{"role": m.role, "content": m.content} for m in history]
         payload.append({"role": "user", "content": message})
 
-        config = {"configurable": {"thread_id": thread_id}} if thread_id else None
+        config = (
+            {"configurable": {"thread_id": thread_id}, "recursion_limit": self.recursion_limit}
+            if thread_id
+            else {"recursion_limit": self.recursion_limit}
+        )
         response = self.agent.invoke({"messages": payload}, config=config)
 
         # **先判中断**：中断那轮的 AI 消息 content 为空，若先取文本会返回
@@ -433,7 +439,10 @@ class OpsAssistant:
 
         response = self.agent.invoke(
             Command(resume={"decisions": decisions}),
-            config={"configurable": {"thread_id": thread_id}},
+            config={
+                "configurable": {"thread_id": thread_id},
+                "recursion_limit": self.recursion_limit,
+            },
         )
 
         # 续跑可能触发**下一条**写命令（同一线程、新的中断），需继续挂起等审批
