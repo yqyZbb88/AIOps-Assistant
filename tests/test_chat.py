@@ -225,10 +225,12 @@ def test_ops_agent_process_alert_record_and_store(fakemonitor, fakellm):
 rules:
   - alertname: HighCPUUsage
     action: ok_action
+    target_instance: h:9100
     params: {host: h1}
     auto_execute: true
   - alertname: HighCPUUsage
     action: ok_action
+    target_instance: h:9100
     params: {host: h1}
     auto_execute: false
 """
@@ -282,6 +284,7 @@ def test_ops_agent_process_alert_llm_unavailable_not_blocking(fakemonitor):
         rf = Path(td) / "rules.yaml"
         rf.write_text(
             "rules:\n  - alertname: HighCPUUsage\n    action: ok_action\n"
+            "    target_instance: 192.168.1.10:9100\n"
             "    params: {host: h1}\n    auto_execute: true\n",
             encoding="utf-8",
         )
@@ -319,6 +322,7 @@ def test_ops_agent_prints_remediation_to_console(fakemonitor, capsys):
         rf = Path(td) / "rules.yaml"
         rf.write_text(
             "rules:\n  - alertname: HighCPUUsage\n    action: ok_action\n"
+            "    target_instance: 192.168.1.10:9100\n"
             "    params: {host: h1}\n    auto_execute: true\n",
             encoding="utf-8",
         )
@@ -352,6 +356,7 @@ def test_rule_engine_itself_prints_nothing(fakemonitor, capsys):
         rf = Path(td) / "rules.yaml"
         rf.write_text(
             "rules:\n  - alertname: HighCPUUsage\n    action: ok_action\n"
+            "    target_instance: 192.168.1.10:9100\n"
             "    params: {}\n    auto_execute: true\n",
             encoding="utf-8",
         )

@@ -86,6 +86,18 @@ def test_records_are_newest_first(store):
     ]
 
 
+def test_remediation_claims_are_purged_with_history(store):
+    store.db.execute(
+        "INSERT INTO remediation_claims "
+        "(alert_key, action, alert_status, starts_at, claimed_at) VALUES (?,?,?,?,?)",
+        ("old", "restart_service", "firing", "t", "2020-01-01T00:00:00+00:00"),
+    )
+
+    store.purge_expired()
+
+    assert store.db.query("SELECT 1 FROM remediation_claims") == []
+
+
 def test_limit_is_respected(store):
     for i in range(5):
         store.record_batch(alerts=[_alert(f"k{i}", received_at=f"2026-01-01T00:00:0{i}+00:00")])

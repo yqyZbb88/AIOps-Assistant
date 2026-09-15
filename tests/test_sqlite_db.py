@@ -15,6 +15,7 @@ _EXPECTED_TABLES = {
     "remediations",
     "ai_advice",
     "approval_decisions",
+    "remediation_claims",
 }
 
 
@@ -76,6 +77,27 @@ def test_approval_decisions_columns_are_exact(tmp_path):
     db = open_database(tmp_path / "ops.db")
     cols = {r["name"] for r in db.query("PRAGMA table_info(approval_decisions)")}
     assert cols == {"approval_id", "session_id", "action", "decided_at", "decided_by"}
+
+
+def test_remediation_claims_columns_are_exact(tmp_path):
+    db = open_database(tmp_path / "ops.db")
+    cols = {r["name"] for r in db.query("PRAGMA table_info(remediation_claims)")}
+    assert cols == {"alert_key", "action", "alert_status", "starts_at", "claimed_at"}
+
+
+def test_v4_db_gains_remediation_claims(tmp_path):
+    """v4 → v5：旧库升级后必须有幂等抢占表。"""
+    path = tmp_path / "ops.db"
+    db = open_database(path)
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("DROP TABLE remediation_claims")
+        conn.execute("PRAGMA user_version = 4")
+
+    migrated = open_database(path)
+
+    assert migrated is not None
+    assert _user_version(path) == SCHEMA_VERSION
+    assert "remediation_claims" in _tables(path)
 
 
 def test_v3_db_gains_decided_by(tmp_path):

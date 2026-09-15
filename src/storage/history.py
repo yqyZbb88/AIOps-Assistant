@@ -215,6 +215,14 @@ class SqliteHistoryStore(HistoryStore):
                         f"(SELECT id FROM {table} ORDER BY {time_col} DESC, id DESC LIMIT ?)",
                         (self.max_rows,),
                     ).rowcount
+                removed += conn.execute(
+                    "DELETE FROM remediation_claims WHERE claimed_at < ?", (cutoff,)
+                ).rowcount
+                removed += conn.execute(
+                    "DELETE FROM remediation_claims WHERE rowid NOT IN "
+                    "(SELECT rowid FROM remediation_claims ORDER BY claimed_at DESC, rowid DESC LIMIT ?)",
+                    (self.max_rows,),
+                ).rowcount
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
         self._ok()

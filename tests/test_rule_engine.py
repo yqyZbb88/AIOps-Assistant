@@ -1,7 +1,12 @@
 """rule_engine：假执行器覆盖 ok / failed / skip / unmatched / 同 alertname 多条顺序。"""
 from __future__ import annotations
 
-from src.core.rule_engine import RuleEngine, SKIP_MARK
+from src.core.rule_engine import (
+    DUPLICATE_MARK,
+    INSTANCE_MISMATCH_MARK,
+    RuleEngine,
+    SKIP_MARK,
+)
 from src.interfaces.action import ActionError, ActionExecutor
 from src.storage.models import AlertmanagerPayload
 
@@ -11,6 +16,7 @@ _RULES_YAML = """\
 rules:
   - alertname: HighCPUUsage
     action: ok_action
+    target_instance: h1:9100
     params:
       host: h1
       password: "${FAKE_SSH_PASSWORD:-placeholder}"
@@ -18,6 +24,7 @@ rules:
     description: ok rule
   - alertname: HighCPUUsage
     action: fail_action
+    target_instance: h1:9100
     params:
       host: h1
       password: "x"
@@ -25,12 +32,14 @@ rules:
     description: fail rule
   - alertname: HighCPUUsage
     action: ok_action
+    target_instance: h1:9100
     params:
       host: h1
     auto_execute: false
     description: skip rule (same alertname, in file order last)
   - alertname: HighMemoryUsage
     action: ok_action
+    target_instance: h2:9100
     params:
       host: h2
     auto_execute: false
@@ -79,7 +88,9 @@ def test_rule_engine_loads_and_interpolates_params(tmp_path):
 def test_rule_engine_ok_failed_skip_in_file_order(tmp_path):
     engine = _engine(tmp_path)
     ok = engine.executors["ok_action"]
-    records = engine.execute_for_payload(make_payload(make_alert("HighCPUUsage")))
+    records = engine.execute_for_payload(
+        make_payload(make_alert("HighCPUUsage", instance="h1:9100"))
+    )
 
     # HighCPUUsage 配了 3 条：ok(true) → fail(true) → ok(false, skip)
     assert [r["status"] for r in records] == ["ok", "failed", SKIP_MARK]
@@ -111,6 +122,46 @@ def test_rule_engine_unmatched_alerts(tmp_path):
     assert len(engine.execute_for_payload(
         make_payload(make_alert("UnknownAlert"))
     )) == 0
+
+
+def test_auto_execute_requires_target_instance(tmp_path):
+    """auto_execute=true 但没有目标实例的规则必须整体禁用。"""
+    rules_file = tmp_path / "rules.yaml"
+    rules_file.write_text(_RULES_YAML.replace("    target_instance: h1:9100\n", ""), encoding="utf-8")
+    engine = RuleEngine(
+        executors={"ok_action": OkExecutor(), "fail_action": FailExecutor()},
+        rules_file=rules_file,
+    )
+
+    assert all(not r.auto_execute for r in engine.rules)
+
+
+def test_instance_mismatch_blocks_execution(tmp_path):
+    engine = _engine(tmp_path)
+    executor = engine.executors["ok_action"]
+    records = engine.execute_for_payload(
+        make_payload(make_alert("HighCPUUsage", instance="other:9100"))
+    )
+
+    assert [r["status"] for r in records] == [
+        INSTANCE_MISMATCH_MARK,
+        INSTANCE_MISMATCH_MARK,
+        SKIP_MARK,
+    ]
+    assert executor.executions == []
+
+
+def test_duplicate_webhook_does_not_execute_twice(tmp_path):
+    engine = _engine(tmp_path)
+    executor = engine.executors["ok_action"]
+    payload = make_payload(make_alert("HighCPUUsage", instance="h1:9100"))
+
+    first = engine.execute_for_payload(payload)
+    second = engine.execute_for_payload(payload)
+
+    assert first[0]["status"] == "ok"
+    assert second[0]["status"] == DUPLICATE_MARK
+    assert len(executor.executions) == 1
 
 
 def test_rule_engine_reload_and_missing_file(tmp_path):

@@ -44,7 +44,8 @@ logger = logging.getLogger("ops_agent.storage.db")
 #                    不能只写审计日志——日志会轮转（5 MiB × 3 份）而被冲掉，
 #                    而这张表的 TTL 是 7 天：等你需要回答「那条 unknown 的命令是谁批的」时，
 #                    磁盘上的日志早就转没了，库里那行却还在。
-SCHEMA_VERSION = 4
+#   v5 (2026-09-15)：remediation_claims 自动处置幂等抢占表。
+SCHEMA_VERSION = 5
 
 # 建表语句（幂等）。顺序即执行顺序。
 _DDL: tuple[str, ...] = (
@@ -135,6 +136,17 @@ _DDL: tuple[str, ...] = (
         decided_by  TEXT NOT NULL DEFAULT ''
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS remediation_claims (
+        alert_key    TEXT NOT NULL,
+        action       TEXT NOT NULL,
+        alert_status TEXT NOT NULL,
+        starts_at    TEXT NOT NULL,
+        claimed_at   TEXT NOT NULL,
+        PRIMARY KEY (alert_key, action, alert_status, starts_at)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_remediation_claims_time ON remediation_claims (claimed_at)",
 )
 
 # 建表 / 迁移的进程级锁。正常读写路径不碰它。
@@ -328,6 +340,25 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
         # 而这张表要留住「那条命令是谁批的」，尤其当它落进 `unknown`（结果未知）时。
         conn.execute(
             "ALTER TABLE approval_decisions ADD COLUMN decided_by TEXT NOT NULL DEFAULT ''"
+        )
+
+    if current < 5:
+        # v4 → v5：自动处置执行前的持久化幂等抢占。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS remediation_claims (
+                alert_key    TEXT NOT NULL,
+                action       TEXT NOT NULL,
+                alert_status TEXT NOT NULL,
+                starts_at    TEXT NOT NULL,
+                claimed_at   TEXT NOT NULL,
+                PRIMARY KEY (alert_key, action, alert_status, starts_at)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_remediation_claims_time "
+            "ON remediation_claims (claimed_at)"
         )
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

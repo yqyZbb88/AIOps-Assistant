@@ -104,6 +104,10 @@ class ActionRule(BaseModel):
     alertname: str = Field(..., description="告警规则名，需与 Prometheus 的 alert 字段一致")
     action: str = Field(..., description="config/actions.yaml 写命令目录的 key")
     params: dict[str, Any] = Field(default_factory=dict, description="传给动作的参数")
+    target_instance: str = Field(
+        "",
+        description="该规则允许处置的 Alertmanager instance；auto_execute=true 时必填且必须精确匹配",
+    )
     auto_execute: bool = Field(False, description="true=命中即自动执行；false=仅命中提示")
     description: str = Field("", description="规则用途说明")
 

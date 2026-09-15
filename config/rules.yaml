@@ -6,6 +6,8 @@
 #                  （executor 按 key 取目录项模板，只能从目录里选命令执行）
 #   params       : 传给该命令的参数 = 连接字段（host/port/username/…，密码占位）
 #                  + 该目录命令声明要的语义参数（如 service）；越权/多余参数会被拒
+#   target_instance : 允许本规则处置的 Alertmanager instance；auto_execute=true 时必填。
+#                    运行时必须与告警 labels.instance 精确匹配，防止同名告警触发错主机。
 #   auto_execute : true=收到告警自动执行；false=只命中规则不做动作（仅提示）。
 #                  建议先用 false 跑通「告警→规则命中」再逐个开启 true，避免误操作。
 #   description  : 规则用途说明（给人看的）
@@ -27,6 +29,7 @@ rules:
   #   独立规则（见上方安全约束最后一条）。
   - alertname: HighCPUUsage
     action: restart_service
+    target_instance: 192.168.20.128:9100
     params:
       host: 192.168.20.128
       port: 22
@@ -39,6 +42,7 @@ rules:
 
   - alertname: HighCPUUsage
     action: stop_loadgen
+    target_instance: 192.168.20.128:9100
     params:
       host: 192.168.20.128
       port: 22
@@ -51,6 +55,7 @@ rules:
   # 示例 2：内存使用率过高 → 重启该主机上的 mysql
   - alertname: HighMemoryUsage
     action: restart_service
+    target_instance: 192.168.20.128:9100
     params:
       host: 192.168.20.128
       port: 22
@@ -66,6 +71,7 @@ rules:
   #   脚本需先放到主机上；想换命令请改目录模板，而不是在规则里写自由文本。
   - alertname: HighDiskUsage
     action: cleanup_disk
+    target_instance: 192.168.20.128:9100
     params:
       host: 192.168.20.128
       port: 22

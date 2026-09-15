@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.interfaces.action import ActionError, ActionExecutor
+from src.interfaces.action import ActionError, ActionExecutor, RuleExecutionGuard
 from src.storage.models import ActionRule, Alert, AlertmanagerPayload, RulesFile
 from src.utils.config_loader import ROOT_DIR, interpolate
 from src.utils.security import redact_sensitive
@@ -29,6 +30,8 @@ logger = logging.getLogger("ops_agent.rule_engine")
 
 # 命中规则但 auto_execute=false 的状态标记（与"无规则/执行失败"区分）
 SKIP_MARK = "matched_but_auto_execute_disabled"
+DUPLICATE_MARK = "duplicate_ignored"
+INSTANCE_MISMATCH_MARK = "instance_mismatch"
 
 # 默认规则文件：<仓库根>/config/rules.yaml
 DEFAULT_RULES_FILE: Path = ROOT_DIR / "config" / "rules.yaml"
@@ -36,6 +39,29 @@ DEFAULT_RULES_FILE: Path = ROOT_DIR / "config" / "rules.yaml"
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class _ProcessExecutionGuard:
+    """RuleEngine 默认的单进程幂等守卫。容器启用持久化时会替换成 SQLite 实现。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._claimed: set[tuple[str, str, str, str]] = set()
+
+    def claim(
+        self,
+        *,
+        alert_key: str,
+        action: str,
+        alert_status: str,
+        starts_at: str,
+    ) -> bool:
+        key = (alert_key, action, alert_status, starts_at)
+        with self._lock:
+            if key in self._claimed:
+                return False
+            self._claimed.add(key)
+            return True
 
 
 def _resolve_rules_path(path: str | Path | None) -> Path:
@@ -53,9 +79,11 @@ class RuleEngine:
         self,
         executors: Mapping[str, ActionExecutor] | None = None,
         rules_file: str | Path | None = None,
+        execution_guard: RuleExecutionGuard | None = None,
     ) -> None:
         self.executors: dict[str, ActionExecutor] = dict(executors or {})
         self.rules_file: Path = _resolve_rules_path(rules_file)
+        self.execution_guard: RuleExecutionGuard = execution_guard or _ProcessExecutionGuard()
         self._rules: list[ActionRule] = []
         self.reload_rules()
 
@@ -94,6 +122,16 @@ class RuleEngine:
         if unknown:
             logger.warning("以下动作未注入执行器，对应规则将被忽略: %s", sorted(unknown))
         rules = [r for r in parsed.rules if r.action in self.executors]
+
+        # auto_execute 是高危路径：没有明确目标 instance 的规则一律拒绝启用。
+        # 否则 Prometheus 里来自任意主机的同名告警都可能触发固定目标上的写命令。
+        missing_target = [r for r in rules if r.auto_execute and not r.target_instance]
+        if missing_target:
+            logger.error(
+                "以下 auto_execute 规则缺少 target_instance，已禁用: %s",
+                [f"{r.alertname}->{r.action}" for r in missing_target],
+            )
+            rules = [r for r in rules if not (r.auto_execute and not r.target_instance)]
 
         logger.info(
             "已加载自动处置规则 %d 条: %s",
@@ -150,6 +188,27 @@ class RuleEngine:
         params = dict(rule.params)
         record["action"] = rule.action
         record["params"] = redact_sensitive(params)  # 记录打码副本，日志不含敏感值
+
+        if alert.instance != rule.target_instance:
+            record["status"] = INSTANCE_MISMATCH_MARK
+            record["detail"] = (
+                f"告警实例 {alert.instance!r} 与规则目标 {rule.target_instance!r} 不一致，"
+                "拒绝自动执行"
+            )
+            logger.error("自动处置实例不匹配 %s -> %s: %s", alert.alertname, rule.action, record["detail"])
+            return record
+
+        if not self.execution_guard.claim(
+            alert_key=alert.alert_key,
+            action=rule.action,
+            alert_status=alert.status,
+            starts_at=alert.startsAt,
+        ):
+            record["status"] = DUPLICATE_MARK
+            record["detail"] = "同一告警事件与动作已执行或已被抢占，跳过重复自动处置"
+            logger.warning("自动处置重复事件已跳过 %s -> %s", alert.alertname, rule.action)
+            return record
+
         try:
             result = self.executors[rule.action].execute(params)
             record["status"] = "ok"
@@ -159,6 +218,10 @@ class RuleEngine:
             record["status"] = "failed"
             record["detail"] = f"动作执行失败: {exc}"
             logger.error("自动处置失败 %s -> %s: %s", alert.alertname, rule.action, exc)
+        except Exception as exc:  # noqa: BLE001 - 单条规则异常不能拖垮整批告警
+            record["status"] = "failed"
+            record["detail"] = f"动作执行异常: {exc}"
+            logger.error("自动处置异常 %s -> %s: %s", alert.alertname, rule.action, exc, exc_info=True)
         return record
 
     # -- 无规则告警（LLM 分析对象） ----------------------------------------

@@ -22,7 +22,7 @@ from src.core.agent import OpsAgent
 from src.core.analysis import AlertAnalyzer
 from src.core.chat import ChatService
 from src.core.rule_engine import RuleEngine
-from src.interfaces.action import ActionExecutor
+from src.interfaces.action import ActionExecutor, RuleExecutionGuard
 from src.interfaces.agent_action import AgentActionSource
 from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.llm_client import LLMClient
@@ -47,6 +47,7 @@ class Container:
         self._monitor: MonitorSource | None = None
         self._llm: LLMClient | None = None
         self._executors: dict[str, ActionExecutor] | None = None
+        self._execution_guard: RuleExecutionGuard | None = None
         self._diagnostics: DiagnosticSource | None = None
         self._agent_actions: AgentActionSource | None = None
         self._agent_actions_config = None
@@ -108,6 +109,24 @@ class Container:
             if not self._executors:
                 logger.warning("当前没有任何可用动作执行器，规则自动处置将全部失效")
         return self._executors
+
+    def execution_guard(self) -> RuleExecutionGuard:
+        """自动处置幂等守卫；SQLite 可用时跨重启，否则退回进程内。
+
+        存储打开失败属于常见降级路径，此时仍必须做进程内幂等，不能因为 DB 故障
+        把重复 webhook 变成重复写命令。
+        """
+        if self._execution_guard is None:
+            from src.storage.remediation_guard import (
+                InMemoryRuleExecutionGuard,
+                SqliteRuleExecutionGuard,
+            )
+
+            db = self._database()
+            self._execution_guard = (
+                SqliteRuleExecutionGuard(db) if db is not None else InMemoryRuleExecutionGuard()
+            )
+        return self._execution_guard
 
     def diagnostics(self) -> DiagnosticSource | None:
         """只读诊断源；config/diagnostics.yaml 缺失/关闭/未装 paramiko → None（Agent 不加诊断工具）。
@@ -341,7 +360,9 @@ class Container:
         monitor = self.monitor()
         llm = self.llm()
 
-        rule_engine = RuleEngine(executors=self.executors())
+        rule_engine = RuleEngine(
+            executors=self.executors(), execution_guard=self.execution_guard()
+        )
         chat_service = ChatService(
             monitor=monitor,
             assistant_factory=self._assistant_factory,
