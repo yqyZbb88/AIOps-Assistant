@@ -11,7 +11,7 @@
 > - [README.md](./README.md)：结构树 / 分层职责 / 配置 / 启动 / 安装 / 扩展指南（**权威结构文档**，
 >   目录树只此一份，本文件不再复制，避免两处对不上）；
 > - **本文件**：硬性约束 / 安全不变量 / 已踩的坑 / 既定决策 / 路线图待办 / 验证方式；
-> - [docs/database.md](./docs/database.md)：SQLite 库结构详解（六张表逐字段含义、表间关系、
+> - [docs/database.md](./docs/database.md)：SQLite 库结构详解（七张表逐字段含义、表间关系、
 >   常用查询、清理与迁移规则）。**改表结构时同步它。**
 > - [docs/auth.md](./docs/auth.md)：鉴权与密钥（本项目的密钥清单、生成、配法、用法、
 >   Alertmanager 侧配置、故障排查）。**改鉴权行为时同步它。**
@@ -136,7 +136,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   只读诊断与写命令共用 `plugins/common`（endpoint/ssh/audit/cmddef）内核，两条入口/边界分离；
   规则表外的告警 → LLM 根因假设与建议（`[AI 分析]`），分析失败仅记日志不阻塞。
 - **对话历史 + 多轮对话**（M4 第一/二批，2026-09-11）：[src/storage/db.py](src/storage/db.py)
-  从空 TODO 占位变成真实现（连接工厂 + 六张表 + `PRAGMA user_version` 双向校验）；
+  从空 TODO 占位变成真实现（连接工厂 + 当前七张表 + `PRAGMA user_version` 双向校验，当前 schema v5）；
   [src/storage/session.py](src/storage/session.py) 提供会话/消息读写（SQLite + 内存两套实现）；
   `/chat` 支持多轮（传回上次的 `session_id` 即带上历史，**路线 B**：历史表是唯一真相、
   每轮新 thread_id、checkpointer 仍只当审批草稿纸）；`/sessions` 三个端点可查可删；
@@ -162,7 +162,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   **fail-closed**：要豁免必须显式写出来，目前只有 `GET /health`。
   身份由**密钥**推出（服务端事实），请求体里自报的用户名一律不采信。
   `auth.enabled` 的 dataclass 默认是 **false**（同 `storage.enabled`：
-  `create_app(settings=Settings())` 在测试里被调多次）；yaml 出厂也是 false。
+  `create_app(settings=Settings())` 在测试里被调多次）；yaml 出厂现已为 true；直接构造 `Settings()` 的测试默认仍是 false。
   `enabled: true` 却解析不出任何密钥 → **拒绝启动**（绝不「空密钥 = 放行」）。
   **`POST /alert` 另有一层授权**（2026-09-13）：身份必须是 `auth.alert_identity`
   （默认 `alertmanager`），其他有效密钥 → **403**。因为这条路径把告警喂给 `RuleEngine`，
@@ -202,6 +202,16 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   不匹配一律 **404**（不是 403），不泄露「这个 id 存在，只是不是你的」。
   建会话只认 `POST /sessions`（`/chat` 的 `session_id` 是必填字段），改名走 `PATCH`，
   删除时**归属检查排在作废审批之前**（`cancel_pending` 不可逆）。
+
+- **生产化加固（2026-09-15）**：
+  - 审批 `pop()` 加锁并原子化，避免并发重复续跑写命令；
+  - settings 严格拒绝未知字段和非法布尔值，配置缺失/损坏不再静默回退到无鉴权；
+  - SSH 默认 `RejectPolicy` + known_hosts，未知主机不再 `AutoAddPolicy`；
+  - 自动处置增加 `target_instance` 精确校验和 SQLite 幂等抢占（schema v5 `remediation_claims`）；
+  - `/health` 同时反映会话与归档存储降级；
+  - 增加 `agent.enabled`、递归上限、聊天消息上限、模型超时/重试/Token 上限；
+  - `auth.approval_mode=approvers_only` 支持审批职责分离；
+  - CI + pyproject 测试配置 + 文档同步。
 
 ### 分层边界（一句话版；完整目录树见 [README.md](./README.md)）
 
