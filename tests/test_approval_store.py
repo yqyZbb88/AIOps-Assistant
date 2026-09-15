@@ -1,6 +1,9 @@
 """ApprovalStore：有界、单次性、会过期的待审批缓冲（离线，clock 可注入）。"""
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from src.interfaces.approval import PendingApproval, may_decide
@@ -44,6 +47,51 @@ def test_pop_is_single_use():
     store.add(_rec("a"))
     assert store.pop("a") is not None
     assert store.pop("a") is None, "同一 id 不能取出两次（防重放）"
+
+
+
+def test_pop_is_atomic_under_concurrency():
+    """并发提交同一个审批时，pop 必须只让一个线程拿到记录。
+
+    回归背景：``get()`` + ``_drop()`` 两步在没有锁时都可被并发穿过，
+    两个请求会同时续跑同一条写命令。这里用事件把第一个 pop 卡在审批锁内，
+    确认第二个 pop 不会提前返回。
+    """
+    store = ApprovalStore()
+    store.add(_rec("a"))
+    entered = threading.Event()
+    release = threading.Event()
+    results: list[dict | None] = []
+    errors: list[BaseException] = []
+
+    original_clock = store._clock
+
+    def blocking_clock() -> float:
+        entered.set()
+        assert release.wait(timeout=2), "测试未释放审批锁"
+        return original_clock()
+
+    store._clock = blocking_clock
+
+    def worker() -> None:
+        try:
+            results.append(store.pop("a"))
+        except BaseException as exc:  # pragma: no cover - 测试线程兜底
+            errors.append(exc)
+
+    first = threading.Thread(target=worker)
+    second = threading.Thread(target=worker)
+    first.start()
+    assert entered.wait(timeout=1), "第一个线程未进入 pop"
+    second.start()
+    time.sleep(0.05)
+    assert second.is_alive(), "第二个线程应在审批锁外等待，而不是同时进入 pop"
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not errors
+    assert sorted(r is not None for r in results) == [False, True]
 
 
 def test_get_unknown_returns_none():

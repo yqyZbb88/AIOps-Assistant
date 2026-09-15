@@ -20,6 +20,7 @@ clock 可注入，便于离线单测过期逻辑（默认取系统时间）。
 from __future__ import annotations
 
 import logging
+import threading
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -46,6 +47,9 @@ class ApprovalStore:
         self.maxlen = max(maxlen, 1)
         self.ttl_seconds = max(int(ttl_seconds), 1)
         self._clock = clock or (lambda: datetime.now(timezone.utc).timestamp())
+        # 所有公开操作共用一把可重入锁。pop 必须是原子的：get() + _drop()
+        # 若让并发请求同时穿过，同一个 approval_id 会被返回两次并重复续跑写命令。
+        self._lock = threading.RLock()
         self._records: dict[str, dict[str, Any]] = {}
         self._order: deque[str] = deque()
 
@@ -62,37 +66,44 @@ class ApprovalStore:
         record.setdefault("created_at", _now_iso())
         record["_expires_at"] = self._clock() + self.ttl_seconds
 
-        evicted: dict[str, Any] | None = None
-        while len(self._order) >= self.maxlen:
-            oldest = self._order.popleft()
-            dropped = self._records.pop(oldest, None)
-            logger.warning("待审批队列已满，淘汰最旧的一条: %s（该写命令不会执行）", oldest)
-            if evicted is None:
-                # 兜底：记录已被别处移除时至少给出 id，避免返回 None 让调用方以为没淘汰
-                evicted = dropped if dropped is not None else {"approval_id": oldest}
-        self._records[approval_id] = record
-        self._order.append(approval_id)
-        return evicted
+        with self._lock:
+            evicted: dict[str, Any] | None = None
+            while len(self._order) >= self.maxlen:
+                oldest = self._order.popleft()
+                dropped = self._records.pop(oldest, None)
+                logger.warning("待审批队列已满，淘汰最旧的一条: %s（该写命令不会执行）", oldest)
+                if evicted is None:
+                    # 兜底：记录已被别处移除时至少给出 id，避免返回 None 让调用方以为没淘汰
+                    evicted = dropped if dropped is not None else {"approval_id": oldest}
+            self._records[approval_id] = record
+            self._order.append(approval_id)
+            return evicted
 
     # -- 读取 --------------------------------------------------------------
     def get(self, approval_id: str) -> dict[str, Any] | None:
         """按 id 取记录（不删除）；不存在或已过期返回 None。"""
-        rec = self._records.get(approval_id)
-        if rec is None:
-            return None
-        if rec.get("_expires_at", 0) <= self._clock():
-            self._drop(approval_id)
-            logger.info("待审批项已过期，作废: %s（该写命令不会执行）", approval_id)
-            return None
-        return rec
+        with self._lock:
+            rec = self._records.get(approval_id)
+            if rec is None:
+                return None
+            if rec.get("_expires_at", 0) <= self._clock():
+                self._drop_locked(approval_id)
+                logger.info("待审批项已过期，作废: %s（该写命令不会执行）", approval_id)
+                return None
+            return rec
 
     def pop(self, approval_id: str) -> dict[str, Any] | None:
         """取出并删除（**单次性**）；不存在/已过期返回 None。"""
-        rec = self.get(approval_id)
-        if rec is None:
-            return None
-        self._drop(approval_id)
-        return rec
+        with self._lock:
+            rec = self._records.get(approval_id)
+            if rec is None:
+                return None
+            if rec.get("_expires_at", 0) <= self._clock():
+                self._drop_locked(approval_id)
+                logger.info("待审批项已过期，作废: %s（该写命令不会执行）", approval_id)
+                return None
+            self._drop_locked(approval_id)
+            return rec
 
     def remove(self, approval_id: str) -> dict[str, Any] | None:
         """无条件删除并返回该记录（**作废**语义，与 get/pop 的区别是不做过期判定）。
@@ -104,28 +115,36 @@ class ApprovalStore:
         """
         # 直接查 _records 而**不走 get()**：get() 对已过期的一律返回 None，
         # 那样过期项既删不掉、调用方也拿不到 thread_id 去清线程。这里要的就是「无论如何删掉它」。
-        record = self._records.get(approval_id)
-        if record is None:
-            return None
-        self._drop(approval_id)
-        return record
+        with self._lock:
+            record = self._records.get(approval_id)
+            if record is None:
+                return None
+            self._drop_locked(approval_id)
+            return record
 
     def list(self) -> list[dict[str, Any]]:
         """当前待审批记录，新的在前（顺带清理已过期的）。"""
-        self.purge_expired()
-        return [self._records[i] for i in reversed(self._order) if i in self._records]
+        with self._lock:
+            self._purge_expired_locked()
+            return [self._records[i] for i in reversed(self._order) if i in self._records]
 
     def purge_expired(self) -> list[dict[str, Any]]:
         """清理所有已过期记录，返回被清理的记录（供调用方 delete_thread）。"""
+        with self._lock:
+            return self._purge_expired_locked()
+
+    # -- 内部 --------------------------------------------------------------
+    def _purge_expired_locked(self) -> list[dict[str, Any]]:
+        """已持锁时清理过期项；调用方不得在未持锁状态下调用。"""
         now = self._clock()
         expired = [r for r in self._records.values() if r.get("_expires_at", 0) <= now]
         for rec in expired:
-            self._drop(rec["approval_id"])
+            self._drop_locked(rec["approval_id"])
             logger.info("待审批项已过期，作废: %s（该写命令不会执行）", rec["approval_id"])
         return expired
 
-    # -- 内部 --------------------------------------------------------------
-    def _drop(self, approval_id: str) -> None:
+    def _drop_locked(self, approval_id: str) -> None:
+        """已持锁时删除记录与顺序项。"""
         self._records.pop(approval_id, None)
         try:
             self._order.remove(approval_id)
@@ -133,4 +152,5 @@ class ApprovalStore:
             pass
 
     def __len__(self) -> int:
-        return len(self._records)
+        with self._lock:
+            return len(self._records)
