@@ -1,6 +1,6 @@
 # 数据库结构说明
 
-本文档说明 ops-agent 的 SQLite 持久化库：**七张表、每个字段的含义、以及它们之间的关系**。
+本文档说明 ops-agent 的 SQLite 持久化库：**八张表、每个字段的含义、以及它们之间的关系**。
 
 > 实现代码见 [src/storage/db.py](../src/storage/db.py)（建表与连接）与
 > [src/storage/session.py](../src/storage/session.py)、[src/storage/history.py](../src/storage/history.py)（读写）。
@@ -16,7 +16,7 @@
 | 位置 | 默认 `data/ops_agent.db`（相对仓库根，由 `storage.db_path` 配置） |
 | 伴生文件 | WAL 模式下同目录会有 `ops_agent.db-wal` 与 `ops_agent.db-shm`（**同样是运行时产物，不要提交**） |
 | 日志模式 | `wal`（同步盘/网络盘上开不起来时自动回落 `delete`，不影响使用） |
-| schema 版本 | 当前 **v5**，记在 `PRAGMA user_version` 里 |
+| schema 版本 | 当前 **v6**，记在 `PRAGMA user_version` 里 |
 | 总开关 | `storage.enabled`。关掉 / 打不开 → **服务照常启动**，只是不落盘，行为与引入本功能前完全一致 |
 | 清理 | TTL + 容量上限，**惰性 + 节流**触发（写入时顺带，默认 60 秒最多一次），无后台线程 |
 
@@ -42,7 +42,7 @@ sqlite> .quit
 
 ## 二、表之间的关系
 
-七张表分成三条业务线：对话、告警状态日志、执行/审批台账；各业务线之间没有外键关联。
+八张表分成三条业务线：对话、告警与巡检状态、执行/审批台账；各业务线之间没有外键关联。
 
 ### 第一组：对话（2 张）
 
@@ -85,6 +85,11 @@ alert_key = fingerprint（若告警带了）否则 "告警名|实例|开始时�
 它是自动处置的幂等抢占表：同一告警事件的同一动作在数据库中只能成功抢占一次。
 Alertmanager 重投 webhook、多 worker 同时处理时，只有第一个 `INSERT OR IGNORE`
 成功者可以执行写命令。它不参与告警、处置、AI 建议三表的关联查询。
+
+### `inspection_runs`（独立的一张）
+
+它记录**异常轮次**的固定指标巡检结果。`normal` 轮次只写日志、不写数据库。每一列异常
+都会保留一条记录，便于查看某一段时间内 CPU、内存、磁盘或活动告警持续异常的历史。
 
 ---
 
@@ -311,6 +316,19 @@ ORDER BY d.decided_at DESC;
 
 四列组成联合主键。规则引擎在执行写命令前先抢占；抢占失败或数据库异常时一律不执行，
 不会因为存储故障而退化成重复执行。
+
+### `inspection_runs` —— 固定指标巡检异常归档
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `id` | INTEGER 主键 | 自增记录 id |
+| `checked_at` | TEXT | 本轮巡检时间（UTC） |
+| `level` | TEXT | `warning` / `critical` / `error`，normal 不落库 |
+| `snapshot_json` | TEXT | CPU、内存、磁盘、活动告警的结构化快照 |
+| `findings_json` | TEXT | 超出阈值或查询失败的明细列表 |
+| `error_text` | TEXT | 查询失败、无数据等错误汇总 |
+
+查询接口为 `GET /inspections/recent?limit=`；授权要求与其它业务接口一致。
 
 ## 五、常见查询
 

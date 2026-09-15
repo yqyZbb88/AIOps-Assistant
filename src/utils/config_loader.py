@@ -4,7 +4,7 @@
 - 读取 config/settings.yaml，把字符串值里的 `${VAR}` / `${VAR:-default}`
   占位替换为环境变量（或默认值），代码不再硬编码可变参数 / 密钥；
 - 解析成嵌套的 `Settings` dataclass，各层代码按需取用；
-- 容错回退：配置文件缺失 / pyyaml 未安装时返回全默认值，服务照常启动。
+- 严格校验：配置文件缺失、pyyaml 未安装、未知字段或类型错误时抛 ConfigError，拒绝不确定启动。
 
 敏感信息约束：本模块只做字符串替换，绝不在配置里产生明文密钥来源；
 真实密钥只存在于 .env / 环境变量（见 README「安全说明」）。
@@ -12,9 +12,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, get_type_hints
 
@@ -91,6 +92,50 @@ class AlertSettings:
 
 
 @dataclass(frozen=True)
+class PercentageCheckSettings:
+    """百分比指标的巡检阈值。"""
+
+    enabled: bool = True
+    warning: float = 80.0
+    critical: float = 90.0
+
+
+@dataclass(frozen=True)
+class ActiveAlertCheckSettings:
+    """活动告警巡检阈值；数量包含 pending + firing。"""
+
+    enabled: bool = True
+    warning_count: int = 1
+    critical_count: int = 3
+
+
+@dataclass(frozen=True)
+class InspectionChecksSettings:
+    cpu: PercentageCheckSettings = field(default_factory=PercentageCheckSettings)
+    memory: PercentageCheckSettings = field(
+        default_factory=lambda: PercentageCheckSettings(warning=85.0, critical=95.0)
+    )
+    disk: PercentageCheckSettings = field(default_factory=PercentageCheckSettings)
+    active_alerts: ActiveAlertCheckSettings = field(default_factory=ActiveAlertCheckSettings)
+
+
+@dataclass(frozen=True)
+class InspectionSettings:
+    """固定指标巡检配置。
+
+    dataclass 默认关闭，避免 `Settings()` / `create_app(Settings())` 在测试或嵌入式
+    调用中意外启动后台线程。`config/settings.yaml` 才决定出厂是否开启。
+    """
+
+    enabled: bool = False
+    interval_seconds: int = 300
+    run_on_start: bool = True
+    ttl_hours: int = 168
+    max_rows: int = 1000
+    checks: InspectionChecksSettings = field(default_factory=InspectionChecksSettings)
+
+
+@dataclass(frozen=True)
 class StorageSettings:
     """SQLite 持久化配置。
 
@@ -152,6 +197,9 @@ class LoggingSettings:
     audit_file: str = ""
     audit_max_bytes: int = 5 * 1024 * 1024
     audit_backup_count: int = 3
+    inspection_file: str = ""
+    inspection_max_bytes: int = 5 * 1024 * 1024
+    inspection_backup_count: int = 3
 
 
 @dataclass(frozen=True)
@@ -166,6 +214,7 @@ class Settings:
     agent: AgentSettings = AgentSettings()
     alert: AlertSettings = AlertSettings()
     chat: ChatSettings = ChatSettings()
+    inspection: InspectionSettings = InspectionSettings()
     storage: StorageSettings = StorageSettings()
     logging: LoggingSettings = LoggingSettings()
     auth: AuthSettings = AuthSettings()
@@ -181,6 +230,7 @@ _SUB_MODELS: dict[str, type] = {
     "agent": AgentSettings,
     "alert": AlertSettings,
     "chat": ChatSettings,
+    "inspection": InspectionSettings,
     "storage": StorageSettings,
     "logging": LoggingSettings,
     "auth": AuthSettings,
@@ -248,44 +298,80 @@ def _as_scalar(value: Any, typ: type, *, what: str) -> Any:
             return int(value)
         except (TypeError, ValueError) as exc:
             raise ConfigError(f"{what} 必须是整数，得到: {value!r}") from exc
+    if typ is float:
+        if isinstance(value, bool):
+            raise ConfigError(f"{what} 必须是数字，得到: {value!r}")
+        try:
+            result = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"{what} 必须是数字，得到: {value!r}") from exc
+        if not math.isfinite(result):
+            raise ConfigError(f"{what} 必须是有限数字，得到: {value!r}")
+        return result
     try:
         return typ(value)
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{what} 类型无效，得到: {value!r}") from exc
 
 
-def _build_settings(data: dict[str, Any]) -> Settings:
-    """从解析后的 dict 构造 Settings；缺节时用默认，未知字段一律拒绝。"""
-    unknown_top = set(data) - set(_SUB_MODELS)
-    if unknown_top:
-        raise ConfigError(
-            "settings.yaml 存在未知顶层配置: " + ", ".join(sorted(unknown_top))
-        )
+def _build_dataclass(model_type: type, data: Any, *, prefix: str) -> Any:
+    """递归构造严格配置 dataclass；未知键、类型错误与缺失映射直接报错。"""
+    if not isinstance(data, dict):
+        raise ConfigError(f"配置节 {prefix or '<root>'} 必须是映射，得到: {data!r}")
+    hints = get_type_hints(model_type)
+    allowed = {f.name for f in fields(model_type)}
+    unknown = set(data) - allowed
+    if unknown:
+        where = f"配置节 {prefix}" if prefix else "settings.yaml"
+        raise ConfigError(f"{where} 存在未知字段: " + ", ".join(sorted(unknown)))
 
     kwargs: dict[str, Any] = {}
-    for key, model_type in _SUB_MODELS.items():
-        section = data.get(key)
-        if section is None:
-            kwargs[key] = model_type()  # 缺节 → 默认值
+    for f in fields(model_type):
+        if f.name not in data:
             continue
-        if not isinstance(section, dict):
-            raise ConfigError(f"配置节 {key} 必须是映射，得到: {section!r}")
-        hints = get_type_hints(model_type)
-        allowed = {f.name for f in fields(model_type)}
-        unknown = set(section) - allowed
-        if unknown:
-            raise ConfigError(
-                f"配置节 {key} 存在未知字段: " + ", ".join(sorted(unknown))
-            )
-        kwargs[key] = model_type(
-            **{
-                f.name: _as_scalar(section[f.name], hints[f.name], what=f"{key}.{f.name}")
-                for f in fields(model_type)
-                if f.name in section
-            }
-        )
-    return Settings(**kwargs)
+        value = data[f.name]
+        typ = hints[f.name]
+        child_prefix = f"{prefix}.{f.name}" if prefix else f.name
+        if hasattr(typ, "__dataclass_fields__"):
+            kwargs[f.name] = _build_dataclass(typ, value, prefix=child_prefix)
+        else:
+            kwargs[f.name] = _as_scalar(value, typ, what=child_prefix)
+    return model_type(**kwargs)
 
+
+def _validate_settings(settings: Settings) -> None:
+    """跨字段配置约束；只在服务启动加载时执行。"""
+    ins = settings.inspection
+    if not 30 <= ins.interval_seconds <= 86400:
+        raise ConfigError("inspection.interval_seconds 必须在 30~86400 秒之间")
+    if ins.ttl_hours < 1:
+        raise ConfigError("inspection.ttl_hours 必须大于等于 1")
+    if ins.max_rows < 1:
+        raise ConfigError("inspection.max_rows 必须大于等于 1")
+
+    checks = ins.checks
+    if ins.enabled and not any(
+        (checks.cpu.enabled, checks.memory.enabled, checks.disk.enabled, checks.active_alerts.enabled)
+    ):
+        raise ConfigError("inspection.enabled=true 时至少启用一个巡检指标")
+
+    for name, check in (("cpu", checks.cpu), ("memory", checks.memory), ("disk", checks.disk)):
+        if not 0 <= check.warning < check.critical <= 100:
+            raise ConfigError(
+                f"inspection.checks.{name} 必须满足 0 <= warning < critical <= 100"
+            )
+    alerts = checks.active_alerts
+    if alerts.warning_count < 1 or alerts.critical_count <= alerts.warning_count:
+        raise ConfigError(
+            "inspection.checks.active_alerts 必须满足 1 <= warning_count < critical_count"
+        )
+
+
+def _build_settings(data: dict[str, Any]) -> Settings:
+    """从解析后的 dict 递归构造严格 Settings。"""
+    settings = _build_dataclass(Settings, data, prefix="")
+    _validate_settings(settings)
+    return settings
 
 # ---------------------------------------------------------------------------
 # 加载入口

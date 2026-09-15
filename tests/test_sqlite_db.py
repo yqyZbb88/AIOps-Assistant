@@ -16,6 +16,7 @@ _EXPECTED_TABLES = {
     "ai_advice",
     "approval_decisions",
     "remediation_claims",
+    "inspection_runs",
 }
 
 
@@ -98,6 +99,29 @@ def test_v4_db_gains_remediation_claims(tmp_path):
     assert migrated is not None
     assert _user_version(path) == SCHEMA_VERSION
     assert "remediation_claims" in _tables(path)
+
+
+def test_inspection_runs_columns_are_exact(tmp_path):
+    db = open_database(tmp_path / "ops.db")
+    cols = {r["name"] for r in db.query("PRAGMA table_info(inspection_runs)")}
+    assert cols == {
+        "id", "checked_at", "level", "snapshot_json", "findings_json", "error_text"
+    }
+
+
+def test_v5_db_gains_inspection_runs(tmp_path):
+    """v5 → v6：旧库升级后必须有异常巡检归档表。"""
+    path = tmp_path / "ops.db"
+    open_database(path)
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("DROP TABLE inspection_runs")
+        conn.execute("PRAGMA user_version = 5")
+
+    migrated = open_database(path)
+
+    assert migrated is not None
+    assert _user_version(path) == SCHEMA_VERSION
+    assert "inspection_runs" in _tables(path)
 
 
 def test_v3_db_gains_decided_by(tmp_path):

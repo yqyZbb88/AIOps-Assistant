@@ -27,6 +27,7 @@ from src.interfaces.agent_action import AgentActionSource
 from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.history import HistoryStore
+from src.interfaces.inspection import InspectionStore
 from src.interfaces.monitor import MonitorSource
 from src.interfaces.session import SessionStore
 from src.registry import registry
@@ -55,6 +56,9 @@ class Container:
         self._sessions_ready = False
         self._history: HistoryStore | None = None
         self._history_ready = False
+        self._inspection_store: InspectionStore | None = None
+        self._inspection_store_ready = False
+        self._inspection_scheduler = None
         self._db: Database | None = None
         self._db_ready = False
 
@@ -286,6 +290,36 @@ class Container:
             purge_interval_seconds=cfg.purge_interval_seconds,
         )
         return self._history
+
+    def inspection_store(self) -> InspectionStore | None:
+        """异常巡检归档；存储关闭或 SQLite 不可用时返回 None，巡检日志照常。"""
+        if self._inspection_store_ready:
+            return self._inspection_store
+        self._inspection_store_ready = True
+        db = self._database()
+        if db is None:
+            return None
+        from src.storage.inspection import SqliteInspectionStore
+
+        cfg = self.settings.inspection
+        self._inspection_store = SqliteInspectionStore(
+            db,
+            ttl_seconds=cfg.ttl_hours * 3600,
+            max_rows=cfg.max_rows,
+        )
+        return self._inspection_store
+
+    def inspection_scheduler(self):
+        """构造并缓存单进程巡检调度器。"""
+        if self._inspection_scheduler is None:
+            from src.core.inspection import InspectionChecker, InspectionScheduler
+
+            self._inspection_scheduler = InspectionScheduler(
+                InspectionChecker(self.monitor(), self.settings.inspection),
+                self.settings.inspection,
+                store=self.inspection_store(),
+            )
+        return self._inspection_scheduler
 
     @staticmethod
     def _reconcile_pending(store: SessionStore) -> None:

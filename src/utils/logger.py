@@ -17,11 +17,14 @@ from typing import Any
 
 # 审计日志专用 logger 名：动作执行器在其 execute 前后写入
 AUDIT_LOGGER_NAME = "ops_agent.audit"
+# 固定指标巡检专用 logger：每轮写一条汇总，并可选落到独立轮转文件。
+INSPECTION_LOGGER_NAME = "ops_agent.inspection"
 
 _FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 # 打在文件 handler 上的标记属性：用于**幂等判断**（见 _attach_audit_file）
 _FILE_HANDLER_TAG = "_ops_agent_audit_file"
+_INSPECTION_FILE_HANDLER_TAG = "_ops_agent_inspection_file"
 
 DEFAULT_AUDIT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_AUDIT_BACKUP_COUNT = 3
@@ -34,6 +37,9 @@ def configure_logging(
     audit_file: str = "",
     audit_max_bytes: int = DEFAULT_AUDIT_MAX_BYTES,
     audit_backup_count: int = DEFAULT_AUDIT_BACKUP_COUNT,
+    inspection_file: str = "",
+    inspection_max_bytes: int = DEFAULT_AUDIT_MAX_BYTES,
+    inspection_backup_count: int = DEFAULT_AUDIT_BACKUP_COUNT,
 ) -> None:
     """配置根日志级别、审计通道与审计文件（幂等；重复调用只调整级别/补挂文件）。
 
@@ -41,6 +47,7 @@ def configure_logging(
     - audit=False：把 ops_agent.audit 提到 WARNING，仅失败/异常进审计，静默成功执行
       （**语义不变**：这不是「关闭审计」）；
     - audit_file：审计日志落盘路径（相对仓库根）；空串 = 只进 console，不落文件。
+    - inspection_file：巡检全量汇总日志路径；空串 = 只进 console。
     """
     logging.basicConfig(
         level=getattr(logging, str(level).upper(), logging.INFO),
@@ -58,23 +65,31 @@ def configure_logging(
             max_bytes=audit_max_bytes, backup_count=audit_backup_count,
         )
 
+    inspection_logger = logging.getLogger(INSPECTION_LOGGER_NAME)
+    inspection_logger.setLevel(logging.NOTSET)  # 跟随根级别，同时传播到 console
+    if inspection_file:
+        _attach_inspection_file(
+            inspection_logger,
+            inspection_file,
+            max_bytes=inspection_max_bytes,
+            backup_count=inspection_backup_count,
+        )
 
-def _attach_audit_file(
-    audit_logger: logging.Logger, path: str, *, max_bytes: int, backup_count: int
+
+def _attach_rotating_file(
+    target_logger: logging.Logger,
+    path: str,
+    *,
+    max_bytes: int,
+    backup_count: int,
+    tag: str,
+    description: str,
 ) -> None:
-    """给审计 logger 挂一个轮转文件 handler（**幂等**）。
-
-    三个必须处理的点：
-    1. **幂等**：`configure_logging` 每次 `create_app` 都会被调用（测试里几十次），
-       无条件 `addHandler` 会让每条审计写 N 遍，且 N 个 handler 争抢同一文件——
-       Windows 上轮转 rename 会直接 PermissionError。故按路径查重。
-    2. **建父目录**：`RotatingFileHandler` **不会**创建父目录，`logs/` 不存在时直接抛。
-    3. **delay=True**：延迟到第一条日志才真正开文件，避免启动即占用句柄（便于删库/清理）。
-    """
+    """给指定 logger 幂等挂一个轮转文件 handler。"""
     target = str(path)
-    for handler in audit_logger.handlers:
-        if getattr(handler, _FILE_HANDLER_TAG, None) == target:
-            return  # 已挂过，跳过
+    for handler in target_logger.handlers:
+        if getattr(handler, tag, None) == target:
+            return
 
     from src.utils.config_loader import ROOT_DIR  # 同层依赖，避免顶层循环
 
@@ -83,24 +98,64 @@ def _attach_audit_file(
         log_path = ROOT_DIR / log_path
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:  # 落盘失败不该拖垮服务：退化成只进 console
+    except OSError as exc:
         logging.getLogger("ops_agent.logger").error(
-            "无法创建审计日志目录 %s，审计仅输出到控制台: %s", log_path.parent, exc
+            "无法创建%s目录 %s，仅输出到控制台: %s", description, log_path.parent, exc
         )
         return
 
     handler = RotatingFileHandler(
-        log_path, maxBytes=max(int(max_bytes), 1), backupCount=max(int(backup_count), 0),
-        encoding="utf-8", delay=True,
+        log_path,
+        maxBytes=max(int(max_bytes), 1),
+        backupCount=max(int(backup_count), 0),
+        encoding="utf-8",
+        delay=True,
     )
     handler.setFormatter(logging.Formatter(_FORMAT))
-    setattr(handler, _FILE_HANDLER_TAG, target)
-    audit_logger.addHandler(handler)
+    setattr(handler, tag, target)
+    target_logger.addHandler(handler)
+
+
+def _attach_audit_file(
+    audit_logger: logging.Logger, path: str, *, max_bytes: int, backup_count: int
+) -> None:
+    """给审计 logger 挂文件 handler（幂等）。"""
+    _attach_rotating_file(
+        audit_logger,
+        path,
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+        tag=_FILE_HANDLER_TAG,
+        description="审计日志",
+    )
+
+
+def _attach_inspection_file(
+    inspection_logger: logging.Logger,
+    path: str,
+    *,
+    max_bytes: int,
+    backup_count: int,
+) -> None:
+    """给巡检 logger 挂独立轮转文件 handler（幂等）。"""
+    _attach_rotating_file(
+        inspection_logger,
+        path,
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+        tag=_INSPECTION_FILE_HANDLER_TAG,
+        description="巡检日志",
+    )
 
 
 def get_audit_logger() -> logging.Logger:
     """返回动作审计 logger（见 AUDIT_LOGGER_NAME）。"""
     return logging.getLogger(AUDIT_LOGGER_NAME)
+
+
+def get_inspection_logger() -> logging.Logger:
+    """返回固定指标巡检 logger（见 INSPECTION_LOGGER_NAME）。"""
+    return logging.getLogger(INSPECTION_LOGGER_NAME)
 
 
 def write_audit(record: dict[str, Any], *, level: int = logging.INFO) -> None:

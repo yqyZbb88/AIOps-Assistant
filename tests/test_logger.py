@@ -9,7 +9,9 @@ import pytest
 
 from src.utils.logger import (
     _FILE_HANDLER_TAG,
+    _INSPECTION_FILE_HANDLER_TAG,
     AUDIT_LOGGER_NAME,
+    INSPECTION_LOGGER_NAME,
     configure_logging,
     write_audit,
 )
@@ -36,6 +38,23 @@ def _isolate_audit_handlers():
             handler.close()
     for handler in saved:
         audit_logger.addHandler(handler)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_inspection_handlers():
+    """巡检 logger 同样是全局状态，逐用例隔离。"""
+    target = logging.getLogger(INSPECTION_LOGGER_NAME)
+    saved = list(target.handlers)
+    for handler in saved:
+        if getattr(handler, _INSPECTION_FILE_HANDLER_TAG, None):
+            target.removeHandler(handler)
+    yield
+    for handler in list(target.handlers):
+        target.removeHandler(handler)
+        if handler not in saved:
+            handler.close()
+    for handler in saved:
+        target.addHandler(handler)
 
 
 def _file_handlers() -> list:
@@ -101,6 +120,40 @@ def test_different_path_gets_its_own_handler(tmp_path):
     configure_logging(level="INFO", audit=True, audit_file=str(tmp_path / "b.log"))
 
     assert len(_file_handlers()) == 2
+
+
+def _inspection_file_handlers() -> list:
+    return [
+        h for h in logging.getLogger(INSPECTION_LOGGER_NAME).handlers
+        if getattr(h, _INSPECTION_FILE_HANDLER_TAG, None)
+    ]
+
+
+def test_inspection_file_is_separate_and_written(tmp_path):
+    target = tmp_path / "logs" / "inspection.log"
+    configure_logging(
+        level="INFO",
+        audit=True,
+        audit_file="",
+        inspection_file=str(target),
+    )
+
+    logging.getLogger(INSPECTION_LOGGER_NAME).warning("巡检唯一标记")
+
+    assert target.is_file()
+    assert "巡检唯一标记" in target.read_text(encoding="utf-8")
+    assert _inspection_file_handlers()
+
+
+def test_inspection_handler_is_idempotent(tmp_path):
+    target = tmp_path / "inspection.log"
+    configure_logging(level="INFO", audit=True, inspection_file=str(target))
+    configure_logging(level="INFO", audit=True, inspection_file=str(target))
+
+    logging.getLogger(INSPECTION_LOGGER_NAME).warning("巡检幂等标记")
+
+    assert len(_inspection_file_handlers()) == 1
+    assert target.read_text(encoding="utf-8").count("巡检幂等标记") == 1
 
 
 # -- 既有语义不变 -------------------------------------------------------------

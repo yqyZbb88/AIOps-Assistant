@@ -39,6 +39,30 @@ alert:
   trend_minutes: 60        # 告警 AI 分析时取的实例历史趋势窗口（分钟）
   trend_step: "5m"         # 趋势采点步长
 
+inspection:
+  enabled: true            # 是否启动固定指标周期巡检；仅支持单 worker
+  interval_seconds: 300    # 全局巡检间隔（30~86400 秒）
+  run_on_start: true       # 服务启动后立即巡检一次
+  ttl_hours: 168           # 异常巡检归档保留时长
+  max_rows: 1000           # 异常巡检归档最大行数
+  checks:
+    cpu:
+      enabled: true
+      warning: 80
+      critical: 90
+    memory:
+      enabled: true
+      warning: 85
+      critical: 95
+    disk:
+      enabled: true
+      warning: 80
+      critical: 90
+    active_alerts:
+      enabled: true
+      warning_count: 1
+      critical_count: 3
+
 storage:
   # SQLite 持久化总开关。关闭 / 打不开（磁盘满、无写权限、文件版本过新）
   # → 服务照常启动，只是退化回「不落盘」：会话、告警归档、AI 建议均不保存。
@@ -58,6 +82,9 @@ logging:
   audit_file: "logs/audit.log"   # 审计落盘路径（相对仓库根）；留空 = 只进 console
   audit_max_bytes: 5242880       # 单个文件上限（5 MiB），超出轮转
   audit_backup_count: 3          # 保留的轮转份数（audit.log.1 / .2 / .3）
+  inspection_file: "logs/inspection.log"  # 全量巡检汇总日志；留空 = 只进 console
+  inspection_max_bytes: 5242880           # 单个巡检日志文件上限（5 MiB）
+  inspection_backup_count: 3              # 巡检日志保留份数
 
 auth:
   # 共享密钥鉴权：身份由密钥推断（服务端事实），不再采信请求体里自报的用户名。

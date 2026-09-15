@@ -11,7 +11,7 @@
 > - [README.md](./README.md)：结构树 / 分层职责 / 配置 / 启动 / 安装 / 扩展指南（**权威结构文档**，
 >   目录树只此一份，本文件不再复制，避免两处对不上）；
 > - **本文件**：硬性约束 / 安全不变量 / 已踩的坑 / 既定决策 / 路线图待办 / 验证方式；
-> - [docs/database.md](./docs/database.md)：SQLite 库结构详解（七张表逐字段含义、表间关系、
+> - [docs/database.md](./docs/database.md)：SQLite 库结构详解（八张表逐字段含义、表间关系、
 >   常用查询、清理与迁移规则）。**改表结构时同步它。**
 > - [docs/auth.md](./docs/auth.md)：鉴权与密钥（本项目的密钥清单、生成、配法、用法、
 >   Alertmanager 侧配置、故障排查）。**改鉴权行为时同步它。**
@@ -104,7 +104,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **535**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **593**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
     | [docs/database.md](docs/database.md) | **改表结构 / 加字段 / 改字段语义 / 改清理策略时必须同步**——它是库结构的逐字段说明。迁移那节的两条硬性约束（结构指纹一致、新列加末尾）也在那里 |
     | [docs/auth.md](docs/auth.md) | **改鉴权行为时必须同步**——新增/改动密钥种类、`auth` 段语义、豁免端点、401/404 规则、Alertmanager 侧配法，都要改它。它是鉴权细节的**唯一**出处，README 只留摘要 |
@@ -136,7 +136,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   只读诊断与写命令共用 `plugins/common`（endpoint/ssh/audit/cmddef）内核，两条入口/边界分离；
   规则表外的告警 → LLM 根因假设与建议（`[AI 分析]`），分析失败仅记日志不阻塞。
 - **对话历史 + 多轮对话**（M4 第一/二批，2026-09-11）：[src/storage/db.py](src/storage/db.py)
-  从空 TODO 占位变成真实现（连接工厂 + 当前七张表 + `PRAGMA user_version` 双向校验，当前 schema v5）；
+  从空 TODO 占位变成真实现（连接工厂 + 当前八张表 + `PRAGMA user_version` 双向校验，当前 schema v6）；
   [src/storage/session.py](src/storage/session.py) 提供会话/消息读写（SQLite + 内存两套实现）；
   `/chat` 支持多轮（传回上次的 `session_id` 即带上历史，**路线 B**：历史表是唯一真相、
   每轮新 thread_id、checkpointer 仍只当审批草稿纸）；`/sessions` 三个端点可查可删；
@@ -211,7 +211,14 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   - `/health` 同时反映会话与归档存储降级；
   - 增加 `agent.enabled`、递归上限、聊天消息上限、模型超时/重试/Token 上限；
   - `auth.approval_mode=approvers_only` 支持审批职责分离；
+  - 新增固定指标自动巡检、独立轮转日志与异常归档（schema v6）；
   - CI + pyproject 测试配置 + 文档同步。
+
+- **固定指标自动巡检**（2026-09-15）：应用 lifespan 启动单进程后台线程，按全局周期只读检查
+  CPU / 内存 / 磁盘 / 活动告警；每类指标可独立开关并配置 warning/critical 阈值。每轮写
+  `ops_agent.inspection` 日志和 `logs/inspection.log`，等级映射为 normal=INFO、warning=WARNING、
+  critical/error=ERROR；只有异常轮次写入 `inspection_runs`，可通过 `GET /inspections/recent` 查询。
+  **不调用 LLM、RuleEngine 或任何写命令**；当前只支持单 worker。
 
 ### 分层边界（一句话版；完整目录树见 [README.md](./README.md)）
 

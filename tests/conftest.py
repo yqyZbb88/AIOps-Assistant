@@ -287,12 +287,21 @@ def _no_audit_file_in_tests():
     """
     import logging
 
-    from src.utils.logger import _FILE_HANDLER_TAG, AUDIT_LOGGER_NAME
+    from src.utils.logger import (
+        _FILE_HANDLER_TAG,
+        _INSPECTION_FILE_HANDLER_TAG,
+        AUDIT_LOGGER_NAME,
+        INSPECTION_LOGGER_NAME,
+    )
 
-    audit_logger = logging.getLogger(AUDIT_LOGGER_NAME)
-    for handler in list(audit_logger.handlers):
-        if getattr(handler, _FILE_HANDLER_TAG, None):
-            audit_logger.removeHandler(handler)
+    for logger_name, tag in (
+        (AUDIT_LOGGER_NAME, _FILE_HANDLER_TAG),
+        (INSPECTION_LOGGER_NAME, _INSPECTION_FILE_HANDLER_TAG),
+    ):
+        target = logging.getLogger(logger_name)
+        for handler in list(target.handlers):
+            if getattr(handler, tag, None):
+                target.removeHandler(handler)
     yield
 
 

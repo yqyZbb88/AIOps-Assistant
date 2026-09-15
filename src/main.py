@@ -15,6 +15,7 @@
     POST /alert             Alertmanager webhook
     GET  /alerts/recent     最近接收的告警
     GET  /alerts/active     实时活动告警（监控源查询失败转 502）
+    GET  /inspections/recent 最近异常固定指标巡检归档
 
 人工审批（Agent 写命令，config/agent_actions.yaml 启用后才有内容）：
     GET  /approvals             待审批的写命令调用
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -41,6 +43,7 @@ from src.api import alert as alert_api
 from src.api import approvals as approvals_api
 from src.api import chat as chat_api
 from src.api import health as health_api
+from src.api import inspections as inspections_api
 from src.api import sessions as sessions_api
 from src.api.deps import require_auth
 from src.container import Container
@@ -52,8 +55,22 @@ logger = logging.getLogger("ops_agent.main")
 
 _DESCRIPTION = (
     "智能运维 Agent：关键词/AI 聊天 + Prometheus 指标查询 + 告警状态主动查询"
-    " + Alertmanager 告警接收 + 规则自动处置"
+    " + Alertmanager 告警接收 + 规则自动处置 + 固定指标自动巡检"
 )
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """管理巡检后台线程；仅在 inspection.enabled=true 时启动。"""
+    scheduler = None
+    if app.state.settings.inspection.enabled:
+        scheduler = app.state.container.inspection_scheduler()
+        scheduler.start()
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            scheduler.stop()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -66,6 +83,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         audit_file=settings_.logging.audit_file,
         audit_max_bytes=settings_.logging.audit_max_bytes,
         audit_backup_count=settings_.logging.audit_backup_count,
+        inspection_file=settings_.logging.inspection_file,
+        inspection_max_bytes=settings_.logging.inspection_max_bytes,
+        inspection_backup_count=settings_.logging.inspection_backup_count,
     )
     agent = container.ops_agent()
     _check_auth(settings_)
@@ -74,6 +94,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=settings_.app.name,
         description=_DESCRIPTION,
         version=settings_.app.version,
+        lifespan=_lifespan,
     )
     app.state.container = container
     app.state.settings = settings_
@@ -92,6 +113,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(alert_api.router, dependencies=[Depends(require_auth)])
     app.include_router(approvals_api.router, dependencies=[Depends(require_auth)])
     app.include_router(sessions_api.router, dependencies=[Depends(require_auth)])
+    app.include_router(inspections_api.router, dependencies=[Depends(require_auth)])
     return app
 
 

@@ -45,7 +45,8 @@ logger = logging.getLogger("ops_agent.storage.db")
 #                    而这张表的 TTL 是 7 天：等你需要回答「那条 unknown 的命令是谁批的」时，
 #                    磁盘上的日志早就转没了，库里那行却还在。
 #   v5 (2026-09-15)：remediation_claims 自动处置幂等抢占表。
-SCHEMA_VERSION = 5
+#   v6 (2026-09-15)：inspection_runs 固定指标巡检异常归档表。
+SCHEMA_VERSION = 6
 
 # 建表语句（幂等）。顺序即执行顺序。
 _DDL: tuple[str, ...] = (
@@ -147,6 +148,17 @@ _DDL: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_remediation_claims_time ON remediation_claims (claimed_at)",
+    """
+    CREATE TABLE IF NOT EXISTS inspection_runs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        checked_at    TEXT NOT NULL,
+        level         TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        findings_json TEXT NOT NULL,
+        error_text    TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_inspection_runs_checked ON inspection_runs (checked_at)",
 )
 
 # 建表 / 迁移的进程级锁。正常读写路径不碰它。
@@ -359,6 +371,25 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_remediation_claims_time "
             "ON remediation_claims (claimed_at)"
+        )
+
+    if current < 6:
+        # v5 → v6：固定指标巡检异常归档。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inspection_runs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                checked_at    TEXT NOT NULL,
+                level         TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                findings_json TEXT NOT NULL,
+                error_text    TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inspection_runs_checked "
+            "ON inspection_runs (checked_at)"
         )
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

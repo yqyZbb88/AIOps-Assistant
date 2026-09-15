@@ -19,6 +19,7 @@ from src.core.agent import OpsAgent
 from src.storage.session import InMemorySessionStore, SqliteSessionStore
 from src.utils.config_loader import (
     AgentSettings,
+    InspectionSettings,
     LLMSettings,
     MonitorSettings,
     PrometheusSettings,
@@ -284,7 +285,7 @@ def test_create_app_smoke():
     for expected in ("/approvals", "/approvals/{approval_id}"):
         assert expected in paths, f"缺少路由 {expected}"
     # 对话历史与状态日志（M4 新增，非破坏性扩充）
-    for expected in ("/sessions", "/sessions/{session_id}", "/alerts/history"):
+    for expected in ("/sessions", "/sessions/{session_id}", "/alerts/history", "/inspections/recent"):
         assert expected in paths, f"缺少路由 {expected}"
 
 
@@ -316,6 +317,33 @@ def test_create_app_health_reflects_history_degradation(tmp_path):
         resp = client.get("/health")
 
     assert resp.json() == {"status": "degraded", "storage": "degraded"}
+
+
+def test_lifespan_starts_and_stops_inspection_scheduler():
+    from fastapi.testclient import TestClient
+
+    from src.main import create_app
+
+    class FakeScheduler:
+        def __init__(self):
+            self.started = False
+            self.stopped = False
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+    app = create_app(settings=Settings(inspection=InspectionSettings(enabled=True)))
+    fake = FakeScheduler()
+    app.state.container.inspection_scheduler = lambda: fake  # type: ignore[method-assign]
+
+    with TestClient(app):
+        assert fake.started is True
+        assert fake.stopped is False
+
+    assert fake.stopped is True
 
 
 # ---------------------------------------------------------------------------

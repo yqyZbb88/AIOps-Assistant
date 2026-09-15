@@ -12,6 +12,9 @@
 - **告警自动处置**：规则库（rules.yaml）引用 **config/actions.yaml 写命令目录** → 通用执行器按目录 key
   执行命令（模板 + 参数校验 + sudo 声明 + 审计日志）；「写命令」与「只读诊断」共用 SSH/审计内核，边界分离；
 - **告警 AI 分析**：无自动处理规则的告警 → LLM 给出根因假设与处理建议。
+- **固定指标自动巡检**：按全局周期检查 CPU / 内存 / 磁盘 / 活动告警，按配置阈值生成
+  `normal / warning / critical / error`；每轮写 `logs/inspection.log`，异常轮次写 SQLite，
+  可通过 `/inspections/recent` 查询。巡检不调用 AI，也不执行写操作。
 - **Agent 写命令（强制人工审批）**：Agent 可申请执行 config/agent_actions.yaml 声明的写命令
   （重启服务 / 清理磁盘等）；调用后**中断**，经 `/approvals` 人工批准才真正执行。
   与规则自动处置**完全隔离**（各用各的白名单）；未批准 / 过期 / 重启 → 命令永不执行。
@@ -29,7 +32,7 @@
 Assitant/
 ├── README.md / requirements.txt / .env.example
 ├── docs/
-│   ├── database.md            # SQLite 库结构详解（六张表逐字段说明 + 常用查询）
+│   ├── database.md            # SQLite 库结构详解（八张表逐字段说明 + 常用查询）
 │   └── auth.md                # 鉴权与密钥（密钥怎么来/放哪/怎么用、Alertmanager 侧、排查）
 ├── init.py                    # 用户模板（只读）：init_chat_model 单一模型入口
 ├── config/
@@ -48,6 +51,7 @@ Assitant/
 │   │   ├── alert.py           #   POST /alert、GET /alerts/recent、/alerts/active、/alerts/history
 │   │   ├── approvals.py       #   GET /approvals、POST /approvals/{id}（写命令人工审批）
 │   │   ├── sessions.py        #   POST /sessions、GET /sessions、GET/PATCH/DELETE /sessions/{id}
+│   │   ├── inspections.py     #   GET /inspections/recent（异常巡检归档）
 │   │   └── health.py          #   GET /health
 │   ├── core/                  # 业务核心（只依赖 interfaces 抽象与注入组件）
 │   │   ├── agent.py           #   OpsAgent 主控制器（chat/process_alert/recent/active_alerts）
@@ -56,6 +60,7 @@ Assitant/
 │   │   ├── rule_engine.py     #   规则引擎（加载 + 匹配决策，只依赖 ActionExecutor 接口）
 │   │   ├── prompts.py         #   告警分析 system 提示词（纯常量；analysis.py 用）
 │   │   ├── analysis.py        #   告警 LLM 分析（上下文组装 + LLM 编排）
+│   │   ├── inspection.py      #   ★ 固定指标巡检、阈值判定、汇总日志、后台调度
 │   │   └── exceptions.py      #   业务异常基类
 │   ├── interfaces/            # 抽象接口层（core 只依赖这里）
 │   │   ├── monitor.py         #   MonitorSource + MonitorError
@@ -114,7 +119,7 @@ Assitant/
 |---|---|
 | **README.md**（本文） | 项目结构 / 分层职责 / 配置 / 路由 / 扩展指南（**结构权威文档**） |
 | [PROJECT_HANDOVER.md](PROJECT_HANDOVER.md) | 开发约束 / 安全不变量 / 已踩的坑 / 既定决策 / 路线图 |
-| [docs/database.md](docs/database.md) | **SQLite 库结构详解**：六张表逐字段说明、表间关系、常用查询、迁移与备份 |
+| [docs/database.md](docs/database.md) | **SQLite 库结构详解**：八张表逐字段说明、表间关系、常用查询、迁移与备份 |
 | [docs/auth.md](docs/auth.md) | **鉴权与密钥**：本项目有哪些密钥、怎么生成、怎么用、Alertmanager 侧怎么配、故障排查 |
 
 ### 分层职责（依赖方向：上 → 下，插件向上实现接口）
@@ -202,6 +207,10 @@ pip install -r requirements.txt
 | `agent.enabled/name/debug/recursion_limit` | 聊天 Agent 总开关 / 归因名 / debug / 单轮图步骤上限 |
 | `chat.max_message_chars` | 单条聊天消息上限，超限返回 413 |
 | `alert.recent_limit/trend_minutes/trend_step` | 最近告警缓冲上限 / AI 分析趋势窗口 |
+| `inspection.enabled/interval_seconds/run_on_start` | 巡检总开关、全局周期、是否启动即跑一轮（仅单 worker） |
+| `inspection.ttl_hours/max_rows` | 异常巡检归档保留时长 / 最大行数 |
+| `inspection.checks.cpu/memory/disk` | 各百分比指标的开关与 warning/critical 阈值 |
+| `inspection.checks.active_alerts` | 活动告警开关及 warning_count/critical_count |
 | `storage.enabled` | SQLite 持久化总开关（代码里 dataclass 默认 false，本文件才是出厂值） |
 | `storage.db_path` | 库文件路径（相对仓库根，默认 `data/ops_agent.db`；WAL 会生成 `-wal`/`-shm`） |
 | `storage.session_ttl_hours/max_sessions` | 会话过期时长 / 会话数上限 |
@@ -211,6 +220,8 @@ pip install -r requirements.txt
 | `logging.level/audit` | 日志级别 / 动作审计开关 |
 | `logging.audit_file` | 审计落盘路径（默认 `logs/audit.log`；留空 = 只进 console） |
 | `logging.audit_max_bytes/audit_backup_count` | 审计文件轮转上限（5 MiB）与保留份数（3） |
+| `logging.inspection_file` | 全量巡检汇总日志路径（默认 `logs/inspection.log`；留空 = 只进 console） |
+| `logging.inspection_max_bytes/inspection_backup_count` | 巡检日志轮转上限与保留份数 |
 | `auth.enabled` | 共享密钥鉴权开关（代码里 dataclass 默认 `false`，本文件才是出厂值） |
 | `auth.tokens` | 「密钥 → 身份」的 **JSON 映射**，形如 `{"k-alice-9f3a":"alice"}`；真实值走 `.env` 的 `OPS_API_TOKENS`。**yaml 里的占位符必须用单引号包住**（`'${OPS_API_TOKENS:-}'`），否则变量有值时会被 YAML 当成流式映射解析成 dict |
 | `auth.alert_identity` | `POST /alert` 只接受的**身份名**（默认 `alertmanager`）；留空 = 不限制，且启动时有一条 WARNING。**必须与 `.env` 里某个密钥映射到的身份一致** |
@@ -369,6 +380,9 @@ python src/main.py
 
 访问 http://localhost:8000/docs 查看交互式 API。
 
+> 自动巡检使用应用内后台线程，**只支持单 worker**。如果启动多个 Uvicorn worker，
+> 每个 worker 都会运行一套巡检；当前版本不使用文件锁或外部调度。
+
 ### 对外路由
 
 | 方法/路径 | 说明 |
@@ -379,6 +393,7 @@ python src/main.py
 | `GET /alerts/recent?limit=` | 最近被动接收的告警记录 |
 | `GET /alerts/active` | 实时活动告警（监控源故障转 502） |
 | `GET /alerts/history` | **落盘归档**：告警 + 处置结果 + AI 建议（持久化未启用时三者均为空） |
+| `GET /inspections/recent?limit=` | 最近的异常巡检归档（normal 不落库；持久化关闭时返回空列表） |
 | `GET /approvals` | 待人工审批的写命令调用（不可用时返回空列表）。**鉴权开启时只列自己触发的** |
 | `POST /approvals/{id}` | 提交 `{"action":"approve"\|"reject","reason":""}` 并续跑；未知/已用/**不是你的** → 404，能力未启用 → 503 |
 | `POST /sessions` | **新建会话** `{"name"?}` → `201` + 会话元信息（含 `session_id`）。创建者取自密钥，**不可指定** |
