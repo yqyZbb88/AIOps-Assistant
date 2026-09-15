@@ -23,6 +23,7 @@ target:
   username: root
   password: "${SSH_PASSWORD_192_168_20_128}"
   # key_filename: ""        # 优先私钥认证时填路径；二选一即可
+  known_hosts: "${SSH_KNOWN_HOSTS:-}"  # 留空则使用系统 ~/.ssh/known_hosts；未知主机一律拒绝
   connect_timeout: 8        # 连接 + 单命令执行超时（秒）
 
 output_limit: 4000          # 单命令回传 Agent 的最大字符数，超出截断加省略标记

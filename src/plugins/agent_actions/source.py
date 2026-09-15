@@ -82,6 +82,7 @@ class SshAgentActionSource(AgentActionSource):
             port=int(self.target.port),
             username=self.target.username or "root",
             key_filename=self.target.key_filename or None,
+            known_hosts=self.target.known_hosts or None,
             password=self.target.password or None,
             connect_timeout=int(self.target.connect_timeout),
         )

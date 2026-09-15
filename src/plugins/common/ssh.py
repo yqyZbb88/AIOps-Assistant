@@ -18,6 +18,20 @@ class SshError(Exception):
     """SSH 连接 / 认证 / 执行失败（共享层中性异常）。"""
 
 
+def _new_client(paramiko, endpoint: SshEndpoint):
+    """构造默认拒绝未知主机密钥的 SSH 客户端。
+
+    先加载系统 known_hosts，再加载 endpoint 指定的 known_hosts。没有可信主机密钥时
+    connect 会直接失败，而不是像 AutoAddPolicy 那样把连接交给任意返回密钥的远端。
+    """
+    client = paramiko.SSHClient()
+    client.load_system_host_keys()
+    if endpoint.known_hosts:
+        client.load_host_keys(endpoint.known_hosts)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    return client
+
+
 def exec_command(
     endpoint: SshEndpoint,
     command: str,
@@ -31,10 +45,10 @@ def exec_command(
         raise SshError("缺少可选依赖 paramiko，请先安装：pip install paramiko") from exc
 
     full_cmd = f"sudo sh -c {shlex.quote(command)}" if sudo else command
-
-    client = paramiko.SSHClient()
-    # 演示环境放宽 host key 校验；生产建议先核对 known_hosts 再改 RejectPolicy
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client = _new_client(paramiko, endpoint)
+    except Exception as exc:
+        raise SshError(f"加载 SSH 主机密钥配置失败: {exc}") from exc
     try:
         client.connect(
             hostname=endpoint.host,

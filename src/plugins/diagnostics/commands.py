@@ -46,6 +46,7 @@ class DiagnosticsTarget:
     username: str = "root"
     password: str = ""
     key_filename: str = ""
+    known_hosts: str = ""
     connect_timeout: int = 8
 
 
@@ -85,6 +86,7 @@ def _parse_target(data: Any) -> DiagnosticsTarget:
         raise DiagnosticsConfigError("target.host 不能为空（需与 .env 中 SSH 密码变量对应的主机）")
     password = data.get("password", "") or ""
     key_filename = data.get("key_filename", "") or ""
+    known_hosts = data.get("known_hosts", "") or ""
     if not password and not key_filename:
         logger.warning("diagnostics.target 未配置 password/key_filename，连接将走 agent/默认密钥或失败")
     return DiagnosticsTarget(
@@ -93,6 +95,7 @@ def _parse_target(data: Any) -> DiagnosticsTarget:
         username=_as_str(data.get("username", "root"), "target.username") or "root",
         password=str(password),
         key_filename=str(key_filename),
+        known_hosts=str(known_hosts),
         connect_timeout=_as_int(data.get("connect_timeout", 8), "target.connect_timeout", minimum=1),
     )
 

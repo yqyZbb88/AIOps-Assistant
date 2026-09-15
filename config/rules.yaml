@@ -31,7 +31,8 @@ rules:
       host: 192.168.20.128
       port: 22
       username: root
-      password: "${SSH_PASSWORD_192_168_20_128}"   # auto_execute=false 不真连，仅占位
+      password: "${SSH_PASSWORD_192_168_20_128}"
+      known_hosts: "${SSH_KNOWN_HOSTS:-}"   # auto_execute=false 不真连，仅占位
       service: nginx
     auto_execute: false
     description: "CPU 使用率过高 → 目录命令 restart_service 重启 192.168.20.128 的 nginx（示例，未启用）"
@@ -43,6 +44,7 @@ rules:
       port: 22
       username: root
       password: "${SSH_PASSWORD_192_168_20_128}"
+      known_hosts: "${SSH_KNOWN_HOSTS:-}"
     auto_execute: false
     description: "CPU 使用率过高 → 目录命令 stop_loadgen 停掉压测脚本 load_gen.sh（示例）"
 
@@ -53,7 +55,8 @@ rules:
       host: 192.168.20.128
       port: 22
       username: root
-      password: "${SSH_PASSWORD_192_168_20_128}"   # 开 true 前在 .env 填真实密码
+      password: "${SSH_PASSWORD_192_168_20_128}"
+      known_hosts: "${SSH_KNOWN_HOSTS:-}"   # 开 true 前在 .env 填真实密码
       service: mysql
     auto_execute: false
     description: "内存使用率过高 → 目录命令 restart_service 重启 192.168.20.128 的 mysql（示例）"
@@ -67,6 +70,7 @@ rules:
       host: 192.168.20.128
       port: 22
       username: root
-      password: "${SSH_PASSWORD_192_168_20_128}"   # 开 true 前在 .env 填真实密码
+      password: "${SSH_PASSWORD_192_168_20_128}"
+      known_hosts: "${SSH_KNOWN_HOSTS:-}"   # 开 true 前在 .env 填真实密码
     auto_execute: false
     description: "磁盘使用率过高 → 目录命令 cleanup_disk 执行磁盘清理脚本（示例）"

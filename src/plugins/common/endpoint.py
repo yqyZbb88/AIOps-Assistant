@@ -19,6 +19,7 @@ CONNECTION_FIELDS: tuple[str, ...] = (
     "username",
     "password",
     "key_filename",
+    "known_hosts",
     "connect_timeout",
 )
 
@@ -34,6 +35,7 @@ class SshEndpoint:
     port: int = 22
     username: str = "root"
     key_filename: str | None = None
+    known_hosts: str | None = None
     password: str | None = None
     connect_timeout: int = 15
 
@@ -56,6 +58,7 @@ def endpoint_from_params(
         port=int(params.get("port", 22) or 22),
         username=str(params.get("username") or "root"),
         key_filename=params.get("key_filename") or None,
+        known_hosts=params.get("known_hosts") or None,
         password=params.get("password") or None,
         connect_timeout=int(params.get("connect_timeout", default_timeout) or default_timeout),
     )

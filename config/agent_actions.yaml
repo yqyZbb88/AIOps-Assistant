@@ -33,6 +33,7 @@ target:
   port: 22
   username: root
   password: "${SSH_PASSWORD_192_168_20_128}"
+  known_hosts: "${SSH_KNOWN_HOSTS:-}"  # 留空则使用系统 ~/.ssh/known_hosts；未知主机一律拒绝
   connect_timeout: 8
 
 # 单条命令输出回传给 Agent 的字符上限（超出截断，避免刷爆模型上下文）。
