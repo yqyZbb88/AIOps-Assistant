@@ -1,5 +1,7 @@
 # 智能运维 Agent（ops-agent）
 
+> **受众：用户 / 运维人员 + 开发工程师**。首次阅读请从 [docs/README.md](docs/README.md) 选择用户指南或开发者指南。本文主要作为项目总览和对外 API 入口。
+
 基于 **Python + FastAPI + LangChain Agent** 的智能运维 Agent。已实现能力：
 
 - **AI 对话**：DeepSeek Agent 按 `metrics.yaml` 的 chat surface 自主调用监控工具回答问题；
@@ -34,6 +36,9 @@
 Assitant/
 ├── README.md / requirements.txt / .env.example
 ├── docs/
+│   ├── README.md              # 文档索引：按用户 / 运维 / 开发分类
+│   ├── user-guide.md          # 用户与运维：部署、启动、验收、备份、排障
+│   ├── developer-guide.md     # 开发工程师：架构、扩展、测试、发布、注释约定
 │   ├── database.md            # SQLite 库结构详解（八张表逐字段说明 + 常用查询）
 │   ├── configuration.md       # ★ 所有运行时 YAML 配置字段、默认值、约束与示例
 │   └── auth.md                # 鉴权与密钥（密钥怎么来/放哪/怎么用、Alertmanager 侧、排查）
@@ -123,6 +128,9 @@ Assitant/
 
 | 文档 | 内容 |
 |---|---|
+| [docs/README.md](docs/README.md) | **文档总索引**：按用户 / 运维人员和开发工程师分类 |
+| [docs/user-guide.md](docs/user-guide.md) | **用户与运维指南**：部署、启动、验收、巡检、备份、排障 |
+| [docs/developer-guide.md](docs/developer-guide.md) | **开发工程师指南**：架构、扩展、测试、发布和注释约定 |
 | **README.md**（本文） | 项目结构 / 分层职责 / 配置 / 路由 / 扩展指南（**结构权威文档**） |
 | [docs/configuration.md](docs/configuration.md) | **YAML 配置权威指南**：六个运行时配置文件的字段、类型、默认值、校验与示例 |
 | [PROJECT_HANDOVER.md](PROJECT_HANDOVER.md) | 开发约束 / 安全不变量 / 已踩的坑 / 既定决策 / 路线图 |

@@ -1,3 +1,9 @@
+"""DeepSeek 模型初始化入口。
+
+受众：开发工程师。
+普通用户通过 .env 配置模型，不应直接修改本文件。
+模型参数见 docs/configuration.md 的环境变量章节。
+"""
 import os
 
 from dotenv import load_dotenv

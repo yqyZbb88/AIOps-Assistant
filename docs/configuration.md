@@ -1,3 +1,5 @@
+> **受众：用户 / 运维人员。** 本文是运行时 YAML 字段的权威说明；代码实现细节见 [developer-guide.md](developer-guide.md)。
+
 # ops-agent YAML 配置指南
 
 本文覆盖 `config/` 下所有运行时 YAML 文件：
