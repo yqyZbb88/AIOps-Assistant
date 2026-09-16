@@ -390,6 +390,7 @@ class Container:
         return OpsAssistant(
             monitor=self.monitor(),
             metrics_config=self.metrics_config(),
+            inspection_store=self.inspection_store(),
             diag=self.diagnostics(),
             agent_actions=write_source,
             approvals=approvals,

@@ -126,4 +126,5 @@ class SshAgentActionSource(AgentActionSource):
             "command": command,
             "exit_code": code,
             "output": output,
+            "executed_at": audit_common.now_iso(),
         }

@@ -201,19 +201,23 @@ def test_agent_tools_share_text_with_fallback(fakemonitor):
         (tool,) = [t for t in build_tools(fakemonitor) if t.name == name]
         return fb, tool.invoke({})
 
-    # 正常有数据：CPU 工具 == 兜底（同款规范文案 "CPU 使用率：45.0%"）
+    # 正常有数据：工具在同源文案后追加统一的数据时效说明。
     fb, out = fallback_and_tool("CPU 高不高", "cpu_usage")
-    assert fb == out and fb == "CPU 使用率：45.0%"
+    assert fb == "CPU 使用率：45.0%"
+    assert out.startswith(fb)
+    assert "[数据时效]" in out
 
-    # 无数据：内存工具 == 兜底
+    # 无数据：内存工具保留同源前缀并追加时效说明。
     fakemonitor._memory = None
     fb, out = fallback_and_tool("内存占用如何", "memory_usage")
-    assert fb == out and "暂无数据" in fb
+    assert "暂无数据" in fb
+    assert out.startswith(fb) and "[数据时效]" in out
 
-    # 监控失败：CPU 工具 == 兜底，均为规范失败文案前缀
+    # 监控失败：CPU 工具保留同源失败文案前缀。
     fakemonitor._raise_cpu = True
     fb, out = fallback_and_tool("CPU", "cpu_usage")
-    assert fb == out and fb.startswith("查询 CPU 使用率失败")
+    assert fb.startswith("查询 CPU 使用率失败")
+    assert out.startswith(fb) and "[数据时效]" in out
 
     # 磁盘 / 告警：同样同源
     fakemonitor._raise_cpu = False
@@ -223,9 +227,9 @@ def test_agent_tools_share_text_with_fallback(fakemonitor):
          "state": "firing", "value": 92.0, "summary": "cpu busy"},
     ]
     fb, out = fallback_and_tool("磁盘", "disk_usage")
-    assert fb == out and "88.1%" in fb
+    assert out.startswith(fb) and "88.1%" in fb and "[数据时效]" in out
     fb, out = fallback_and_tool("有告警吗", "active_alerts")
-    assert fb == out and "HighCPUUsage" in fb
+    assert out.startswith(fb) and "HighCPUUsage" in fb and "[数据时效]" in out
 
 
 # ---------------------------------------------------------------------------

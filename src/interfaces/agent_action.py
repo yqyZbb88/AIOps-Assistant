@@ -23,6 +23,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from src.interfaces.command import CommandSpec  # noqa: F401  （re-export 便于使用方一处引入）
+from src.utils.freshness import freshness_note
 
 
 class AgentActionError(Exception):
@@ -69,4 +70,5 @@ def render_agent_action(result: dict[str, Any]) -> str:
     host = result.get("host", "")
     command = result.get("command", "")
     output = result.get("output") or "(无输出)"
-    return f"写命令已执行（host={host}，command={command}）：\n```\n{output}\n```"
+    text = f"写命令已执行（host={host}，command={command}）：\n```\n{output}\n```"
+    return text + "\n" + freshness_note(source="SSH 写命令执行", observed_at=result.get("executed_at"))

@@ -19,6 +19,7 @@ from src.interfaces.llm_client import LLMClient
 from src.interfaces.metric import MetricDefinition, MetricsConfig
 from src.interfaces.monitor import MonitorSource
 from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
+from src.utils.freshness import freshness_note
 from src.utils.metrics_config import default_metrics_config
 from src.storage.models import Alert
 
@@ -70,6 +71,12 @@ def build_alert_context(
         f"- 状态：{alert.status}",
         f"- 开始时间：{alert.startsAt or '未知'}",
     ]
+    lines.extend(
+        freshness_note(
+            source="Alertmanager 告警 + Prometheus 趋势",
+            detail="告警状态可能已变化，分析结论必须按观测时间限定，不能假设仍持续 firing。",
+        ).splitlines()
+    )
     summary = alert.annotations.get("summary")
     description = alert.annotations.get("description")
     if summary:

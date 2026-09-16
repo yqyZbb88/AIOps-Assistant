@@ -15,6 +15,8 @@
 - **固定指标自动巡检**：按全局周期检查 `metrics.yaml` 的 inspection surface 指标，按配置阈值生成
   `normal / warning / critical / error`；每轮写 `logs/inspection.log`，异常轮次写 SQLite，
   可通过 `/inspections/recent` 查询。巡检不调用 AI，也不执行写操作。
+- **AI 时效边界**：聊天 Agent 可查询 `inspection_anomalies` 历史归档；所有指标、告警、SSH 诊断、
+  写命令和巡检结果均带 `[数据时效]`，明确观测时间与“仅代表当时状态”的边界。
 - **Agent 写命令（强制人工审批）**：Agent 可申请执行 config/agent_actions.yaml 声明的写命令
   （重启服务 / 清理磁盘等）；调用后**中断**，经 `/approvals` 人工批准才真正执行。
   与规则自动处置**完全隔离**（各用各的白名单）；未批准 / 过期 / 重启 → 命令永不执行。

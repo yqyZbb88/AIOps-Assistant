@@ -19,6 +19,7 @@ from typing import Any
 # 命令元信息（ParamSpec / CommandSpec）已迁至中性层 interfaces/command.py，
 # 与写动作边界共用；此处 re-export 保持既有 import 路径不变。
 from src.interfaces.command import CommandSpec, ParamSpec  # noqa: F401
+from src.utils.freshness import freshness_note
 
 
 class DiagnosticError(Exception):
@@ -60,7 +61,8 @@ def render_diag(result: dict[str, Any]) -> str:
     command = result.get("command", "")
     error = result.get("error")
     if error:
-        return f"诊断命令执行失败{('（' + host + '）') if host else ''}：{error}"
+        text = f"诊断命令执行失败{('（' + host + '）') if host else ''}：{error}"
+        return text + "\n" + freshness_note(source="SSH 只读诊断", observed_at=result.get("executed_at"))
 
     output = result.get("output") or "(无输出)"
     exit_code = result.get("exit_code")
@@ -68,4 +70,5 @@ def render_diag(result: dict[str, Any]) -> str:
         prefix = f"诊断命令已执行（host={host}）但远端返回非零退出码 {exit_code}，输出如下："
     else:
         prefix = f"诊断结果（host={host}，exit_code=0）："
-    return f"{prefix}\n```\n{output}\n```"
+    text = f"{prefix}\n```\n{output}\n```"
+    return text + "\n" + freshness_note(source="SSH 只读诊断", observed_at=result.get("executed_at"))

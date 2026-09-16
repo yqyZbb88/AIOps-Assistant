@@ -23,6 +23,7 @@ from typing import Callable
 
 from src.interfaces.metric import MetricDefinition
 from src.interfaces.monitor import MonitorError, MonitorSource
+from src.utils.freshness import epoch_to_iso, freshness_note
 
 logger = logging.getLogger("ops_agent.capabilities")
 
@@ -80,7 +81,7 @@ def disk_usage_text(monitor: MonitorSource) -> str:
     return f"磁盘使用率：{detail}"
 
 
-def active_alerts_text(monitor: MonitorSource) -> str:
+def active_alerts_text(monitor: MonitorSource, *, with_freshness: bool = False) -> str:
     """查询 + 格式化当前 pending / firing 告警，逐条列名称/级别/实例/状态。
 
     无活动告警返回 "当前没有 pending / firing 的告警（所有规则均 inactive）"。
@@ -89,10 +90,12 @@ def active_alerts_text(monitor: MonitorSource) -> str:
         alerts = monitor.active_alerts()
     except MonitorError as exc:
         logger.warning("查询 告警状态失败: %s", exc)
-        return f"查询 告警状态失败：{exc}"
+        text = f"查询 告警状态失败：{exc}"
+        return _append_freshness(text, source="Prometheus active alerts", enabled=with_freshness)
 
     if not alerts:
-        return "当前没有 pending / firing 的告警（所有规则均 inactive）"
+        text = "当前没有 pending / firing 的告警（所有规则均 inactive）"
+        return _append_freshness(text, source="Prometheus active alerts", enabled=with_freshness)
 
     firing = sum(1 for a in alerts if a["state"] == "firing")
     pending = sum(1 for a in alerts if a["state"] == "pending")
@@ -105,20 +108,28 @@ def active_alerts_text(monitor: MonitorSource) -> str:
         if a.get("summary"):
             line += f"：{a['summary']}"
         lines.append(line)
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    return _append_freshness(text, source="Prometheus active alerts", enabled=with_freshness)
 
 
-def metric_text(monitor: MonitorSource, definition: MetricDefinition) -> str:
+def metric_text(
+    monitor: MonitorSource,
+    definition: MetricDefinition,
+    *,
+    with_freshness: bool = False,
+) -> str:
     """统一指标目录的查询与格式化入口。"""
     if definition.kind == "alert_count":
-        return active_alerts_text(monitor)
+        return active_alerts_text(monitor, with_freshness=with_freshness)
     try:
         samples = monitor.query_metric(definition.metric_id)
     except MonitorError as exc:
         logger.warning("查询 %s 失败: %s", definition.display_name, exc)
-        return f"查询 {definition.display_name}失败：{exc}"
+        text = f"查询 {definition.display_name}失败：{exc}"
+        return _append_freshness(text, source=definition.metric_id, enabled=with_freshness)
     if not samples:
-        return f"{definition.display_name}：{_NO_DATA_HINT}"
+        text = f"{definition.display_name}：{_NO_DATA_HINT}"
+        return _append_freshness(text, source=definition.metric_id, enabled=with_freshness)
 
     def fmt(value: float) -> str:
         if definition.unit == "%":
@@ -133,11 +144,36 @@ def metric_text(monitor: MonitorSource, definition: MetricDefinition) -> str:
             return f"{value:.3f} load/core"
         return f"{value:g} {definition.unit}".rstrip()
 
+    observed_at = epoch_to_iso(max((sample.timestamp or 0 for sample in samples), default=0) or None)
     if len(samples) == 1 and set(samples[0].labels).issubset({"instance"}):
-        return f"{definition.display_name}：{fmt(samples[0].value)}"
+        text = f"{definition.display_name}：{fmt(samples[0].value)}"
+        return _append_freshness(
+            text,
+            source=definition.metric_id,
+            observed_at=observed_at,
+            enabled=with_freshness,
+        )
 
     details: list[str] = []
     for sample in samples:
         label = ", ".join(f"{key}={value}" for key, value in sample.labels.items()) or "value"
         details.append(f"{label} {fmt(sample.value)}")
-    return f"{definition.display_name}：" + "；".join(details)
+    text = f"{definition.display_name}：" + "；".join(details)
+    return _append_freshness(
+        text,
+        source=definition.metric_id,
+        observed_at=observed_at,
+        enabled=with_freshness,
+    )
+
+
+def _append_freshness(
+    text: str,
+    *,
+    source: str,
+    observed_at: str | None = None,
+    enabled: bool,
+) -> str:
+    if not enabled:
+        return text
+    return text + "\n" + freshness_note(source=source, observed_at=observed_at)

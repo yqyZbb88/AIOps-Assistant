@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Literal
 
 from langchain.tools import tool
 from langchain_core.tools import StructuredTool
@@ -43,9 +43,11 @@ from src.interfaces.diagnostic import (
     DiagnosticSource,
     render_diag,
 )
+from src.interfaces.inspection import InspectionError, InspectionStore
 from src.interfaces.metric import MetricDefinition, MetricsConfig
 from src.interfaces.monitor import MonitorSource
 from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG, tool_name
+from src.utils.freshness import freshness_note
 from src.utils.metrics_config import default_metrics_config
 
 logger = logging.getLogger("ops_agent.tools")
@@ -70,7 +72,7 @@ def build_tools(
             continue
 
         def _run(_definition=definition) -> str:
-            return capabilities.metric_text(monitor, _definition)
+            return capabilities.metric_text(monitor, _definition, with_freshness=True)
 
         tools.append(
             StructuredTool.from_function(
@@ -84,6 +86,79 @@ def build_tools(
             )
         )
     return tools
+
+# ---------------------------------------------------------------------------
+# 异常巡检归档工具（只读 InspectionStore，不直接访问 SQLite）
+# ---------------------------------------------------------------------------
+def _render_inspection_anomalies(records) -> str:
+    lines = ["[巡检异常归档]"]
+    if not records:
+        lines.append("没有符合条件的异常巡检记录。")
+        lines.append(
+            freshness_note(
+                source="inspection_runs",
+                historical=True,
+                detail="未查询到记录不代表当前系统正常；需要当前状态时请重新查询实时指标。",
+            )
+        )
+        return "\n".join(lines)
+
+    lines.append(f"记录数：{len(records)}")
+    for record in records:
+        lines.append(
+            f"- id={record.record_id} checked_at={record.checked_at} level={record.level}"
+        )
+        if record.error:
+            lines.append(f"  error: {record.error}")
+        for finding in record.findings[:20]:
+            lines.append(
+                f"  - {finding.metric} [{finding.level}]: {finding.message}"
+            )
+        if len(record.findings) > 20:
+            lines.append("  - ... 其余异常明细已省略")
+    lines.append(
+        freshness_note(
+            source="inspection_runs",
+            observed_at=records[0].checked_at,
+            historical=True,
+            detail="这些是历史异常轮次，不代表当前状态；需要当前状态时请重新查询实时指标。",
+        )
+    )
+    return "\n".join(lines)
+
+
+def build_inspection_tools(store: InspectionStore | None) -> list:
+    """生成异常巡检归档查询工具；存储不可用时返回空列表。"""
+    if store is None:
+        return []
+
+    def _run(
+        limit: int = 10,
+        level: Literal["", "warning", "critical", "error"] = "",
+    ) -> str:
+        safe_limit = max(1, min(int(limit), 50))
+        try:
+            records = store.recent(limit=min(safe_limit * 5, 250))
+        except InspectionError as exc:
+            return (
+                f"查询异常巡检归档失败：{exc}\n"
+                + freshness_note(source="inspection_runs", historical=True)
+            )
+        if level:
+            records = [record for record in records if record.level == level]
+        return _render_inspection_anomalies(records[:safe_limit])
+
+    return [
+        StructuredTool.from_function(
+            func=_run,
+            name="inspection_anomalies",
+            description=(
+                "查询最近的异常巡检归档，可按 warning/critical/error 过滤。"
+                "结果属于历史记录，不代表当前状态；需要当前状态时应重新查询实时指标。"
+            ),
+        )
+    ]
+
 
 # ---------------------------------------------------------------------------
 # 只读诊断工具（按 config/diagnostics.yaml 白名单动态生成）
@@ -137,7 +212,10 @@ def _make_diag_tool(source: DiagnosticSource, spec: CommandSpec):
             result = source.run(spec.key, params=values)
         except DiagnosticError as exc:
             logger.warning("Agent 诊断工具 %s 调用失败: %s", spec.key, exc)
-            return f"诊断命令执行失败：{exc}"
+            return (
+                f"诊断命令执行失败：{exc}\n"
+                + freshness_note(source="SSH 只读诊断")
+            )
         return render_diag(result)
 
     return StructuredTool.from_function(
@@ -189,7 +267,10 @@ def _make_write_tool(source: AgentActionSource, spec: CommandSpec):
             result = source.run(spec.key, params=values)
         except AgentActionError as exc:
             logger.warning("Agent 写命令工具 %s 调用失败: %s", spec.key, exc)
-            return f"写命令执行失败：{exc}"
+            return (
+                f"写命令执行失败：{exc}\n"
+                + freshness_note(source="SSH 写命令执行")
+            )
         return render_agent_action(result)
 
     return StructuredTool.from_function(
