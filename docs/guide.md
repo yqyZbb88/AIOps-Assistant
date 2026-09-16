@@ -94,6 +94,8 @@ curl -X POST http://127.0.0.1:8000/chat   -H "Authorization: Bearer 随机密钥
 - 任意 PromQL 执行
 - AI 任意读取日志文件
 
+后续拓展方向和阶段计划见 [roadmap.md](roadmap.md)。
+
 ## 二、主要能力
 
 - 查询 Prometheus 指标
