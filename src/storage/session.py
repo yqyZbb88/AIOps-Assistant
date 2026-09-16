@@ -39,7 +39,7 @@ from src.interfaces.session import (
 from src.storage.db import Database
 from src.utils.time import cutoff_iso, to_iso
 
-logger = logging.getLogger("ops_agent.storage.session")
+logger = logging.getLogger("aiops_assistant.storage.session")
 
 DEFAULT_TTL_SECONDS = 72 * 3600
 DEFAULT_MAX_SESSIONS = 200

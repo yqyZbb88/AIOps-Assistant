@@ -20,7 +20,7 @@ from typing import Any, Mapping
 from src.plugins.common.cmddef import CmdDef, CmdDefError, parse_command_def
 from src.utils.config_loader import ROOT_DIR, interpolate
 
-logger = logging.getLogger("ops_agent.actions.catalog")
+logger = logging.getLogger("aiops_assistant.actions.catalog")
 
 # 默认目录文件：<仓库根>/config/actions.yaml（可用 OPS_ACTIONS_FILE 覆盖）
 DEFAULT_ACTIONS_FILE: Path = ROOT_DIR / "config" / "actions.yaml"

@@ -32,7 +32,7 @@ from src.plugins.agent_actions.catalog import (
     command_specs,
 )
 
-logger = logging.getLogger("ops_agent.agent_actions.ssh")
+logger = logging.getLogger("aiops_assistant.agent_actions.ssh")
 
 
 class SshAgentActionSource(AgentActionSource):

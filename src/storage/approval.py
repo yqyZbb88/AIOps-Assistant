@@ -25,7 +25,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-logger = logging.getLogger("ops_agent.approval_store")
+logger = logging.getLogger("aiops_assistant.approval_store")
 
 DEFAULT_MAX_PENDING = 32
 DEFAULT_TTL_SECONDS = 900

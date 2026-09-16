@@ -24,7 +24,7 @@ from src.plugins.common import cmddef as _cmddef
 from src.plugins.common.cmddef import CmdDef, CmdDefError, ParamError
 from src.utils.config_loader import ROOT_DIR, interpolate
 
-logger = logging.getLogger("ops_agent.diagnostics.config")
+logger = logging.getLogger("aiops_assistant.diagnostics.config")
 
 # 默认配置文件：<仓库根>/config/diagnostics.yaml（可用 OPS_DIAGNOSTICS_FILE 覆盖）
 DEFAULT_DIAGNOSTICS_FILE: Path = ROOT_DIR / "config" / "diagnostics.yaml"

@@ -51,7 +51,7 @@ from src.utils.auth import AuthConfigError, ensure_usable
 from src.utils.config_loader import Settings
 from src.utils.logger import configure_logging
 
-logger = logging.getLogger("ops_agent.main")
+logger = logging.getLogger("aiops_assistant.main")
 
 _DESCRIPTION = (
     "智能运维 Agent：关键词/AI 聊天 + Prometheus 指标查询 + 告警状态主动查询"
@@ -87,7 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         inspection_max_bytes=settings_.logging.inspection_max_bytes,
         inspection_backup_count=settings_.logging.inspection_backup_count,
     )
-    agent = container.ops_agent()
+    agent = container.aiops_assistant()
     _check_auth(settings_)
 
     app = FastAPI(

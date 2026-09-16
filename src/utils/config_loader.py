@@ -19,7 +19,9 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, get_type_hints
 
-logger = logging.getLogger("ops_agent.config")
+from src import __app_name__, __version__
+
+logger = logging.getLogger("aiops_assistant.config")
 
 # ---------------------------------------------------------------------------
 # 项目根目录（= 仓库根，init.py / config / .env 所在处）
@@ -42,8 +44,8 @@ class ConfigError(Exception):
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class AppSettings:
-    name: str = "ops-agent"
-    version: str = "0.2.0"
+    name: str = __app_name__
+    version: str = __version__
 
 
 @dataclass(frozen=True)
@@ -119,7 +121,7 @@ class StorageSettings:
     """
 
     enabled: bool = False
-    db_path: str = "data/ops_agent.db"
+    db_path: str = "data/aiops_assistant.db"
     session_ttl_hours: int = 72
     max_sessions: int = 200
     message_window: int = 20

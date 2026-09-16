@@ -30,7 +30,7 @@ from src.interfaces.history import HistoryError
 from src.interfaces.monitor import MonitorError
 from src.storage.models import AlertAck, AlertmanagerPayload
 
-logger = logging.getLogger("ops_agent.api.alert")
+logger = logging.getLogger("aiops_assistant.api.alert")
 
 router = APIRouter()
 

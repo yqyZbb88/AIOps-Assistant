@@ -33,7 +33,7 @@ from contextlib import contextmanager, closing
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-logger = logging.getLogger("ops_agent.storage.db")
+logger = logging.getLogger("aiops_assistant.storage.db")
 
 # 当前 schema 版本。改动 DDL 时**必须**递增，并在 _migrate 里补上追加式迁移。
 #   v1 (2026-09-11 M4 第一批)：六张表

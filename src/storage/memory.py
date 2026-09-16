@@ -12,7 +12,7 @@ from typing import Any
 
 from src.storage.models import Alert
 
-logger = logging.getLogger("ops_agent.alert_store")
+logger = logging.getLogger("aiops_assistant.alert_store")
 
 
 class AlertStore:

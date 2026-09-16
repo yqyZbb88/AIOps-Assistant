@@ -190,7 +190,7 @@ class TestSshRun:
             return (0, "MEM-LINE " + "x" * 60, "")
 
         monkeypatch.setattr("src.plugins.common.ssh.exec_command", fake_ssh)
-        with caplog.at_level(logging.INFO, logger="ops_agent.audit"):
+        with caplog.at_level(logging.INFO, logger="aiops_assistant.audit"):
             result = diag.run("memory")
         assert seen["host"] == "192.168.1.1"
         assert seen["cmd"] == "free -m"
@@ -220,7 +220,7 @@ class TestSshRun:
 
         monkeypatch.setattr("src.plugins.common.ssh.exec_command", boom)
         with pytest.raises(DiagnosticError, match="SSH 诊断执行失败"):
-            with caplog.at_level(logging.WARNING, logger="ops_agent.audit"):
+            with caplog.at_level(logging.WARNING, logger="aiops_assistant.audit"):
                 diag.run("memory")
         assert "auth" in caplog.text or "error" in caplog.text
 

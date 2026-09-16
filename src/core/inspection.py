@@ -23,7 +23,7 @@ from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
 from src.utils.config_loader import InspectionSettings
 from src.utils.logger import get_inspection_logger
 
-logger = logging.getLogger("ops_agent.inspection.runner")
+logger = logging.getLogger("aiops_assistant.inspection.runner")
 
 _LEGACY_LABELS = {
     "cpu.usage": "cpu",
@@ -355,7 +355,7 @@ class InspectionScheduler:
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._loop,
-            name="ops-agent-inspection",
+            name="AIOps-Assistant-inspection",
             daemon=True,
         )
         self._thread.start()

@@ -16,7 +16,7 @@ from src.interfaces.inspection import (
 from src.storage.db import Database
 from src.utils.time import cutoff_iso
 
-logger = logging.getLogger("ops_agent.storage.inspection")
+logger = logging.getLogger("aiops_assistant.storage.inspection")
 
 
 class SqliteInspectionStore(InspectionStore):

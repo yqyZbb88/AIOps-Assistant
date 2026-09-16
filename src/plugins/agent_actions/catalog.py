@@ -27,7 +27,7 @@ from src.plugins.common import cmddef as _cmddef
 from src.plugins.common.cmddef import CmdDef, CmdDefError, ParamError
 from src.utils.config_loader import ROOT_DIR, interpolate
 
-logger = logging.getLogger("ops_agent.agent_actions.catalog")
+logger = logging.getLogger("aiops_assistant.agent_actions.catalog")
 
 # 默认配置文件：<仓库根>/config/agent_actions.yaml（可用 OPS_AGENT_ACTIONS_FILE 覆盖）
 DEFAULT_AGENT_ACTIONS_FILE: Path = ROOT_DIR / "config" / "agent_actions.yaml"

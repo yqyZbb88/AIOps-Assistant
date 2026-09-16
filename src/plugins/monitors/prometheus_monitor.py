@@ -13,7 +13,7 @@ from src.interfaces.monitor import MonitorError, MonitorSource
 from src.metrics.catalog import METRIC_BY_ID, METRIC_CATALOG
 from src.utils.metrics_config import default_metrics_config
 
-logger = logging.getLogger("ops_agent.prometheus")
+logger = logging.getLogger("aiops_assistant.prometheus")
 
 _EMPTY_TREND = {"latest": None, "min": None, "max": None, "avg": None, "points": 0}
 

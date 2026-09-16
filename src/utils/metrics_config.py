@@ -16,7 +16,7 @@ from src.interfaces.metric import (
 from src.metrics.catalog import METRIC_BY_ID, METRIC_CATALOG
 from src.utils.config_loader import ConfigError, ROOT_DIR, interpolate
 
-logger = logging.getLogger("ops_agent.metrics_config")
+logger = logging.getLogger("aiops_assistant.metrics_config")
 
 DEFAULT_METRICS_FILE = ROOT_DIR / "config" / "metrics.yaml"
 _METRIC_TOP_KEYS = frozenset({"enabled", "surfaces", "warning", "critical", "severity_enabled", "selector"})

@@ -30,7 +30,7 @@ from src.interfaces.history import (
 from src.storage.db import Database
 from src.utils.time import cutoff_iso
 
-logger = logging.getLogger("ops_agent.storage.history")
+logger = logging.getLogger("aiops_assistant.storage.history")
 
 DEFAULT_TTL_SECONDS = 168 * 3600  # 7 天
 DEFAULT_MAX_ROWS = 5000

@@ -25,7 +25,7 @@ from src.interfaces.metric import MetricDefinition
 from src.interfaces.monitor import MonitorError, MonitorSource
 from src.utils.freshness import epoch_to_iso, freshness_note
 
-logger = logging.getLogger("ops_agent.capabilities")
+logger = logging.getLogger("aiops_assistant.capabilities")
 
 # 指标无数据时的统一说明（Node Exporter 未采集 / Prometheus 无序列）
 _NO_DATA_HINT = "暂无数据（请确认 Node Exporter 已采集）"

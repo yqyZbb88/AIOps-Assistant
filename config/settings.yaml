@@ -1,4 +1,4 @@
-# ops-agent 全局配置（重构后统一入口）
+# AIOps-Assistant 全局配置（重构后统一入口）
 #
 # 取值方式：
 #   - 可变参数集中在这里，代码不硬编码；
@@ -6,8 +6,8 @@
 #     真实值写入根目录 .env（勿提交版本库），config/ 下不落任何明文密钥。
 
 app:
-  name: ops-agent          # 应用标识（FastAPI title / 日志 logger 前缀）
-  version: 0.2.0           # 语义化版本（本次架构重构后递增）
+  name: AIOps-Assistant          # 应用标识（FastAPI title / 日志 logger 前缀）
+  version: 0.3.0           # 与 src/__init__.py 的 __version__ 保持一致
 
 server:
   host: 127.0.0.1          # 仅本机可访问；局域网开放请改 0.0.0.0
@@ -54,7 +54,7 @@ storage:
   # → 服务照常启动，只是退化回「不落盘」：会话、告警归档、AI 建议均不保存。
   # 注意：代码里的 dataclass 默认值是 false，本文件的 true 才是「出厂打开」。
   enabled: true
-  db_path: "data/ops_agent.db"   # 相对仓库根；WAL 会在同目录生成 -wal / -shm 两个旁文件
+  db_path: "data/aiops_assistant.db"   # 相对仓库根；WAL 会在同目录生成 -wal / -shm 两个旁文件
   session_ttl_hours: 72          # 会话过期时长（小时），过期连同其消息一并清理
   max_sessions: 200              # 会话数上限，超出按最旧淘汰
   message_window: 20             # 每轮重发给模型的历史消息条数上限（限 token）
@@ -64,7 +64,7 @@ storage:
 
 logging:
   level: INFO              # 日志级别（DEBUG / INFO / WARNING / ERROR）
-  audit: true              # 是否启用动作审计日志（ops_agent.audit）
+  audit: true              # 是否启用动作审计日志（aiops_assistant.audit）
   audit_file: "logs/audit.log"   # 审计落盘路径（相对仓库根）；留空 = 只进 console
   audit_max_bytes: 5242880       # 单个文件上限（5 MiB），超出轮转
   audit_backup_count: 3          # 保留的轮转份数（audit.log.1 / .2 / .3）

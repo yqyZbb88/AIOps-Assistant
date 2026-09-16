@@ -8,4 +8,4 @@ from __future__ import annotations
 
 
 class OpsAgentError(Exception):
-    """ops-agent 业务异常基类（结构位：当前无子类，预留）。"""
+    """AIOps-Assistant 业务异常基类（结构位：当前无子类，预留）。"""

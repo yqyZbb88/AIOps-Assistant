@@ -1,6 +1,6 @@
 """Container 装配链路 + create_app 冒烟（全程离线）。
 
-背景（阶段 8）：container.ops_agent() 与 main.create_app() 此前**从未被任何测试调用**——
+背景（阶段 8）：container.aiops_assistant() 与 main.create_app() 此前**从未被任何测试调用**——
 整条装配（executors 构建、RuleEngine 装配、provider 解析、各降级分支）没有任何断言。
 本文件补上这条链路的护栏：降级写错会静默失效，比崩溃更难发现。
 
@@ -31,6 +31,19 @@ from src.utils.config_loader import (
 # ---------------------------------------------------------------------------
 # monitor：未注册 provider → fail-loud
 # ---------------------------------------------------------------------------
+def test_legacy_database_path_is_reused_after_rebrand(monkeypatch, tmp_path):
+    import src.utils.config_loader as config_loader
+
+    monkeypatch.setattr(config_loader, "ROOT_DIR", tmp_path)
+    old = tmp_path / "data" / "ops_agent.db"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"legacy")
+
+    resolved = Container._resolve_db_path("data/aiops_assistant.db")
+
+    assert resolved == old
+
+
 def test_monitor_unregistered_provider_raises_with_available_list():
     """未注册的 monitor provider 必须 fail-loud，且报错里带可用列表（便于排查拼写）。"""
     c = Container(settings=Settings(monitor=MonitorSettings(provider="nope")))
@@ -82,7 +95,7 @@ def test_llm_enabled_returns_client():
 def test_agent_can_be_disabled_without_building_model():
     """agent.enabled=false 时 ChatService 不持有工厂，只走关键词兜底。"""
     c = Container(settings=Settings(agent=AgentSettings(enabled=False)))
-    agent = c.ops_agent()
+    agent = c.aiops_assistant()
 
     assert agent.chat_service._assistant_factory is None
     assert agent.chat_service._agent_broken is True
@@ -233,14 +246,14 @@ def test_sessions_reconciles_orphan_pending_on_open(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# ops_agent：完整装配
+# aiops_assistant：完整装配
 # ---------------------------------------------------------------------------
-def test_ops_agent_assembles_full_chain():
+def test_aiops_assistant_assembles_full_chain():
     """完整装配：executors → RuleEngine、ChatService（注入工厂）、AlertAnalyzer。
 
     这是本文件存在的首要理由——整条装配此前零断言。
     """
-    agent = Container(settings=Settings()).ops_agent()
+    agent = Container(settings=Settings()).aiops_assistant()
     assert isinstance(agent, OpsAgent)
     assert agent.chat_service is not None
     assert agent.rule_engine is not None
@@ -249,15 +262,15 @@ def test_ops_agent_assembles_full_chain():
     assert set(agent.rule_engine.executors) == set(Container(settings=Settings()).executors())
 
 
-def test_ops_agent_cached():
-    """ops_agent() 缓存：两次调用同一实例（避免重复装配）。"""
+def test_aiops_assistant_cached():
+    """aiops_assistant() 缓存：两次调用同一实例（避免重复装配）。"""
     c = Container(settings=Settings())
-    assert c.ops_agent() is c.ops_agent()
+    assert c.aiops_assistant() is c.aiops_assistant()
 
 
-def test_ops_agent_llm_disabled_still_assembles():
+def test_aiops_assistant_llm_disabled_still_assembles():
     """llm.enabled=false → 装配照常完成，只是 analysis.llm 为 None（AI 分析关闭）。"""
-    agent = Container(settings=Settings(llm=LLMSettings(enabled=False))).ops_agent()
+    agent = Container(settings=Settings(llm=LLMSettings(enabled=False))).aiops_assistant()
     assert agent.llm is None
     assert agent.analysis.llm is None
     assert agent.chat_service is not None

@@ -1,8 +1,6 @@
-> **受众：运维人员 + 开发工程师。** 运维用于查询、备份和维护；开发用于 schema、迁移和存储实现。
-
 # 数据库结构说明
 
-本文档说明 ops-agent 的 SQLite 持久化库：**八张表、每个字段的含义、以及它们之间的关系**。
+本文档说明 AIOps-Assistant 的 SQLite 持久化库：**八张表、每个字段的含义、以及它们之间的关系**。
 
 > 实现代码见 [src/storage/db.py](../src/storage/db.py)（建表与连接）与
 > [src/storage/session.py](../src/storage/session.py)、[src/storage/history.py](../src/storage/history.py)（读写）。
@@ -15,8 +13,8 @@
 | 项 | 说明 |
 |---|---|
 | 引擎 | **Python 标准库自带的 `sqlite3`** —— 零新增依赖，不需要安装任何软件或启动数据库服务 |
-| 位置 | 默认 `data/ops_agent.db`（相对仓库根，由 `storage.db_path` 配置） |
-| 伴生文件 | WAL 模式下同目录会有 `ops_agent.db-wal` 与 `ops_agent.db-shm`（**同样是运行时产物，不要提交**） |
+| 位置 | 默认 `data/aiops_assistant.db`（相对仓库根，由 `storage.db_path` 配置） |
+| 伴生文件 | WAL 模式下同目录会有 `aiops_assistant.db-wal` 与 `aiops_assistant.db-shm`（**同样是运行时产物，不要提交**） |
 | 日志模式 | `wal`（同步盘/网络盘上开不起来时自动回落 `delete`，不影响使用） |
 | schema 版本 | 当前 **v6**，记在 `PRAGMA user_version` 里 |
 | 总开关 | `storage.enabled`。关掉 / 打不开 → **服务照常启动**，只是不落盘，行为与引入本功能前完全一致 |
@@ -26,7 +24,7 @@
 
 ```bash
 # 环境里自带的命令行工具（零安装）
-"D:/MiniConda/envs/langchain1.2/Library/bin/sqlite3.exe" data/ops_agent.db
+"D:/MiniConda/envs/langchain1.2/Library/bin/sqlite3.exe" data/aiops_assistant.db
 sqlite> .tables
 sqlite> .schema sessions
 sqlite> SELECT * FROM sessions;
@@ -444,14 +442,13 @@ SQLite** 开着这个库时，服务端写入就会失败（`busy_timeout` 重�
 
 ### 备份
 
-停掉服务后直接复制 `ops_agent.db` 即可（**运行中复制要连 `-wal` / `-shm` 一起**，
+停掉服务后直接复制 `aiops_assistant.db` 即可（**运行中复制要连 `-wal` / `-shm` 一起**，
 否则可能拿到不一致的快照）。或者用 sqlite 自己的方式：
 
 ```bash
-sqlite3 data/ops_agent.db ".backup backup.db"
+sqlite3 data/aiops_assistant.db ".backup backup.db"
 ```
 
 ### 相关文档
 
 - [README.md](../README.md) —— 项目结构、配置、路由（**权威结构文档**）
-- [PROJECT_HANDOVER.md](../PROJECT_HANDOVER.md) —— 开发约束、已踩的坑、待办路线图

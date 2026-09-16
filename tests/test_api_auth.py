@@ -152,7 +152,7 @@ def test_enabled_with_invalid_tokens_refuses_to_start():
 
 def test_configured_but_disabled_logs_a_warning(caplog):
     """配了密钥却没启用：不影响安全，但用户很可能**以为自己受保护了**。"""
-    with caplog.at_level(logging.WARNING, logger="ops_agent.main"):
+    with caplog.at_level(logging.WARNING, logger="aiops_assistant.main"):
         app = _make_app(enabled=False)
 
     assert any("无鉴权" in r.getMessage() for r in caplog.records)
@@ -232,14 +232,14 @@ def test_other_alert_routes_still_accept_any_valid_identity(path):
 
 def test_empty_alert_identity_logs_a_warning(caplog):
     """fail-open 不能是静默的——否则用户以为锁上了。"""
-    with caplog.at_level(logging.WARNING, logger="ops_agent.main"):
+    with caplog.at_level(logging.WARNING, logger="aiops_assistant.main"):
         _make_app(alert_identity="")
 
     assert any("alert_identity" in r.getMessage() for r in caplog.records)
 
 
 def test_configured_alert_identity_does_not_warn(caplog):
-    with caplog.at_level(logging.WARNING, logger="ops_agent.main"):
+    with caplog.at_level(logging.WARNING, logger="aiops_assistant.main"):
         _make_app(alert_identity="alertmanager")
 
     assert not any("alert_identity" in r.getMessage() for r in caplog.records)

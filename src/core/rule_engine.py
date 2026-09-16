@@ -26,7 +26,7 @@ from src.storage.models import ActionRule, Alert, AlertmanagerPayload, RulesFile
 from src.utils.config_loader import ROOT_DIR, interpolate
 from src.utils.security import redact_sensitive
 
-logger = logging.getLogger("ops_agent.rule_engine")
+logger = logging.getLogger("aiops_assistant.rule_engine")
 
 # 命中规则但 auto_execute=false 的状态标记（与"无规则/执行失败"区分）
 SKIP_MARK = "matched_but_auto_execute_disabled"

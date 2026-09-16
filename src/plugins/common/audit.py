@@ -1,4 +1,4 @@
-"""统一审计写入（ops_agent.audit）。
+"""统一审计写入（aiops_assistant.audit）。
 
 收敛动作（原 SshActionBase._audit）与只读诊断（原 SshDiagnostics._record）里近乎重复的
 JSON 拼装，两条边界共用同一通道与结构。安全不变量：

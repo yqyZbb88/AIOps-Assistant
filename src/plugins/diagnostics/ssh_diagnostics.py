@@ -27,7 +27,7 @@ from src.plugins.diagnostics.commands import (
     command_specs,
 )
 
-logger = logging.getLogger("ops_agent.diagnostics.ssh")
+logger = logging.getLogger("aiops_assistant.diagnostics.ssh")
 
 
 class SshDiagnostics(DiagnosticSource):

@@ -22,7 +22,7 @@ from src.plugins.common import ssh as ssh_common
 from src.plugins.common.cmddef import CmdDef, ParamError
 from src.plugins.common.endpoint import CONNECTION_FIELDS, endpoint_from_params
 
-logger = logging.getLogger("ops_agent.actions.executor")
+logger = logging.getLogger("aiops_assistant.actions.executor")
 
 
 class CatalogCommandExecutor(ActionExecutor):

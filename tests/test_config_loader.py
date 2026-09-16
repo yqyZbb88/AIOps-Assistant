@@ -1,6 +1,7 @@
 """config_loader：${VAR} / ${VAR:-default} 插值与 dataclass 解析。"""
 from __future__ import annotations
 
+from src import __app_name__, __version__
 from src.utils.config_loader import (
     ConfigError,
     Settings,
@@ -137,6 +138,12 @@ metrics:
     assert settings.agent.recursion_limit == 7
     assert settings.chat.max_message_chars == 123
     assert settings.metrics.file == "config/custom_metrics.yaml"
+
+
+def test_app_name_and_version_have_single_source():
+    settings = Settings()
+    assert settings.app.name == __app_name__ == "AIOps-Assistant"
+    assert settings.app.version == __version__ == "0.3.0"
 
 
 def test_default_settings():

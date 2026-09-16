@@ -3,7 +3,7 @@
 设计：
 - 不做 logging.conf（搁置项）；用 config/settings.yaml 的 logging.* 控制
   （main.create_app() 调用 configure_logging 装配根级别、审计通道与轮转文件）；
-- 动作审计走独立 logger `ops_agent.audit`，便于单独收集/过滤（见 plugins/actions）；
+- 动作审计走独立 logger `aiops_assistant.audit`，便于单独收集/过滤（见 plugins/actions）；
 - **审计日志可选落盘**：默认写 `logs/audit.log` 并轮转。在此之前审计只进 console，
   进程一重启就没了——而审计的用处恰恰是「事后追查」，重启即丢等于没有。
 """
@@ -16,15 +16,15 @@ from pathlib import Path
 from typing import Any
 
 # 审计日志专用 logger 名：动作执行器在其 execute 前后写入
-AUDIT_LOGGER_NAME = "ops_agent.audit"
+AUDIT_LOGGER_NAME = "aiops_assistant.audit"
 # 固定指标巡检专用 logger：每轮写一条汇总，并可选落到独立轮转文件。
-INSPECTION_LOGGER_NAME = "ops_agent.inspection"
+INSPECTION_LOGGER_NAME = "aiops_assistant.inspection"
 
 _FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 # 打在文件 handler 上的标记属性：用于**幂等判断**（见 _attach_audit_file）
-_FILE_HANDLER_TAG = "_ops_agent_audit_file"
-_INSPECTION_FILE_HANDLER_TAG = "_ops_agent_inspection_file"
+_FILE_HANDLER_TAG = "_aiops_assistant_audit_file"
+_INSPECTION_FILE_HANDLER_TAG = "_aiops_assistant_inspection_file"
 
 DEFAULT_AUDIT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_AUDIT_BACKUP_COUNT = 3
@@ -44,7 +44,7 @@ def configure_logging(
     """配置根日志级别、审计通道与审计文件（幂等；重复调用只调整级别/补挂文件）。
 
     - level：根日志级别（DEBUG/INFO/WARNING/ERROR），basicConfig 未配置时才生效；
-    - audit=False：把 ops_agent.audit 提到 WARNING，仅失败/异常进审计，静默成功执行
+    - audit=False：把 aiops_assistant.audit 提到 WARNING，仅失败/异常进审计，静默成功执行
       （**语义不变**：这不是「关闭审计」）；
     - audit_file：审计日志落盘路径（相对仓库根）；空串 = 只进 console，不落文件。
     - inspection_file：巡检全量汇总日志路径；空串 = 只进 console。
@@ -101,7 +101,7 @@ def _attach_rotating_file(
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        logging.getLogger("ops_agent.logger").error(
+        logging.getLogger("aiops_assistant.logger").error(
             "无法创建%s目录 %s，仅输出到控制台: %s", description, log_path.parent, exc
         )
         return
@@ -161,7 +161,7 @@ def get_inspection_logger() -> logging.Logger:
 
 
 def write_audit(record: dict[str, Any], *, level: int = logging.INFO) -> None:
-    """把一条**结构化**审计记录写进 `ops_agent.audit`（一行一个 JSON 对象）。
+    """把一条**结构化**审计记录写进 `aiops_assistant.audit`（一行一个 JSON 对象）。
 
     放在这里而不是 `plugins/common/audit.py`：审计是**跨层**的旁路通道，而两类写法
     （动作执行、人工审批决策）分处不同层——`api/` 不能 import `plugins/`，`core/`
@@ -174,4 +174,4 @@ def write_audit(record: dict[str, Any], *, level: int = logging.INFO) -> None:
     try:
         get_audit_logger().log(level, "%s", json.dumps(record, ensure_ascii=False))
     except Exception as exc:  # noqa: BLE001 - 序列化失败（如含不可序列化对象）
-        logging.getLogger("ops_agent.logger").error("审计记录写入失败: %s", exc)
+        logging.getLogger("aiops_assistant.logger").error("审计记录写入失败: %s", exc)

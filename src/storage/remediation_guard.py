@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from src.interfaces.action import RuleExecutionGuard
 from src.storage.db import Database
 
-logger = logging.getLogger("ops_agent.remediation_guard")
+logger = logging.getLogger("aiops_assistant.remediation_guard")
 
 
 def _now_iso() -> str:

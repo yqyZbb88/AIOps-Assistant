@@ -37,7 +37,7 @@ from src.storage.db import Database
 from src.storage.memory import AlertStore
 from src.utils.config_loader import Settings, load_settings
 
-logger = logging.getLogger("ops_agent.container")
+logger = logging.getLogger("aiops_assistant.container")
 
 
 class Container:
@@ -45,7 +45,7 @@ class Container:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings: Settings = settings or load_settings()
-        self._ops_agent: OpsAgent | None = None
+        self._aiops_assistant: OpsAgent | None = None
         self._monitor: MonitorSource | None = None
         self._metrics_config: MetricsConfig | None = None
         self._llm: LLMClient | None = None
@@ -373,7 +373,13 @@ class Container:
         from src.utils.config_loader import ROOT_DIR
 
         path = Path(raw)
-        return path if path.is_absolute() else ROOT_DIR / path
+        resolved = path if path.is_absolute() else ROOT_DIR / path
+        # 兼容重命名前的默认数据库路径，避免升级后误以为历史数据丢失。
+        legacy = ROOT_DIR / "data" / "ops_agent.db"
+        if raw == "data/aiops_assistant.db" and not resolved.exists() and legacy.exists():
+            logger.warning("检测到旧数据库 %s，继续使用该文件；新默认路径为 %s", legacy, resolved)
+            return legacy
+        return resolved
 
     def _assistant_factory(self):
         """聊天 Agent 工厂（惰性）：首次聊天被 ChatService 调用才构建。"""
@@ -403,10 +409,10 @@ class Container:
         )
 
     # -- 主控制器 ---------------------------------------------------------
-    def ops_agent(self) -> OpsAgent:
+    def aiops_assistant(self) -> OpsAgent:
         """构造（并缓存）主控制器 OpsAgent。"""
-        if self._ops_agent is not None:
-            return self._ops_agent
+        if self._aiops_assistant is not None:
+            return self._aiops_assistant
 
         settings = self.settings
         monitor = self.monitor()
@@ -431,7 +437,7 @@ class Container:
             trend_minutes=settings.alert.trend_minutes,
             metrics_config=self.metrics_config(),
         )
-        self._ops_agent = OpsAgent(
+        self._aiops_assistant = OpsAgent(
             monitor=monitor,
             store=AlertStore(maxlen=settings.alert.recent_limit),
             chat_service=chat_service,
@@ -446,4 +452,4 @@ class Container:
             len(self.executors()),
             getattr(llm, "name", "none"),
         )
-        return self._ops_agent
+        return self._aiops_assistant

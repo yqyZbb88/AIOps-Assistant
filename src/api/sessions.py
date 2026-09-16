@@ -32,7 +32,7 @@ from src.interfaces.session import (
     normalize_session_name,
 )
 
-logger = logging.getLogger("ops_agent.api.sessions")
+logger = logging.getLogger("aiops_assistant.api.sessions")
 
 router = APIRouter()
 

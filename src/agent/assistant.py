@@ -54,7 +54,7 @@ from src.interfaces.session import ApprovalLedger, ChatMessage, TurnResult
 from src.storage.approval import ApprovalStore
 from src.utils.model_loader import ModelLoadError, content_text, get_model
 
-logger = logging.getLogger("ops_agent.agent")
+logger = logging.getLogger("aiops_assistant.agent")
 
 #: 写命令审批允许的决策（**永不包含 edit**：允许编辑参数等于绕过管理员声明的模板与约束）
 ALLOWED_APPROVAL_DECISIONS: tuple[str, ...] = ("approve", "reject")
@@ -324,7 +324,7 @@ class OpsAssistant:
 
         **每轮仍是全新的 thread_id**（路线 B）：历史由调用方每轮重新拼进来，
         checkpointer 只当「审批中断的临时草稿纸」，跑完即删——已实测：新 thread +
-        完整历史不会跨轮累积（见 PROJECT_HANDOVER「M4 第二批」的 spike 结论）。
+        完整历史不会跨轮累积。
         """
         if not (message or "").strip():
             raise LLMError("消息为空")

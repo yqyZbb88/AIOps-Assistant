@@ -106,7 +106,7 @@ class TestCatalogExecutor:
             return (0, "restarted ok", "")
 
         monkeypatch.setattr("src.plugins.common.ssh.exec_command", fake)
-        with caplog.at_level(logging.INFO, logger="ops_agent.audit"):
+        with caplog.at_level(logging.INFO, logger="aiops_assistant.audit"):
             result = executor.execute({
                 "host": "192.168.1.1", "port": 22, "username": "root",
                 "password": "secret-in-test", "service": "nginx",

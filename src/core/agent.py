@@ -34,7 +34,7 @@ from src.storage.memory import AlertStore
 from src.storage.models import AlertAck, AlertmanagerPayload
 from src.utils.time import now_iso
 
-logger = logging.getLogger("ops_agent.core")
+logger = logging.getLogger("aiops_assistant.core")
 
 # 最近告警缓冲的默认上限（可经注入 store 覆盖）
 DEFAULT_RECENT_LIMIT = 100

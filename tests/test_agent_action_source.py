@@ -94,7 +94,7 @@ def test_ssh_error_raises_and_audits(source, monkeypatch, caplog):
         raise SshError("authentication failed")
 
     monkeypatch.setattr("src.plugins.common.ssh.exec_command", boom)
-    with caplog.at_level(logging.WARNING, logger="ops_agent.audit"):
+    with caplog.at_level(logging.WARNING, logger="aiops_assistant.audit"):
         with pytest.raises(AgentActionError, match="SSH"):
             source.run("restart_service", params={"service": "nginx"})
     assert "authentication failed" in caplog.text
@@ -137,7 +137,7 @@ def test_output_truncated(source, monkeypatch):
 # ---------------------------------------------------------------------------
 def test_audit_has_no_password_and_no_full_output(source, monkeypatch, caplog):
     _stub(monkeypatch, out="sensitive-output-payload")
-    with caplog.at_level(logging.INFO, logger="ops_agent.audit"):
+    with caplog.at_level(logging.INFO, logger="aiops_assistant.audit"):
         source.run("restart_service", params={"service": "nginx"})
 
     assert '"action": "agent_action"' in caplog.text
@@ -149,7 +149,7 @@ def test_audit_has_no_password_and_no_full_output(source, monkeypatch, caplog):
 
 def test_audit_on_nonzero_records_error(source, monkeypatch, caplog):
     _stub(monkeypatch, code=1, err="boom")
-    with caplog.at_level(logging.ERROR, logger="ops_agent.audit"):
+    with caplog.at_level(logging.ERROR, logger="aiops_assistant.audit"):
         with pytest.raises(AgentActionError):
             source.run("cleanup_disk")
     assert "rc=1" in caplog.text

@@ -37,7 +37,7 @@ from src.utils.logger import write_audit
 from src.utils.auth import AuthConfigError, parse_approvers
 from src.utils.time import now_iso
 
-logger = logging.getLogger("ops_agent.api.approvals")
+logger = logging.getLogger("aiops_assistant.api.approvals")
 
 router = APIRouter()
 

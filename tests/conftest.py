@@ -32,7 +32,7 @@ if str(ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 # 为什么需要：`import src.main` 会执行模块级的 `app = create_app()`，而它用**仓库真实配置**
 # （config/settings.yaml 的 storage.enabled: true）装配容器 → `container.sessions()` →
-# `open_database(ROOT_DIR/"data/ops_agent.db")`。**开库会跑迁移、也会写数据**，
+# `open_database(ROOT_DIR/"data/aiops_assistant.db")`。**开库会跑迁移、也会写数据**，
 # 于是跑一次测试就可能改动——甚至迁移坏——用户的真实库。实测确认过：
 # 只 `import src.main` 就能让那个文件的 mtime 变化。
 #

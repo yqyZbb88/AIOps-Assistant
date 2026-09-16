@@ -22,7 +22,7 @@ from src.api.deps import require_auth
 from src.core.agent import OpsAgent
 from src.interfaces.session import SessionNotFoundError
 
-logger = logging.getLogger("ops_agent.api.chat")
+logger = logging.getLogger("aiops_assistant.api.chat")
 
 router = APIRouter()
 

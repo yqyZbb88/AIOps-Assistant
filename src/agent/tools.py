@@ -50,7 +50,7 @@ from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG, tool_name
 from src.utils.freshness import freshness_note
 from src.utils.metrics_config import default_metrics_config
 
-logger = logging.getLogger("ops_agent.tools")
+logger = logging.getLogger("aiops_assistant.tools")
 
 
 def build_tools(

@@ -1,7 +1,3 @@
-> **受众：用户 / 运维人员，涉及鉴权实现时也供开发工程师参考。**
->
-> 用户主要负责生成、配置和轮换密钥；开发工程师负责 `require_auth`、审批和授权边界。
-
 # 鉴权与密钥
 
 > **本文是「密钥怎么来、放哪、怎么用、怎么排查」的权威文档。**
@@ -250,7 +246,7 @@ OPS_API_TOKENS={"k-alice-9f3a…": "alice", "k-am-3e77…": "alertmanager"}
 Alertmanager 从**文件**读令牌（而不是写死在配置里）：
 
 ```bash
-printf '%s' '<上面那条 k-am-… 密钥>' > 'D:/Prometheus/alertmanager-0.33.1.windows-amd64/ops_agent_token'
+printf '%s' '<上面那条 k-am-… 密钥>' > 'D:/Prometheus/alertmanager-0.33.1.windows-amd64/aiops_assistant_token'
 ```
 
 PowerShell 用 `Set-Content -NoNewline -Path <路径> -Value '<密钥>'`。
@@ -270,7 +266,7 @@ receivers:
         http_config:
           authorization:
             type: Bearer
-            credentials_file: 'D:/Prometheus/alertmanager-0.33.1.windows-amd64/ops_agent_token'
+            credentials_file: 'D:/Prometheus/alertmanager-0.33.1.windows-amd64/aiops_assistant_token'
 ```
 
 用 `credentials_file` 而不是内联 `credentials:`——后者等于把密钥又抄一份进那个
@@ -327,7 +323,7 @@ OPS_API_TOKENS={"k-你的随机值…": "yqyZ"}
 查库里有哪些 `user` 值（只读，不暴露消息内容）：
 
 ```bash
-python -c "import sqlite3;print(sqlite3.connect('data/ops_agent.db').execute('SELECT DISTINCT user, COUNT(*) FROM sessions GROUP BY 1').fetchall())"
+python -c "import sqlite3;print(sqlite3.connect('data/aiops_assistant.db').execute('SELECT DISTINCT user, COUNT(*) FROM sessions GROUP BY 1').fetchall())"
 ```
 
 ---
@@ -352,5 +348,4 @@ curl -s http://127.0.0.1:8000/health
 ```
 
 **相关**：[README](../README.md)（安全说明 / 出厂开关一览 / 路由表）·
-[PROJECT_HANDOVER](../PROJECT_HANDOVER.md)（硬性约束 / 坑表 / 路线图）·
 [docs/database.md](database.md)（`sessions.user` 字段的说明）

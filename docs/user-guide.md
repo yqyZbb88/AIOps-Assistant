@@ -1,6 +1,6 @@
 # 用户 / 运维使用指南
 
-本文面向部署和使用 ops-agent 的运维人员，不要求阅读 Python 源码。
+本文面向部署和使用 AIOps-Assistant 的运维人员，不要求阅读 Python 源码。
 
 ## 一、它能做什么
 
@@ -273,15 +273,17 @@ Agent 不能：
 需要备份：
 
 ```text
-data/ops_agent.db
-data/ops_agent.db-wal
-data/ops_agent.db-shm
+data/aiops_assistant.db
+data/aiops_assistant.db-wal
+data/aiops_assistant.db-shm
 .env
 config/
 logs/
 ```
 
 优先使用 SQLite 在线备份或先停服务再复制数据库。
+
+升级到 AIOps-Assistant 后，如果新路径 `data/aiops_assistant.db` 不存在而旧 `data/ops_agent.db` 存在，程序会继续使用旧库并记录 WARNING。
 
 不要只复制 `.db` 而遗漏 `-wal` / `-shm`。
 

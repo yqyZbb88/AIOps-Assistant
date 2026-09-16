@@ -1,6 +1,4 @@
-> **受众：用户 / 运维人员。** 本文是运行时 YAML 字段的权威说明；代码实现细节见 [developer-guide.md](developer-guide.md)。
-
-# ops-agent YAML 配置指南
+# AIOps-Assistant YAML 配置指南
 
 本文覆盖 `config/` 下所有运行时 YAML 文件：
 
@@ -57,8 +55,8 @@ settings.yaml
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `app.name` | string | `ops-agent` | FastAPI 标题和日志应用名 |
-| `app.version` | string | `0.2.0` | 对外应用版本 |
+| `app.name` | string | `AIOps-Assistant` | FastAPI 标题和日志应用名 |
+| `app.version` | string | `0.3.0` | 对外应用版本，与 `src/__init__.py` 保持一致 |
 
 ### server
 
@@ -141,7 +139,7 @@ settings.yaml
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `storage.enabled` | bool | dataclass false，当前 YAML true | SQLite 持久化总开关 |
-| `storage.db_path` | string | `data/ops_agent.db` | 数据库路径，相对仓库根或绝对路径 |
+| `storage.db_path` | string | `data/aiops_assistant.db` | 数据库路径；升级时若新路径不存在且旧 `data/ops_agent.db` 存在，会自动继续使用旧库 |
 | `storage.session_ttl_hours` | int | `72` | 会话过期时间 |
 | `storage.max_sessions` | int | `200` | 最大会话数，超出淘汰最旧会话 |
 | `storage.message_window` | int | `20` | 每轮发送给模型的历史消息上限 |

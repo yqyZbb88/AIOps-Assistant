@@ -56,7 +56,7 @@ from src.interfaces.session import (
     is_owner,
 )
 
-logger = logging.getLogger("ops_agent.chat")
+logger = logging.getLogger("aiops_assistant.chat")
 
 # 帮助信息：列出现阶段支持的能力
 HELP_TEXT = (

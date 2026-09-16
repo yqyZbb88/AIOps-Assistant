@@ -235,13 +235,13 @@ def test_agent_tools_share_text_with_fallback(fakemonitor):
 # ---------------------------------------------------------------------------
 # OpsAgent
 # ---------------------------------------------------------------------------
-def test_ops_agent_chat_fallback(fakemonitor):
+def test_aiops_assistant_chat_fallback(fakemonitor):
     agent = OpsAgent(monitor=fakemonitor)
     assert "CPU 使用率" in agent.chat("帮我看看CPU忙不忙")
     assert agent.chat("你好") == DEFAULT_REPLY
 
 
-def test_ops_agent_process_alert_record_and_store(fakemonitor, fakellm):
+def test_aiops_assistant_process_alert_record_and_store(fakemonitor, fakellm):
     """记录 → 规则处置(ok/fail) → 无规则 AI 分析 全链路（假组件，离线）。"""
     class OkExecutor(ActionExecutor):
         name = "ok_action"
@@ -297,7 +297,7 @@ rules:
         assert len(agent.recent(10)) == 2
 
 
-def test_ops_agent_process_alert_llm_unavailable_not_blocking(fakemonitor):
+def test_aiops_assistant_process_alert_llm_unavailable_not_blocking(fakemonitor):
     """LLM 不可用（未注入）→ AI 分析跳过，告警记录与规则处置照常完成。"""
     class OkExecutor(ActionExecutor):
         name = "ok_action"
@@ -330,7 +330,7 @@ def test_ops_agent_process_alert_llm_unavailable_not_blocking(fakemonitor):
         assert len(agent.recent()) == 2
 
 
-def test_ops_agent_prints_remediation_to_console(fakemonitor, capsys):
+def test_aiops_assistant_prints_remediation_to_console(fakemonitor, capsys):
     """处置结果的终端输出由 OpsAgent 负责（阶段 9 从 RuleEngine 移入）。
 
     文案逐字锁定：print 内容是用户观察 auto_execute=true 效果的主要窗口，
@@ -395,7 +395,7 @@ def test_rule_engine_itself_prints_nothing(fakemonitor, capsys):
     assert capsys.readouterr().out == ""  # 引擎自身零输出
 
 
-def test_ops_agent_active_alerts_propagates_monitor_error(fakemonitor):
+def test_aiops_assistant_active_alerts_propagates_monitor_error(fakemonitor):
     class BoomMonitor:
         def active_alerts(self):
             raise MonitorError("down")

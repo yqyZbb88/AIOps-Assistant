@@ -23,7 +23,7 @@ from src.utils.freshness import freshness_note
 from src.utils.metrics_config import default_metrics_config
 from src.storage.models import Alert
 
-logger = logging.getLogger("ops_agent.analysis")
+logger = logging.getLogger("aiops_assistant.analysis")
 
 _UNAVAILABLE = "暂无趋势数据（Prometheus 不可达或无 Node Exporter）"
 
