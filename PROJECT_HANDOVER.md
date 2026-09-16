@@ -217,7 +217,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
 
 - **固定指标自动巡检**（2026-09-15）：应用 lifespan 启动单进程后台线程，按全局周期只读检查
   `metrics.yaml` 的 inspection surface（代码目录内置 CPU/Memory/Disk/Network/System 17 个指标）；每类指标可独立开关并配置 warning/critical 阈值。每轮写
-  `ops_agent.inspection` 日志和 `logs/inspection.log`，等级映射为 normal=INFO、warning=WARNING、
+  `ops_agent.inspection` 日志和 `logs/inspection.log`，按指标分组输出人类可读多行文本；等级映射为 normal=INFO、warning=WARNING、
   critical/error=ERROR；只有异常轮次写入 `inspection_runs`，可通过 `GET /inspections/recent` 查询。
   **不调用 LLM、RuleEngine 或任何写命令**；当前只支持单 worker。
 

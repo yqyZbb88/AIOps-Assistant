@@ -48,6 +48,8 @@ def _fmt_value(value: Any, unit: str) -> str:
         return f"{value:.1f}MiB/s"
     if unit in {"errors/s", "load/core"}:
         return f"{value:.3f}{unit}"
+    if unit == "alerts":
+        return f"{value:g} alerts"
     return f"{value:g}{unit}"
 
 
@@ -76,32 +78,67 @@ def _threshold_level(
 
 
 def format_inspection_summary(result: InspectionResult) -> str:
-    """把一轮结果压成一条可读日志，保留指标值、阈值和错误信息。"""
-    parts = [f"[巡检] level={result.level}", f"checked_at={result.checked_at}"]
+    """把一轮结果渲染成适合人工阅读的多行日志。"""
+    lines = [f"[巡检] level={result.level} checked_at={result.checked_at}"]
+    current_group: str | None = None
+
     for metric_id, item in result.snapshot.items():
         if not item.get("enabled"):
             continue
-        label = _LEGACY_LABELS.get(metric_id, metric_id)
+        group = str(item.get("group") or "Other")
+        if group != current_group:
+            lines.append(f"[{group}]")
+            current_group = group
+
         unit = str(item.get("unit") or "")
-        samples = item.get("samples") or []
+        thresholds = _threshold_text(item)
         if metric_id == "alerts.active_count":
-            parts.append(
-                f"{label}={item.get('count', 0)}"
-                f"(level={item.get('level')},warn>={item.get('warning')},crit>={item.get('critical')})"
+            detail = (
+                f"count={item.get('count', 0)} "
+                f"pending={item.get('pending', 0)} firing={item.get('firing', 0)}"
+            )
+            suffix = f" ({thresholds})" if thresholds else ""
+            lines.append(
+                f"  {metric_id} [{item.get('level')}]: {detail}{suffix}"
             )
             continue
-        shown = ", ".join(
-            f"{_sample_label(sample)}={_fmt_value(sample.get('value'), unit)}({sample.get('level')})"
-            for sample in samples
-        ) or "无数据"
-        parts.append(
-            f"{label}=[{shown}]"
-            f"(warn>={item.get('warning')},crit>={item.get('critical')},"
-            f"level={item.get('level')})"
-        )
+
+        samples = item.get("samples") or []
+        if not samples:
+            lines.append(f"  {metric_id} [{item.get('level')}]: 无数据")
+            continue
+        for sample in samples:
+            label = _sample_label(sample)
+            value = _fmt_value(sample.get("value"), unit)
+            suffix = f" ({thresholds})" if thresholds else ""
+            lines.append(
+                f"  {metric_id} [{sample.get('level')}] {label}: {value}{suffix}"
+            )
+
+    lines.append("[汇总]")
+    lines.append(
+        f"  overall={result.level} metrics={len(result.snapshot)} anomalies={len(result.findings)}"
+    )
     if result.error:
-        parts.append(f"errors={result.error}")
-    return " | ".join(parts)
+        lines.append(f"  errors={result.error}")
+    return "\n".join(lines)
+
+
+def _threshold_text(item: Mapping[str, Any]) -> str:
+    if not item.get("severity_enabled"):
+        return ""
+    warning = item.get("warning")
+    critical = item.get("critical")
+    if warning is None or critical is None:
+        return ""
+    unit = str(item.get("unit") or "")
+    op = "<=" if item.get("direction") == "below" else ">="
+    return (
+        f"warning{op}{_fmt_value(warning, unit)}, "
+        f"critical{op}{_fmt_value(critical, unit)}"
+    )
+
+
 
 
 def _sample_label(sample: Mapping[str, Any]) -> str:
@@ -175,6 +212,7 @@ class InspectionChecker:
             "display_name": definition.display_name,
             "group": definition.group,
             "unit": definition.unit,
+            "direction": definition.direction,
             "warning": runtime.warning,
             "critical": runtime.critical,
             "severity_enabled": runtime.severity_enabled,
@@ -243,6 +281,7 @@ class InspectionChecker:
             "display_name": definition.display_name,
             "group": definition.group,
             "unit": definition.unit,
+            "direction": definition.direction,
             "warning": runtime.warning,
             "critical": runtime.critical,
             "severity_enabled": runtime.severity_enabled,

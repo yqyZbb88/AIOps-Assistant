@@ -173,11 +173,13 @@ def test_format_summary_contains_level_values_and_thresholds():
 
     text = format_inspection_summary(result)
 
-    assert "level=warning" in text
-    assert "cpu=[" in text
+    assert "[巡检] level=warning" in text
+    assert "[CPU]" in text
+    assert "cpu.usage [warning]" in text
     assert "85.0%" in text
-    assert "warn>=80" in text
-    assert "active_alerts=0" in text
+    assert "warning>=80.0" in text
+    assert "alerts.active_count [normal]: count=0" in text
+    assert "[汇总]" in text
 
 
 class RecordingStore(InspectionStore):

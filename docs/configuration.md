@@ -156,9 +156,23 @@ settings.yaml
 | `logging.audit_file` | string | 空（当前 YAML `logs/audit.log`） | 审计轮转文件；空表示只进 console |
 | `logging.audit_max_bytes` | int | `5242880` | 审计单文件字节上限 |
 | `logging.audit_backup_count` | int | `3` | 审计轮转文件保留数量 |
-| `logging.inspection_file` | string | 空（当前 YAML `logs/inspection.log`） | 全量巡检日志；空表示只进 console |
+| `logging.inspection_file` | string | 空（当前 YAML `logs/inspection.log`） | 全量巡检日志，按指标分组输出多行人类可读文本；空表示只进 console |
 | `logging.inspection_max_bytes` | int | `5242880` | 巡检单文件字节上限 |
 | `logging.inspection_backup_count` | int | `3` | 巡检轮转文件保留数量 |
+
+巡检日志是多行分组格式，例如：
+
+```text
+[巡检] level=warning checked_at=2026-09-16T00:00:00+00:00
+[CPU]
+  cpu.usage [warning] instance=192.168.20.128:9100: 85.2% (warning>=80.0%, critical>=90.0%)
+[Memory]
+  memory.usage [normal] instance=192.168.20.128:9100: 60.1% (warning>=85.0%, critical>=95.0%)
+[汇总]
+  overall=warning metrics=17 anomalies=1
+```
+
+`logging.audit_file` 仍保持一行一个 JSON 对象，便于机器解析；巡检日志和审计日志的格式职责不同。
 
 ### auth
 
