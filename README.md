@@ -44,10 +44,8 @@ AIOps-Assistant 是一套面向单主机环境的智能运维助手，基于 Fas
 
 | 文档 | 内容 |
 |---|---|
-| [docs/user-guide.md](docs/user-guide.md) | 部署、启动、验收、日常运维、备份和排障 |
+| [docs/guide.md](docs/guide.md) | 快速开始、部署、鉴权、API、巡检、备份和排障 |
 | [docs/configuration.md](docs/configuration.md) | 所有运行时 YAML 字段、默认值、约束和示例 |
-| [docs/auth.md](docs/auth.md) | API 密钥、身份、Alertmanager webhook 和审批职责分离 |
-| [docs/database.md](docs/database.md) | SQLite 表结构、数据生命周期、备份和维护 |
 
 ## 快速开始
 
@@ -130,7 +128,7 @@ Authorization: Bearer <密钥>
 字段说明：
 
 - [配置指南](docs/configuration.md)
-- [鉴权指南](docs/auth.md)
+- [使用指南](docs/guide.md)
 
 ## 安全建议
 
@@ -157,4 +155,4 @@ logs/inspection.log
 - `inspection.log` 记录每轮巡检结果，按指标分组输出多行文本
 - SQLite 保存会话、告警归档、审批决策和异常巡检
 
-详细说明见 [数据库文档](docs/database.md)。
+详细说明见 [使用指南](docs/guide.md)。

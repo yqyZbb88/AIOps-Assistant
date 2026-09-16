@@ -15,7 +15,7 @@
 （`type: Bearer` + 密钥，见 `require_alert_identity`）。**两个常见坑**：
 ① 漏配 → 401，服务侧一条都收不到，只有 Alertmanager 的日志看得到；
 ② 配了但身份名与 `auth.alert_identity` 对不上 → 403，表现**同样是收不到告警**。
-完整配方与排查见 docs/auth.md。
+完整配方与排查见 docs/guide.md 的 Alertmanager webhook 章节。
 """
 from __future__ import annotations
 

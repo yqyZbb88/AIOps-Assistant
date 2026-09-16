@@ -74,7 +74,7 @@ def test_sessions_columns_are_exact(tmp_path):
 
 
 def test_approval_decisions_columns_are_exact(tmp_path):
-    """这张表的列被逐字段说明在 docs/database.md 里，改列要同步那边。"""
+    """这张表的列由迁移测试锁定，改列必须同步迁移和测试。"""
     db = open_database(tmp_path / "ops.db")
     cols = {r["name"] for r in db.query("PRAGMA table_info(approval_decisions)")}
     assert cols == {"approval_id", "session_id", "action", "decided_at", "decided_by"}
