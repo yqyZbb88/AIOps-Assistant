@@ -145,6 +145,17 @@ def test_inspection_file_is_separate_and_written(tmp_path):
     assert _inspection_file_handlers()
 
 
+def test_inspection_does_not_print_to_console(tmp_path, caplog):
+    target = tmp_path / "inspection.log"
+    configure_logging(level="INFO", audit=True, inspection_file=str(target))
+
+    with caplog.at_level(logging.INFO):
+        logging.getLogger(INSPECTION_LOGGER_NAME).warning("只写文件，不进 console")
+
+    assert not any("只写文件，不进 console" in record.getMessage() for record in caplog.records)
+    assert "只写文件，不进 console" in target.read_text(encoding="utf-8")
+
+
 def test_inspection_handler_is_idempotent(tmp_path):
     target = tmp_path / "inspection.log"
     configure_logging(level="INFO", audit=True, inspection_file=str(target))

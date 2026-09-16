@@ -156,7 +156,7 @@ settings.yaml
 | `logging.audit_file` | string | 空（当前 YAML `logs/audit.log`） | 审计轮转文件；空表示只进 console |
 | `logging.audit_max_bytes` | int | `5242880` | 审计单文件字节上限 |
 | `logging.audit_backup_count` | int | `3` | 审计轮转文件保留数量 |
-| `logging.inspection_file` | string | 空（当前 YAML `logs/inspection.log`） | 全量巡检日志，按指标分组输出多行人类可读文本；空表示只进 console |
+| `logging.inspection_file` | string | 空（当前 YAML `logs/inspection.log`） | 全量巡检日志，按指标分组输出多行人类可读文本；空表示不写日志（不再回退 console） |
 | `logging.inspection_max_bytes` | int | `5242880` | 巡检单文件字节上限 |
 | `logging.inspection_backup_count` | int | `3` | 巡检轮转文件保留数量 |
 

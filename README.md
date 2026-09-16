@@ -228,7 +228,7 @@ pip install -r requirements.txt
 | `logging.level/audit` | 日志级别 / 动作审计开关 |
 | `logging.audit_file` | 审计落盘路径（默认 `logs/audit.log`；留空 = 只进 console） |
 | `logging.audit_max_bytes/audit_backup_count` | 审计文件轮转上限（5 MiB）与保留份数（3） |
-| `logging.inspection_file` | 全量巡检日志路径；按 CPU/Memory/Disk/Network/System 分组输出多行人类可读文本 |
+| `logging.inspection_file` | 巡检日志路径；按 CPU/Memory/Disk/Network/System 分组输出多行文本，只写文件、不进 console |
 | `logging.inspection_max_bytes/inspection_backup_count` | 巡检日志轮转上限与保留份数 |
 | `auth.enabled` | 共享密钥鉴权开关（代码里 dataclass 默认 `false`，本文件才是出厂值） |
 | `auth.tokens` | 「密钥 → 身份」的 **JSON 映射**，形如 `{"k-alice-9f3a":"alice"}`；真实值走 `.env` 的 `OPS_API_TOKENS`。**yaml 里的占位符必须用单引号包住**（`'${OPS_API_TOKENS:-}'`），否则变量有值时会被 YAML 当成流式映射解析成 dict |

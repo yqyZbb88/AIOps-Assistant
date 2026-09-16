@@ -66,7 +66,9 @@ def configure_logging(
         )
 
     inspection_logger = logging.getLogger(INSPECTION_LOGGER_NAME)
-    inspection_logger.setLevel(logging.NOTSET)  # 跟随根级别，同时传播到 console
+    inspection_logger.setLevel(logging.NOTSET)  # 跟随根级别
+    # 巡检只进入专用文件，不再传播到 root console。若未配置文件，日志会被丢弃。
+    inspection_logger.propagate = False
     if inspection_file:
         _attach_inspection_file(
             inspection_logger,

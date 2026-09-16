@@ -105,7 +105,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
     | 载体 | 什么时候必须改 |
     |---|---|
     | 代码注释 / docstring | 随代码**同一个 commit**。解释行为、坑、边界的段落跟着改；**解释「已不存在的东西」的段落直接删**，不写「原 X 已被 Y 取代」 |
-    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **607**）随用例数更新 |
+    | **本文件（计划书）** | 待做做完 → 从「路线图」移走并在「已实现能力」登记；新踩的坑 → 进「已踩过的坑」表；既定决策有变 → 显式写**修订**及其边界；测试计数（当前 **608**）随用例数更新 |
     | README.md | 结构树 / 分层职责 / 配置 / 路由表 / 出厂默认开关一览 / 测试计数（**结构权威文档**）——动了任何一项都要同步 |
     | [docs/database.md](docs/database.md) | **改表结构 / 加字段 / 改字段语义 / 改清理策略时必须同步**——它是库结构的逐字段说明。迁移那节的两条硬性约束（结构指纹一致、新列加末尾）也在那里 |
     | [docs/auth.md](docs/auth.md) | **改鉴权行为时必须同步**——新增/改动密钥种类、`auth` 段语义、豁免端点、401/404 规则、Alertmanager 侧配法，都要改它。它是鉴权细节的**唯一**出处，README 只留摘要 |
@@ -361,7 +361,7 @@ Python = `D:\MiniConda\envs\langchain1.2\python.exe`；shell 为 Git-Bash）。�
   属设计决策而非缺陷；做之前先问用户**——`print` 内容是用户观察 `auto_execute=true` 效果的主要窗口。
 - **结构化输出**（讲义 7.3）：`src/agent/prompts.py` 已留 ToolStrategy + AlertAnalysis schema
   注释与启用示例，默认关。启用前先确认不会把 `core/analysis.py` 拖进 langchain。
-- **日志落盘**：目前日志走 console / settings 控级别；未加 RotatingFileHandler。
+- **日志落盘**：审计与巡检均已接入轮转文件；巡检只写专用文件、不再输出到 console。
 - **配置热更新（reload 入口）**：`RuleEngine.reload_rules()` 已实现，但**全仓只有 `__init__` 调用它**
   （[src/core/rule_engine.py:60](src/core/rule_engine.py#L60)）——无路由、无 CLI、无脚本。运行中的 HTTP
   服务里**没有任何配置是热的**：`main.py` import 即 `create_app()`，容器在装配期快照

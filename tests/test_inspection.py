@@ -196,28 +196,40 @@ class RecordingStore(InspectionStore):
         return 0
 
 
-def test_scheduler_logs_and_stores_only_abnormal(caplog):
+def test_scheduler_logs_and_stores_only_abnormal():
+    class RecordingLogger:
+        def __init__(self):
+            self.records = []
+
+        def log(self, level, message, *args):
+            self.records.append((level, message % args if args else message))
+
+        def error(self, message, *args, **kwargs):
+            self.records.append((logging.ERROR, message % args if args else message))
+
+    normal_logger = RecordingLogger()
     normal_store = RecordingStore()
     normal = InspectionScheduler(
         InspectionChecker(_monitor(), _settings(), _default_config()),
         _settings(),
         store=normal_store,
+        logger_=normal_logger,
     )
-    with caplog.at_level(logging.INFO, logger="ops_agent.inspection"):
-        assert normal.run_once().level == LEVEL_NORMAL
+    assert normal.run_once().level == LEVEL_NORMAL
     assert normal_store.records == []
-    assert caplog.records[-1].levelno == logging.INFO
+    assert normal_logger.records[-1][0] == logging.INFO
 
+    warning_logger = RecordingLogger()
     warning_store = RecordingStore()
     warning = InspectionScheduler(
         InspectionChecker(_monitor(cpu=85.0), _settings(), _default_config()),
         _settings(),
         store=warning_store,
+        logger_=warning_logger,
     )
-    with caplog.at_level(logging.INFO, logger="ops_agent.inspection"):
-        assert warning.run_once().level == LEVEL_WARNING
+    assert warning.run_once().level == LEVEL_WARNING
     assert len(warning_store.records) == 1
-    assert caplog.records[-1].levelno == logging.WARNING
+    assert warning_logger.records[-1][0] == logging.WARNING
 
 
 def test_scheduler_turns_checker_exception_into_error_result():
