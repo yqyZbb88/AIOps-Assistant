@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 
 from src.plugins.common.endpoint import SshEndpoint, endpoint_from_params
-from src.plugins.common.ssh import _new_client
+from src.plugins.common.ssh import _auth_options, _new_client
 
 
 class FakeRejectPolicy:
@@ -50,3 +50,18 @@ def test_new_client_rejects_unknown_hosts(monkeypatch):
     assert client.system_keys_loaded is True
     assert client.loaded_paths == ["custom_known_hosts"]
     assert isinstance(client.policy, FakeRejectPolicy)
+
+
+def test_auth_options_disables_agent_for_explicit_password():
+    options = _auth_options(SshEndpoint(host="h1", password="secret"))
+    assert options == {"allow_agent": False, "look_for_keys": False}
+
+
+def test_auth_options_disables_agent_for_explicit_private_key():
+    options = _auth_options(SshEndpoint(host="h1", key_filename="/tmp/id_ed25519"))
+    assert options == {"allow_agent": False, "look_for_keys": False}
+
+
+def test_auth_options_keeps_agent_only_without_explicit_credentials():
+    options = _auth_options(SshEndpoint(host="h1"))
+    assert options == {"allow_agent": True, "look_for_keys": True}
