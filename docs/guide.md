@@ -190,6 +190,8 @@ auth:
 
 ### 轮换密钥
 
+更完整的密钥配置和排查见 [auth.md](auth.md)。
+
 1. 先增加新密钥
 2. 重启服务
 3. 客户端切换新密钥
@@ -321,6 +323,8 @@ logs/inspection.log
 
 ## 十、备份
 
+数据库结构和维护细节见 [database.md](database.md)。
+
 需要备份：
 
 ```text
@@ -433,4 +437,6 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 
 所有 YAML 字段、默认值和约束见：
 
-[configuration.md](configuration.md)
+- [configuration.md](configuration.md)
+- [auth.md](auth.md)
+- [database.md](database.md)
