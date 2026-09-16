@@ -1,97 +1,76 @@
-# AIOps-Assistant 全局配置（重构后统一入口）
-#
-# 取值方式：
-#   - 可变参数集中在这里，代码不硬编码；
-#   - 敏感值一律用环境变量占位并在加载时插值（机制见 utils/config_loader.py），
-#     真实值写入根目录 .env（勿提交版本库），config/ 下不落任何明文密钥。
+# AIOps-Assistant 全局配置。密钥只写入 .env，不要写入本文件。
 
 app:
-  name: AIOps-Assistant          # 应用标识（FastAPI title / 日志 logger 前缀）
+  name: AIOps-Assistant          # 应用名称，用于 API 文档和日志
 
 server:
-  host: 127.0.0.1          # 仅本机可访问；局域网开放请改 0.0.0.0
+  host: 127.0.0.1          # 默认只监听本机；对外服务建议使用反向代理
   port: 8000
 
 prometheus:
-  # 数据源地址：优先取环境变量 PROMETHEUS_URL，缺省回退 localhost:9090
   base_url: ${PROMETHEUS_URL:-http://localhost:9090}
-  timeout: 5               # 查询超时（秒），避免 Prometheus 异常时长时间阻塞
+  timeout: 5               # 查询超时秒数
 
 monitor:
-  provider: prometheus     # 监控源插件名（registry 中 monitors 已注册的名称）
+  provider: prometheus
 
 llm:
-  provider: deepseek       # LLM 插件名（registry 中 llms 已注册的名称）
-  enabled: true            # false 时告警 AI 分析直接跳过，不阻塞告警接收
+  provider: deepseek
+  enabled: true            # false 时跳过告警 AI 分析
 
 agent:
-  enabled: true            # false 时聊天只走关键词兜底，不构建/调用 LLM Agent
-  name: ops_assistant      # Agent trace/日志归因名（预留，聊天 Agent 构建用）
-  debug: false             # create_agent 的 debug 开关（预留）
-  recursion_limit: 25      # 单轮 Agent 最多执行的图步骤数，防止工具调用无限循环
+  enabled: true            # false 时聊天只走关键词兜底
+  name: ops_assistant
+  debug: false
+  recursion_limit: 25      # 单轮 Agent 最大工具调用步骤
 
 chat:
-  max_message_chars: 8000  # 单条聊天消息上限，超限返回 413
+  max_message_chars: 8000
 
 metrics:
-  file: config/metrics.yaml    # 统一指标目录选择、阈值、实例与使用范围
+  file: config/metrics.yaml
 
 alert:
-  recent_limit: 100        # 最近告警内存缓冲上限（条）
-  trend_minutes: 60        # 告警 AI 分析时取的实例历史趋势窗口（分钟）
-  trend_step: "5m"         # 趋势采点步长
+  recent_limit: 100        # 内存中保留的最近告警数
+  trend_minutes: 60        # 告警分析趋势窗口
+  trend_step: "5m"         # 趋势查询步长
 
 inspection:
-  enabled: true            # 是否启动固定指标周期巡检；仅支持单 worker
-  interval_seconds: 30    # 全局巡检间隔（30~86400 秒）
-  run_on_start: true       # 服务启动后立即巡检一次
-  ttl_hours: 168           # 异常巡检归档保留时长
-  max_rows: 1000           # 异常巡检归档最大行数
+  enabled: true
+  interval_seconds: 300    # 每 5 分钟巡检一次
+  run_on_start: true
+  ttl_hours: 168           # 异常巡检保留 7 天
+  max_rows: 2500           # 异常巡检最大记录数，可覆盖约 7 天
 
 storage:
-  # SQLite 持久化总开关。关闭 / 打不开（磁盘满、无写权限、文件版本过新）
-  # → 服务照常启动，只是退化回「不落盘」：会话、告警归档、AI 建议均不保存。
-  # 注意：代码里的 dataclass 默认值是 false，本文件的 true 才是「出厂打开」。
   enabled: true
-  db_path: "data/aiops_assistant.db"   # 相对仓库根；WAL 会在同目录生成 -wal / -shm 两个旁文件
-  session_ttl_hours: 72          # 会话过期时长（小时），过期连同其消息一并清理
-  max_sessions: 200              # 会话数上限，超出按最旧淘汰
-  message_window: 20             # 每轮重发给模型的历史消息条数上限（限 token）
-  history_ttl_hours: 168         # 告警 / 处置 / AI 建议归档的过期时长（小时）
-  max_history_rows: 5000         # 上述三张归档表各自的行数上限
-  purge_interval_seconds: 60     # 清理节流间隔（秒），避免每次写都全表扫
+  db_path: "data/aiops_assistant.db"
+  session_ttl_hours: 72
+  max_sessions: 200
+  message_window: 20
+  history_ttl_hours: 168
+  max_history_rows: 5000
+  purge_interval_seconds: 60
 
 logging:
-  level: INFO              # 日志级别（DEBUG / INFO / WARNING / ERROR）
-  audit: true              # 是否启用动作审计日志（aiops_assistant.audit）
-  audit_file: "logs/audit.log"   # 审计落盘路径（相对仓库根）；留空 = 只进 console
-  audit_max_bytes: 5242880       # 单个文件上限（5 MiB），超出轮转
-  audit_backup_count: 3          # 保留的轮转份数（audit.log.1 / .2 / .3）
-  inspection_file: "logs/inspection.log"  # 全量巡检汇总日志；留空 = 只进 console
-  inspection_max_bytes: 5242880           # 单个巡检日志文件上限（5 MiB）
-  inspection_backup_count: 3              # 巡检日志保留份数
+  level: INFO
+  audit: true
+  audit_file: "logs/audit.log"
+  audit_max_bytes: 5242880
+  audit_backup_count: 3
+  inspection_file: "logs/inspection.log"
+  inspection_max_bytes: 5242880
+  inspection_backup_count: 3
 
 auth:
-  # 共享密钥鉴权：身份由密钥推断（服务端事实），不再采信请求体里自报的用户名。
-  # 关闭时服务行为与改造前完全一致——无身份，因此也不做会话所有者校验。
-  # 代码里的 dataclass 默认值同样是 false，与 storage.enabled 同理：测试里
-  # Settings() 被直接构造多次，默认打开会让既有用例集体 401。出厂值只由本文件决定。
   enabled: true
 
-  # 「密钥 → 身份」的 JSON 映射，例：{"k-alice-9f3a":"alice","k-bob-71cd":"bob"}
-  # 真实值走 .env 的 OPS_API_TOKENS（config/ 下不落任何明文密钥）。
-  # 单引号不能省：不加引号时，变量为空会解析成 null、变量有值会被 YAML 当成
-  # 流式映射解析成 dict；两者都会让启动校验失败。
+  # 密钥到身份的 JSON 映射，启用鉴权时必须配置。
   tokens: '${OPS_API_TOKENS:-}'
 
-  # owner = 触发者本人可批准；approvers_only = 只有下面列出的身份可批准。
-  approval_mode: owner
-  # JSON 数组字符串，例如 ["alice","audit-bot"]；approvers_only 模式下必填。
-  approver_identities: '${OPS_APPROVER_IDENTITIES:-[]}'
+  # approvers_only：只有列出的身份可以批准写命令。
+  approval_mode: approvers_only
+  approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
 
-  # POST /alert（Alertmanager webhook）**只接受这个身份**的密钥；留空 = 不限制。
-  # 为什么需要：/alert 会把告警喂给规则引擎，而 auto_execute: true 的规则会直接
-  # 执行写命令、不经人工审批——不限制的话，任何持有效密钥的聊天用户都能构造告警
-  # 去踩那条路径。填的必须是 .env 里某个密钥映射到的身份名。
-  # 留空时会有一条启动 WARNING（不静默）。
+  # 只有该身份可以调用 Alertmanager webhook。
   alert_identity: alertmanager

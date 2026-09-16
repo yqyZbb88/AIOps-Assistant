@@ -1,18 +1,13 @@
-# 统一指标运行配置
-#
-# PromQL / 指标类型 / 分组方式在代码指标目录中维护，本文件只负责：
-#   enabled         是否启用
-#   surfaces        用于巡检 / 聊天工具 / 告警 AI 趋势
-#   warning critical severity_enabled
-#   selector        可选 Prometheus 标签 matcher，覆盖全局 instance 或增加过滤
-#
-# 修改后需要重启服务。未知指标 ID、未知字段、非法阈值会让服务拒绝启动。
+# 统一指标配置。
+# 查询表达式由程序内置维护；此文件只配置启用范围、阈值、实例和 selector。
+# 修改后需要重启服务。
 
 version: 1
-instance: 192.168.20.128:9100
-max_alert_analysis_metrics: 8
+instance: ${PROMETHEUS_INSTANCE:-localhost:9100}  # 默认监控实例，可用环境变量覆盖
+max_alert_analysis_metrics: 8                     # 告警 AI 单次最多分析的指标数
 
 metrics:
+  # 核心指标：参与巡检、聊天工具和告警分析。
   cpu.usage:
     enabled: true
     surfaces: { inspection: true, chat: true, alert_analysis: true }
@@ -20,6 +15,21 @@ metrics:
     critical: 90
     severity_enabled: true
 
+  memory.usage:
+    enabled: true
+    surfaces: { inspection: true, chat: true, alert_analysis: true }
+    warning: 85
+    critical: 95
+    severity_enabled: true
+
+  disk.usage:
+    enabled: true
+    surfaces: { inspection: true, chat: true, alert_analysis: true }
+    warning: 80
+    critical: 90
+    severity_enabled: true
+
+  # 增强巡检指标：先观察，确认基线后再开启阈值。
   cpu.load1:
     enabled: true
     surfaces: { inspection: true, chat: false, alert_analysis: false }
@@ -30,13 +40,6 @@ metrics:
     surfaces: { inspection: true, chat: false, alert_analysis: false }
     severity_enabled: false
 
-  memory.usage:
-    enabled: true
-    surfaces: { inspection: true, chat: true, alert_analysis: true }
-    warning: 85
-    critical: 95
-    severity_enabled: true
-
   memory.available:
     enabled: true
     surfaces: { inspection: true, chat: false, alert_analysis: false }
@@ -46,13 +49,6 @@ metrics:
     enabled: true
     surfaces: { inspection: true, chat: false, alert_analysis: false }
     severity_enabled: false
-
-  disk.usage:
-    enabled: true
-    surfaces: { inspection: true, chat: true, alert_analysis: true }
-    warning: 80
-    critical: 90
-    severity_enabled: true
 
   disk.read_bytes:
     enabled: true
@@ -99,6 +95,7 @@ metrics:
     surfaces: { inspection: true, chat: false, alert_analysis: false }
     severity_enabled: false
 
+  # 活动告警数：参与巡检和聊天。
   alerts.active_count:
     enabled: true
     surfaces: { inspection: true, chat: true, alert_analysis: false }

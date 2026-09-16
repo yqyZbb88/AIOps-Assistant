@@ -57,7 +57,7 @@ settings.yaml
 |---|---:|---:|---|
 | `app.name` | string | `AIOps-Assistant` | FastAPI 标题和日志应用名 |
 
-应用版本不在 YAML 中配置，由 `src/__init__.py` 的 `__version__` 统一提供。
+应用版本不在 YAML 中配置，由程序内置版本号统一提供。
 
 ### server
 
@@ -127,11 +127,11 @@ settings.yaml
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `inspection.enabled` | bool | dataclass 默认 false，当前 YAML true | 是否启动周期巡检；只支持单 worker |
-| `inspection.interval_seconds` | int | dataclass 300，当前 YAML 30 | 全局巡检间隔，必须为 30~86400 秒 |
+| `inspection.enabled` | bool | `true` | 是否启动周期巡检；只支持单 worker |
+| `inspection.interval_seconds` | int | `300` | 全局巡检间隔，必须为 30~86400 秒 |
 | `inspection.run_on_start` | bool | `true` | 服务启动后是否立即巡检一次 |
 | `inspection.ttl_hours` | int | `168` | 异常巡检归档保留小时数 |
-| `inspection.max_rows` | int | `1000` | 异常巡检归档最大行数 |
+| `inspection.max_rows` | int | `2500` | 异常巡检归档最大行数 |
 
 具体检查项、阈值和 surface 不在本段配置，统一在 `metrics.yaml` 中设置。
 
@@ -139,7 +139,7 @@ settings.yaml
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `storage.enabled` | bool | dataclass false，当前 YAML true | SQLite 持久化总开关 |
+| `storage.enabled` | bool | `true` | SQLite 持久化总开关 |
 | `storage.db_path` | string | `data/aiops_assistant.db` | 数据库路径；升级时若新路径不存在且旧 `data/ops_agent.db` 存在，会自动继续使用旧库 |
 | `storage.session_ttl_hours` | int | `72` | 会话过期时间 |
 | `storage.max_sessions` | int | `200` | 最大会话数，超出淘汰最旧会话 |
@@ -154,10 +154,10 @@ settings.yaml
 |---|---:|---:|---|
 | `logging.level` | string | `INFO` | `DEBUG/INFO/WARNING/ERROR` |
 | `logging.audit` | bool | `true` | `false` 时审计 logger 提到 WARNING，只记录失败 |
-| `logging.audit_file` | string | 空（当前 YAML `logs/audit.log`） | 审计轮转文件；空表示只进 console |
+| `logging.audit_file` | string | `logs/audit.log` | 审计轮转文件；空表示只进 console |
 | `logging.audit_max_bytes` | int | `5242880` | 审计单文件字节上限 |
 | `logging.audit_backup_count` | int | `3` | 审计轮转文件保留数量 |
-| `logging.inspection_file` | string | 空（当前 YAML `logs/inspection.log`） | 全量巡检日志，按指标分组输出多行人类可读文本；空表示不写日志（不再回退 console） |
+| `logging.inspection_file` | string | `logs/inspection.log` | 全量巡检日志，按指标分组输出多行人类可读文本；空表示不写日志 |
 | `logging.inspection_max_bytes` | int | `5242880` | 巡检单文件字节上限 |
 | `logging.inspection_backup_count` | int | `3` | 巡检轮转文件保留数量 |
 
@@ -166,9 +166,9 @@ settings.yaml
 ```text
 [巡检] level=warning checked_at=2026-09-16T00:00:00+00:00
 [CPU]
-  cpu.usage [warning] instance=192.168.20.128:9100: 85.2% (warning>=80.0%, critical>=90.0%)
+  cpu.usage [warning] instance=web-01:9100: 85.2% (warning>=80.0%, critical>=90.0%)
 [Memory]
-  memory.usage [normal] instance=192.168.20.128:9100: 60.1% (warning>=85.0%, critical>=95.0%)
+  memory.usage [normal] instance=web-01:9100: 60.1% (warning>=85.0%, critical>=95.0%)
 [汇总]
   overall=warning metrics=17 anomalies=1
 ```
@@ -179,10 +179,10 @@ settings.yaml
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `auth.enabled` | bool | dataclass false，当前 YAML true | 是否启用 Bearer 鉴权 |
+| `auth.enabled` | bool | `true` | 是否启用 Bearer 鉴权 |
 | `auth.tokens` | JSON string | 空 | 密钥到身份的 JSON 映射，建议用 `${OPS_API_TOKENS}` |
-| `auth.approval_mode` | string | `owner` | `owner` 或 `approvers_only` |
-| `auth.approver_identities` | JSON array string | `[]` | `approvers_only` 模式下允许审批的身份 |
+| `auth.approval_mode` | string | `approvers_only` | `owner` 或 `approvers_only` |
+| `auth.approver_identities` | JSON array string | `["admin"]` | `approvers_only` 模式下允许审批的身份 |
 | `auth.alert_identity` | string | `alertmanager` | 允许调用 `POST /alert` 的身份 |
 
 示例：
@@ -192,7 +192,7 @@ auth:
   enabled: true
   tokens: '${OPS_API_TOKENS:-}'
   approval_mode: approvers_only
-  approver_identities: '${OPS_APPROVER_IDENTITIES:-[]}'
+  approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
   alert_identity: alertmanager
 ```
 
@@ -203,7 +203,7 @@ auth:
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `version` | int | `1` | 当前只支持 1 |
-| `instance` | string | 空 | 默认 Prometheus instance，如 `192.168.20.128:9100` |
+| `instance` | string | `${PROMETHEUS_INSTANCE:-localhost:9100}` | 默认 Prometheus instance，需与 node_exporter 的 instance 标签一致 |
 | `max_alert_analysis_metrics` | int | `8` | 告警 AI 最多查询的趋势指标数量，范围 1~50 |
 | `metrics` | map | 无 | 指标 ID 到运行配置的映射，不能为空 |
 
@@ -221,7 +221,7 @@ metrics:
     critical: 90
     severity_enabled: true
     selector:
-      instance: 192.168.20.128:9100
+      instance: web-01:9100
 ```
 
 | 字段 | 类型 | 含义 |
@@ -241,7 +241,7 @@ metrics:
 
 ```yaml
 selector:
-  instance: 192.168.20.128:9100
+  instance: web-01:9100
   device: eth0
   device!=: lo
   device=~: "eth.*"
@@ -309,12 +309,13 @@ error > critical > warning > normal
 rules:
   - alertname: HighCPUUsage
     action: restart_service
-    target_instance: 192.168.20.128:9100
+    target_instance: "${PROMETHEUS_INSTANCE:-localhost:9100}"
     params:
-      host: 192.168.20.128
-      port: 22
-      username: root
-      password: "${SSH_PASSWORD_192_168_20_128}"
+      host: "${SSH_HOST:-localhost}"
+      port: "${SSH_PORT:-22}"
+      username: "${SSH_USER:-ops}"
+      password: "${SSH_PASSWORD:-}"
+      key_filename: "${SSH_KEY_FILENAME:-}"
       known_hosts: "${SSH_KNOWN_HOSTS:-}"
       service: nginx
     auto_execute: false
@@ -330,7 +331,7 @@ rules:
 | `auto_execute` | bool | 否 | true 自动执行，false 只命中不执行 |
 | `description` | string | 否 | 给人看的说明 |
 
-连接字段由 `plugins/common/endpoint.py` 识别：
+连接字段支持：
 
 ```text
 host, port, username, password, key_filename, known_hosts, connect_timeout
@@ -354,7 +355,7 @@ commands:
   restart_service:
     summary: 重启 systemd 服务
     template: "systemctl restart {service}"
-    sudo: false
+    sudo: true
     params:
       service:
         type: str
@@ -394,12 +395,13 @@ commands:
 这是聊天 Agent 的写命令白名单，和 `actions.yaml` 完全隔离。
 
 ```yaml
-enabled: true
+enabled: false
 target:
-  host: 192.168.20.128
+  host: "${SSH_HOST:-localhost}"
   port: 22
-  username: root
-  password: "${SSH_PASSWORD_192_168_20_128}"
+  username: "${SSH_USER:-ops}"
+  key_filename: "${SSH_KEY_FILENAME:-}"
+  password: "${SSH_PASSWORD:-}"
   known_hosts: "${SSH_KNOWN_HOSTS:-}"
   connect_timeout: 8
 output_limit: 4000
@@ -442,10 +444,11 @@ commands:
 enabled: true
 provider: ssh
 target:
-  host: 192.168.20.128
+  host: "${SSH_HOST:-localhost}"
   port: 22
-  username: root
-  password: "${SSH_PASSWORD_192_168_20_128}"
+  username: "${SSH_USER:-ops}"
+  key_filename: "${SSH_KEY_FILENAME:-}"
+  password: "${SSH_PASSWORD:-}"
   known_hosts: "${SSH_KNOWN_HOSTS:-}"
   connect_timeout: 8
 output_limit: 4000
@@ -536,7 +539,7 @@ metrics:
 |---|---|
 | `settings.yaml` | 启动时加载；修改后重启 |
 | `metrics.yaml` | 启动时加载；修改后重启 |
-| `rules.yaml` | RuleEngine 初始化时加载；当前没有 HTTP 热更新入口 |
+| `rules.yaml` | 启动时加载；当前没有 HTTP 热更新入口 |
 | `actions.yaml` | 容器首次构建执行器时加载；修改后重启 |
 | `agent_actions.yaml` | 首次构建 Agent 时加载；修改后重启 |
 | `diagnostics.yaml` | 首次构建 Agent 时加载；修改后重启 |

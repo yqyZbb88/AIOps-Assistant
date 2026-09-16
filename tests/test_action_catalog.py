@@ -71,14 +71,14 @@ class TestCatalogParse:
         with pytest.raises(ActionsConfigError, match="命令名"):
             parse_actions(text)
 
-    def test_repo_default_catalog_loads_three_commands(self):
+    def test_repo_default_catalog_loads_recommended_commands(self):
         cfg = load_actions_catalog()  # config/actions.yaml
         assert cfg is not None
         assert [c.key for c in cfg.commands] == [
-            "restart_service", "stop_loadgen", "cleanup_disk",
+            "restart_service", "cleanup_disk",
         ]
-        # 仓库目录不许 sudo（示例维持 false），且模板含参数声明一致
-        assert all(c.sudo is False for c in cfg.commands)
+        sudo_by_key = {c.key: c.sudo for c in cfg.commands}
+        assert sudo_by_key == {"restart_service": True, "cleanup_disk": False}
 
     def test_build_catalog_executors_keys(self):
         executors = build_catalog_executors(parse_actions(SAMPLE))

@@ -10,7 +10,7 @@
 OPS_API_TOKENS={"k-admin-随机值":"admin","k-am-随机值":"alertmanager"}
 ```
 
-推荐多人环境再配置：
+启用鉴权后，建议配置审批人：
 
 ```env
 OPS_APPROVER_IDENTITIES=["admin"]
@@ -22,8 +22,8 @@ OPS_APPROVER_IDENTITIES=["admin"]
 auth:
   enabled: true
   tokens: '${OPS_API_TOKENS:-}'
-  approval_mode: owner
-  approver_identities: '${OPS_APPROVER_IDENTITIES:-[]}'
+  approval_mode: approvers_only
+  approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
   alert_identity: alertmanager
 ```
 
@@ -35,7 +35,7 @@ auth:
 |---|---|---|---|
 | `OPS_API_TOKENS` | API Key 到身份的映射 | `.env` | 人、脚本、Alertmanager |
 | `OPS_APPROVER_IDENTITIES` | 审批人身份列表 | `.env` | 服务端 |
-| `SSH_PASSWORD_*` | SSH 登录密码 | `.env` | 服务连接目标主机 |
+| `SSH_KEY_FILENAME` / `SSH_PASSWORD` | SSH 私钥路径或登录密码 | `.env` | 服务连接目标主机 |
 | `DEEPSEEK_API_KEY` | 模型调用 | `.env` | 服务端 |
 | Alertmanager 凭据文件 | webhook Bearer Token | 独立文件 | Alertmanager |
 
@@ -84,7 +84,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 | `owner` | 触发写命令的人可以审批自己的申请 |
 | `approvers_only` | 只有 `approver_identities` 中的身份可以审批 |
 
-多人环境建议使用 `approvers_only`：
+推荐使用 `approvers_only`：
 
 ```env
 OPS_APPROVER_IDENTITIES=["admin","audit"]

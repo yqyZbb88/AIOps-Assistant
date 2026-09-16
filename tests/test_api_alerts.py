@@ -63,14 +63,14 @@ def test_alert_is_archived(client):
 
 
 def test_remediation_is_archived(client):
-    """HighCPUUsage 在 rules.yaml 里有两条规则（都 auto_execute=false）→ 两条 SKIP 记录。"""
+    """HighCPUUsage 在推荐 rules.yaml 中命中 restart_service，但默认不自动执行。"""
     client.post("/alert", json=_payload(_alert("HighCPUUsage")))
 
     body = client.get("/alerts/history").json()
 
-    assert len(body["remediations"]) == 2
+    assert len(body["remediations"]) == 1
     assert {r["status"] for r in body["remediations"]} == {"matched_but_auto_execute_disabled"}
-    assert {r["matched_rule"] for r in body["remediations"]} == {"restart_service", "stop_loadgen"}
+    assert {r["matched_rule"] for r in body["remediations"]} == {"restart_service"}
 
 
 def test_remediation_links_to_alert(client):

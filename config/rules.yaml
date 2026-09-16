@@ -1,82 +1,45 @@
-# 自动处置规则表（M1b 起动作收敛成「写命令目录」，见 config/actions.yaml）
-#
-# 作用：把「收到的告警 alertname」映射到「要执行的写命令」。
-#   alertname    : 规则名称，与 Prometheus 告警规则里的 alert 字段一致
-#   action       : 写命令目录 key，必须是 config/actions.yaml 里声明的命令
-#                  （executor 按 key 取目录项模板，只能从目录里选命令执行）
-#   params       : 传给该命令的参数 = 连接字段（host/port/username/…，密码占位）
-#                  + 该目录命令声明要的语义参数（如 service）；越权/多余参数会被拒
-#   target_instance : 允许本规则处置的 Alertmanager instance；auto_execute=true 时必填。
-#                    运行时必须与告警 labels.instance 精确匹配，防止同名告警触发错主机。
-#   auto_execute : true=收到告警自动执行；false=只命中规则不做动作（仅提示）。
-#                  建议先用 false 跑通「告警→规则命中」再逐个开启 true，避免误操作。
-#   description  : 规则用途说明（给人看的）
-#
-# 安全约束：
-#   - 密码一律以环境变量占位（加载时插值，机制见 src/utils/config_loader.py），
-#     真实值只写入根目录 .env 的 SSH_PASSWORD_192_168_20_128，本文件不落任何明文；
-#     未设置该变量时占位插值为空字符串，不会误连远端主机。
-#   - 认证二选一：password（密码，见上）或 key_filename（SSH 私钥路径，生产推荐）。
-#   - sudo 由 config/actions.yaml 每条命令声明（管理员决定），本文件不设置。
-#   - 同一个 alertname 想执行多个动作：写多条相同 alertname 的规则即可，
-#     每条独立判断 auto_execute，按文件顺序依次执行。
+# Alertmanager alertname 到写命令的规则映射。
+# 命中规则的告警不会进入 AI 分析；默认全部不自动执行。
+# 启用 auto_execute 前，必须确认 target_instance 和 SSH 凭据。
+
 rules:
-  # 示例 1：CPU 使用率过高 → 一个 alertname 配两条动作，按文件顺序执行
-  #   规则 1a：先尝试重启 nginx（auto_execute=false，仅命中不执行）；
-  #   规则 1b：再执行 stop_loadgen 停掉压测脚本（auto_execute=true，真执行，
-  #            把制造负载的进程杀掉 = 最简单的"自愈"闭环）。
-  #   注意：同一 alertname 想执行多个动作，必须拆成多条相同 alertname 的
-  #   独立规则（见上方安全约束最后一条）。
   - alertname: HighCPUUsage
     action: restart_service
-    target_instance: 192.168.20.128:9100
+    target_instance: "${PROMETHEUS_INSTANCE:-localhost:9100}"
     params:
-      host: 192.168.20.128
-      port: 22
-      username: root
-      password: "${SSH_PASSWORD_192_168_20_128}"
-      known_hosts: "${SSH_KNOWN_HOSTS:-}"   # auto_execute=false 不真连，仅占位
+      host: "${SSH_HOST:-localhost}"
+      port: "${SSH_PORT:-22}"
+      username: "${SSH_USER:-ops}"
+      password: "${SSH_PASSWORD:-}"
+      key_filename: "${SSH_KEY_FILENAME:-}"
+      known_hosts: "${SSH_KNOWN_HOSTS:-}"
       service: nginx
     auto_execute: false
-    description: "CPU 使用率过高 → 目录命令 restart_service 重启 192.168.20.128 的 nginx（示例，未启用）"
+    description: "CPU 持续过高时重启 nginx（默认人工确认后启用）"
 
-  - alertname: HighCPUUsage
-    action: stop_loadgen
-    target_instance: 192.168.20.128:9100
-    params:
-      host: 192.168.20.128
-      port: 22
-      username: root
-      password: "${SSH_PASSWORD_192_168_20_128}"
-      known_hosts: "${SSH_KNOWN_HOSTS:-}"
-    auto_execute: false
-    description: "CPU 使用率过高 → 目录命令 stop_loadgen 停掉压测脚本 load_gen.sh（示例）"
-
-  # 示例 2：内存使用率过高 → 重启该主机上的 mysql
   - alertname: HighMemoryUsage
     action: restart_service
-    target_instance: 192.168.20.128:9100
+    target_instance: "${PROMETHEUS_INSTANCE:-localhost:9100}"
     params:
-      host: 192.168.20.128
-      port: 22
-      username: root
-      password: "${SSH_PASSWORD_192_168_20_128}"
-      known_hosts: "${SSH_KNOWN_HOSTS:-}"   # 开 true 前在 .env 填真实密码
+      host: "${SSH_HOST:-localhost}"
+      port: "${SSH_PORT:-22}"
+      username: "${SSH_USER:-ops}"
+      password: "${SSH_PASSWORD:-}"
+      key_filename: "${SSH_KEY_FILENAME:-}"
+      known_hosts: "${SSH_KNOWN_HOSTS:-}"
       service: mysql
     auto_execute: false
-    description: "内存使用率过高 → 目录命令 restart_service 重启 192.168.20.128 的 mysql（示例）"
+    description: "内存持续过高时重启 mysql（默认人工确认后启用）"
 
-  # 示例 3：磁盘使用率过高 → 目录命令 cleanup_disk 跑清理脚本
-  #   cleanup_disk 的模板已在 actions.yaml 声明（cd /opt/ops && bash cleanup_disk.sh），
-  #   脚本需先放到主机上；想换命令请改目录模板，而不是在规则里写自由文本。
   - alertname: HighDiskUsage
     action: cleanup_disk
-    target_instance: 192.168.20.128:9100
+    target_instance: "${PROMETHEUS_INSTANCE:-localhost:9100}"
     params:
-      host: 192.168.20.128
-      port: 22
-      username: root
-      password: "${SSH_PASSWORD_192_168_20_128}"
-      known_hosts: "${SSH_KNOWN_HOSTS:-}"   # 开 true 前在 .env 填真实密码
+      host: "${SSH_HOST:-localhost}"
+      port: "${SSH_PORT:-22}"
+      username: "${SSH_USER:-ops}"
+      password: "${SSH_PASSWORD:-}"
+      key_filename: "${SSH_KEY_FILENAME:-}"
+      known_hosts: "${SSH_KNOWN_HOSTS:-}"
     auto_execute: false
-    description: "磁盘使用率过高 → 目录命令 cleanup_disk 执行磁盘清理脚本（示例）"
+    description: "磁盘过高时执行清理脚本（默认人工确认后启用）"

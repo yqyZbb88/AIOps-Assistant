@@ -68,7 +68,8 @@ cp .env.example .env
 ```env
 DEEPSEEK_API_KEY=...
 PROMETHEUS_URL=http://localhost:9090
-OPS_API_TOKENS={"随机密钥":"alice"}
+OPS_API_TOKENS={"随机密钥":"admin","alertmanager-随机密钥":"alertmanager"}
+OPS_APPROVER_IDENTITIES=["admin"]
 ```
 
 启动：

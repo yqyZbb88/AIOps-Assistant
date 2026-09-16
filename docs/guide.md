@@ -21,7 +21,8 @@ cp .env.example .env
 ```env
 DEEPSEEK_API_KEY=你的模型密钥
 PROMETHEUS_URL=http://localhost:9090
-OPS_API_TOKENS={"随机密钥":"admin"}
+OPS_API_TOKENS={"随机密钥":"admin","alertmanager-随机密钥":"alertmanager"}
+OPS_APPROVER_IDENTITIES=["admin"]
 ```
 
 生成随机 API 密钥：
@@ -132,7 +133,11 @@ PROMETHEUS_URL=http://localhost:9090
 ### SSH
 
 ```env
-SSH_PASSWORD_192_168_20_128=...
+SSH_HOST=your-server.example.com
+SSH_PORT=22
+SSH_USER=ops
+SSH_KEY_FILENAME=/path/to/id_ed25519
+SSH_PASSWORD=
 SSH_KNOWN_HOSTS=
 ```
 
@@ -178,15 +183,13 @@ auth:
 
 ### 审批人
 
-默认模式下，写命令触发者可以自己审批。多人环境建议改成：
+推荐配置使用 `approvers_only`，只有 `approver_identities` 中的身份可以批准写命令：
 
 ```yaml
 auth:
   approval_mode: approvers_only
   approver_identities: '["admin"]'
 ```
-
-此时只有列出的身份可以批准写命令。
 
 ### 轮换密钥
 

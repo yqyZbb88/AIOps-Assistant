@@ -212,9 +212,8 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 | 字段 | 当前默认 | 说明 |
 |---|---:|---|
 | `inspection.ttl_hours` | 168 | 异常巡检记录保留小时数 |
-| `inspection.max_rows` | 1000 | 异常巡检最大记录数 |
+| `inspection.max_rows` | 2500 | 异常巡检最大记录数 |
 
-如果巡检周期为 300 秒且持续异常，建议把 `inspection.max_rows` 调整到 2500 左右。
 
 ## 九、备份
 
