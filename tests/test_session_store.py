@@ -420,6 +420,22 @@ def test_decision_records_are_dropped_with_their_session(store):
     assert store.decided_approval_ids() == set()
 
 
+def test_delete_drops_decisions_of_that_session(store):
+    """用户主动删会话时，它的决策记录必须一起走（两套实现都要做到）。
+
+    决策表没有外键，也没人会因为会话消失回头清理它；只靠状态日志清理按 TTL 兜底的话，
+    孤儿行会一直挂到过期——而 delete 是用户随时能触发的动作，不是低频路径。
+    """
+    doomed = store.create()
+    kept = store.create()
+    store.record_decision("ap-doomed", session_id=doomed.session_id, action="approve")
+    store.record_decision("ap-kept", session_id=kept.session_id, action="reject")
+
+    assert store.delete(doomed.session_id) is True
+
+    assert store.decided_approval_ids() == {"ap-kept"}
+
+
 # -- 归属（鉴权开启后由 api/core 传入身份；None = 鉴权关闭，不筛） --------------
 def test_list_filters_by_user(store):
     store.create(user="alice")

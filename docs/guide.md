@@ -185,7 +185,9 @@ auth:
 
 ### 审批人
 
-推荐配置使用 `approvers_only`，只有 `approver_identities` 中的身份可以批准写命令：
+推荐配置使用 `approvers_only`，只有 `approver_identities` 中的身份可以批准写命令
+（审批人是岗位，能批准**任何人**触发的申请，不限于自己发起的；另一种 `owner` 模式
+则相反，只认触发人自己）。详细规则见 [auth.md](auth.md)。
 
 ```yaml
 auth:

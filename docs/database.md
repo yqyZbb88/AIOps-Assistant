@@ -130,6 +130,8 @@ duplicate_ignored
 
 这张表用于区分进程异常退出后的“未执行”和“结果未知”。
 
+保留期是 `history_ttl_hours`（默认 168 小时 = 7 天），由归档清理一并执行（见第八节）。
+
 ### `remediation_claims`
 
 防止同一条告警的同一动作被执行多次：
@@ -198,14 +200,20 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 | `max_sessions` | 200 | 最多保留的会话数 |
 | `purge_interval_seconds` | 60 | 清理节流间隔 |
 
-### 告警和幂等清理
+### 告警、幂等和审批决策清理
 
 | 字段 | 当前默认 | 说明 |
 |---|---:|---|
-| `history_ttl_hours` | 168 | 告警、处置、AI 建议和幂等抢占记录 |
-| `max_history_rows` | 5000 | 上述归档表和幂等表的容量上限 |
+| `history_ttl_hours` | 168 | 告警、处置、AI 建议、幂等抢占记录和审批决策 |
+| `max_history_rows` | 5000 | 上述各表的容量上限 |
 
-`approval_decisions` 跟随会话清理：对应会话被 TTL 或容量策略删除时，其审批决策也一起删除。
+`approval_decisions` 有**两条**清理路径，缺一不可：
+
+- **快路径**：对应会话被 TTL 或容量策略删除时，它的审批决策一起删除；
+- **兜底**：按 `history_ttl_hours` 过期、按 `max_history_rows` 限容，由归档清理执行。
+
+兜底不能省：快路径只在会话被删时才跑，既扫不到 `session_id` 为空的行，也扫不到会话
+早已消失的孤儿行。`remediation_claims` 同样由归档清理按 TTL 与容量上限回收。
 
 ### 巡检清理
 

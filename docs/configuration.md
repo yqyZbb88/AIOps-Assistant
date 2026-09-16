@@ -337,6 +337,14 @@ rules:
 host, port, username, password, key_filename, known_hosts, connect_timeout
 ```
 
+`connect_timeout` 可以省略，**默认 8 秒**；它同时是「连不上」和「单条命令跑不完」的
+上限，某条规则要跑更久就显式写大一点。写 `0` 也落到默认值上（`0` 在 paramiko 里是
+「永不超时」，不能让一条会挂死的远程命令变成默认行为）。
+
+这个默认值**只有一处定义**（`src/plugins/common/endpoint.py` 的
+`DEFAULT_CONNECT_TIMEOUT`），`diagnostics.yaml` 与 `agent_actions.yaml` 的 `target`
+用的是同一个数——三条 SSH 路径不该各有各的「没写就用多少」。
+
 其余字段按 `actions.yaml` 对应命令的 `params` 校验。
 
 重要行为：
@@ -428,7 +436,7 @@ commands:
 | `target.password` | string | 密码，建议环境变量占位 |
 | `target.key_filename` | string | 私钥路径，与 password 二选一 |
 | `target.known_hosts` | string | known_hosts 路径；空则使用系统路径 |
-| `target.connect_timeout` | int | 连接和命令超时秒数 |
+| `target.connect_timeout` | int | 连接和命令超时秒数，省略则 **8**（`≥1`，写 0 报配置错误） |
 | `output_limit` | int | 回传 Agent 的输出字符上限 |
 | `approval.timeout_seconds` | int | 待审批超时秒数 |
 | `approval.max_pending` | int | 最大待审批数量 |
@@ -465,7 +473,7 @@ commands:
 |---|---:|---|
 | `enabled` | bool | 是否启用只读诊断 |
 | `provider` | string | 诊断实现，当前为 `ssh` |
-| `target` | map | SSH 连接参数，同 agent_actions |
+| `target` | map | SSH 连接参数，同 agent_actions（`connect_timeout` 省略则 8） |
 | `output_limit` | int | 单条命令回传上限 |
 | `commands` | map | 只读命令白名单 |
 

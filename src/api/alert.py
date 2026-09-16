@@ -3,8 +3,12 @@
 鉴权（config/settings.yaml 的 auth 段）——**本组有个例外，两条规则别混**：
 
 - 整组（含 `POST /alert`）都要求 `Authorization: Bearer <密钥>`；
-- **`POST /alert` 还多一层授权**：身份必须是 `auth.alert_identity`（默认 `alertmanager`），
-  其他有效密钥一律 **403**。`/alerts/*` 三个只读端点不受这一层影响。
+- **`POST /alert` 还多一层授权**：身份必须等于 `auth.alert_identity`
+  （出厂 `config/settings.yaml` 设的是 `alertmanager`），其他有效密钥一律 **403**。
+  `/alerts/*` 三个只读端点不受这一层影响。
+  注意**代码里的默认值是空串**（= 不限制，fail-open，只记一条 WARNING）——这个字段
+  只有 settings.yaml 说了算，别把出厂值当成代码保证（见 `utils/config_loader.py` 的
+  `AuthSettings.alert_identity`）。
 
 为什么单单 `/alert` 要设限：这条路径能让 RuleEngine 按 rules.yaml 执行白名单写命令
 （`core/agent.py` 的 `process_alert`，`auto_execute: true` 时**不经人工审批**）。

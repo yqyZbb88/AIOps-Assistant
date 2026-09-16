@@ -341,12 +341,13 @@ def _build_settings(data: dict[str, Any]) -> Settings:
     _validate_settings(settings)
     return settings
 
+
 # ---------------------------------------------------------------------------
 # 加载入口
 # ---------------------------------------------------------------------------
-def default_settings() -> Settings:
-    """返回默认 Settings（文件缺失 / 解析失败时兜底，保证可启动）。"""
-    return Settings()
+# 这里**刻意没有** `default_settings()` 之类的兜底构造函数：配置缺失 / 解析失败一律抛
+# ConfigError，由调用方拒绝启动。一个「读不到配置就退回全默认值」的入口看起来更健壮，
+# 实际上是把「鉴权没开」「存储没开」这类静默降级直接放行——正是本模块严格校验要防的事。
 
 
 def load_settings(path: str | Path | None = None) -> Settings:

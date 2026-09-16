@@ -98,6 +98,39 @@ def test_remediation_claims_are_purged_with_history(store):
     assert store.db.query("SELECT 1 FROM remediation_claims") == []
 
 
+def _decide(store, approval_id, *, session_id="s1", decided_at, decided_by="alice"):
+    store.db.execute(
+        "INSERT INTO approval_decisions "
+        "(approval_id, session_id, action, decided_at, decided_by) VALUES (?,?,?,?,?)",
+        (approval_id, session_id, "approve", decided_at, decided_by),
+    )
+
+
+def test_approval_decisions_are_purged_with_history(store):
+    """决策记录**不归本模块写**，但过期归它管（见 purge_expired 的说明）。
+
+    关键是第二行：`session_id` 为空的行，会话侧那条「跟着会话删」的快路径永远扫不到
+    （`WHERE session_id IN (...)` 匹配不上 NULL），只能靠按时间兜底。
+    """
+    _decide(store, "ap-old", decided_at="2020-01-01T00:00:00+00:00")
+    _decide(store, "ap-null", session_id=None, decided_at="2020-01-01T00:00:00+00:00")
+
+    store.purge_expired()
+
+    assert store.db.query("SELECT 1 FROM approval_decisions") == []
+
+
+def test_approval_decisions_capacity_is_capped(store):
+    """保留期内的记录按 max_rows 上限保留最新的若干条（同归档表与幂等表）。"""
+    for i in range(5):  # max_rows=3
+        _decide(store, f"ap-{i}", decided_at=f"2026-01-01T00:00:0{i}+00:00")
+
+    store.purge_expired()
+
+    kept = store.db.query("SELECT approval_id FROM approval_decisions ORDER BY decided_at")
+    assert [r["approval_id"] for r in kept] == ["ap-2", "ap-3", "ap-4"]
+
+
 def test_limit_is_respected(store):
     for i in range(5):
         store.record_batch(alerts=[_alert(f"k{i}", received_at=f"2026-01-01T00:00:0{i}+00:00")])

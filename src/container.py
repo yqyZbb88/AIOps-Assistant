@@ -130,6 +130,11 @@ class Container:
 
         存储打开失败属于常见降级路径，此时仍必须做进程内幂等，不能因为 DB 故障
         把重复 webhook 变成重复写命令。
+
+        内存版的保留期**与 SQLite 版同源**：SQLite 版的 remediation_claims 由状态日志
+        清理按 history_ttl_hours 过期，故这里把同一个值显式传下去——否则降级时
+        `history_ttl_hours` 静默失效，而那是个安全相关的窗口（同一条告警的同一个动作
+        还要不要拦）。
         """
         if self._execution_guard is None:
             from src.storage.remediation_guard import (
@@ -139,7 +144,11 @@ class Container:
 
             db = self._database()
             self._execution_guard = (
-                SqliteRuleExecutionGuard(db) if db is not None else InMemoryRuleExecutionGuard()
+                SqliteRuleExecutionGuard(db)
+                if db is not None
+                else InMemoryRuleExecutionGuard(
+                    ttl_seconds=self.settings.storage.history_ttl_hours * 3600
+                )
             )
         return self._execution_guard
 

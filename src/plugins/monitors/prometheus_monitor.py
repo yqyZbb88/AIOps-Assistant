@@ -43,6 +43,24 @@ def _strip_label(selector: Mapping[str, str], label: str) -> dict[str, str]:
     return {key: value for key, value in selector.items() if _matcher_key(key)[0] != label}
 
 
+def _instance_from_selector(selector: Mapping[str, str] | None) -> str | None:
+    """取调用方 selector 里的 instance 值；没有则 None。
+
+    `query_metric(selector=...)` **只允许补充 instance**（内部调用点按实例取数用）：
+    标签范围的正主是指标自己的 base_selector + metrics.yaml 的 selector，调用方不能
+    用这个参数替换 PromQL 文本、也不该塞别的标签。多个 instance 键时取第一个。
+
+    两条分支都必须走这里——曾经只有非 alert_count 分支认它，alert_count 分支直接
+    用 `_effective_selector(definition)` 覆盖掉了入参，于是「按实例数告警」静默失效。
+    """
+    if not selector:
+        return None
+    for key, value in selector.items():
+        if _matcher_key(key)[0] == "instance":
+            return str(value)
+    return None
+
+
 class PrometheusMonitor(MonitorSource):
     """Prometheus HTTP API 监控源。"""
 
@@ -161,11 +179,12 @@ class PrometheusMonitor(MonitorSource):
         selector: Mapping[str, str] | None = None,
     ) -> list[MetricSample]:
         definition = self._definition(metric_id)
+        instance = _instance_from_selector(selector)
         if definition.kind == "alert_count":
             alerts = self.active_alerts()
-            selector = self._effective_selector(definition)
-            if selector:
-                alerts = [a for a in alerts if _alert_matches_selector(a, selector)]
+            effective = self._effective_selector(definition, instance=instance)
+            if effective:
+                alerts = [a for a in alerts if _alert_matches_selector(a, effective)]
             visible = [a for a in alerts if a.get("state") in ("pending", "firing")]
             samples: list[MetricSample] = []
             for state in ("firing", "pending"):
@@ -178,15 +197,9 @@ class PrometheusMonitor(MonitorSource):
                 )
             return samples
 
-        # selector 参数只用于内部调用点补充 instance，仍不允许覆盖 PromQL 文本。
-        if selector and any(_matcher_key(key)[0] == "instance" for key in selector):
-            instance = next(
-                str(value) for key, value in selector.items() if _matcher_key(key)[0] == "instance"
-            )
-            expr = self._render_expr(definition, instance=instance)
-        else:
-            expr = self._render_expr(definition)
-        return self._parse_samples(metric_id, definition, self._query(expr))
+        return self._parse_samples(
+            metric_id, definition, self._query(self._render_expr(definition, instance=instance))
+        )
 
     def _parse_samples(
         self,

@@ -145,7 +145,12 @@ def test_app_name_and_version_have_single_source():
     assert settings.app.version == __version__ == "0.3.0"
 
 
-def test_default_settings():
+def test_settings_dataclass_defaults():
+    """裸构造 `Settings()` 就得可用（测试里 create_app(settings=Settings()) 是常态）。
+
+    注意这是 **dataclass 字段默认值**，不是「读不到配置文件时的兜底」——
+    `load_settings` 没有兜底，文件缺失一律 ConfigError（见其模块注释）。
+    """
     s = Settings()
     assert s.server.port == 8000
     assert s.alert.trend_step == "5m"

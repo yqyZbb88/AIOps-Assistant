@@ -4,16 +4,21 @@ Agent 的写命令（config/agent_actions.yaml）在执行前会中断，等人�
 这是**唯一**能让写命令真正执行的入口。
 
 鉴权（config/settings.yaml 的 auth 段）：
-启用后本组路由要求 `Authorization: Bearer <密钥>`（见 src/api/deps.py），并且
-**按归属隔离**——只看得到、只批得动**自己触发**的待审批项。归属由密钥推出的身份
-判定（`interfaces.approval.may_decide`，与会话那边的 `is_owner` 同款语义）。
-非本人的项一律 **404**，与「未知 / 已过期 / 已处理」同形——调用者分不出两者，
+启用后本组路由要求 `Authorization: Bearer <密钥>`（见 src/api/deps.py），并按密钥推出的
+身份过滤可见 / 可批范围——判定只有一处（`interfaces.approval.may_decide`，与会话那边的
+`is_owner` 同一位置），**范围取决于 `auth.approval_mode`，不是「一律只看自己」**：
+- `owner`（代码默认）：只看得到、也只批得动**自己触发**的待审批项；
+- `approvers_only`（本仓库 settings.yaml 的出厂配置）：`approver_identities` 里的身份
+  可列出并批准**任何人**触发的项——审批人是「岗位」，不是「当事人本人」。
+范围外的项一律 **404**，与「未知 / 已过期 / 已处理」同形——调用者分不出两者，
 这正是想要的。
 
 未启用 auth 时是**无鉴权**状态：任何能访问该端口的人都能批准写命令。
-缓解措施：审批 id 为随机不可枚举值、server.host 默认仅 127.0.0.1、白名单固定。
-**注意：原设计还有一条「出厂 agent_actions.enabled=false」的缓解，但 2026-09-10 起本仓库
-已把该能力打开，这条不再成立**——写通道现在是活的。
+缓解措施：审批 id 为随机不可枚举值、server.host 默认仅 127.0.0.1、白名单固定，
+以及 `config/agent_actions.yaml` 当前是 `enabled: false`（Agent 写命令整体关闭，
+连可供决策的对象都没有）。
+**但最后一条别当成安全边界**：它是个随时能改回 `true` 的配置开关（改后需重启进程），
+不是代码保证；而 `config/actions.yaml` 那条规则路径同样会执行写命令。
 **绑到 0.0.0.0 之前请务必打开 auth**，否则任何能访问端口的人都可能批准写命令。
 详见 README「安全说明」。
 """
@@ -95,8 +100,9 @@ def _find_owned(
 ) -> PendingApproval | None:
     """在调用者的可见范围里找这条待审批项。
 
-    - 找到且**属于他**（或鉴权关闭）→ 返回它；
-    - 找到但**不是他的** → 404（与「未知 id」同形）；
+    - 找到且在可见范围内（或鉴权关闭）→ 返回它。范围由 `may_decide` 按 approval_mode
+      判定：owner = 自己触发的，approvers_only = 审批人看全部（见模块 docstring）；
+    - 找到但**不在范围内** → 404（与「未知 id」同形）；
     - **队列里没有** → 返回 `None`。**不在这里报错**：那条路径还要分「真的没有」
       与「能力不可用（→ 503）」两种情况，交给 `decide()` 按它原本的逻辑处理
       （能力不可用时 `pending_approvals()` 恒为空，正好落到这里）。
@@ -144,7 +150,8 @@ def list_approvals(
 ) -> list[dict[str, Any]]:
     """列出当前待人工决策的写命令调用（新的在前）。无写命令能力时返回空列表。
 
-    鉴权开启时**只列调用者自己的**；鉴权关闭时列全部（`user is None`），
+    鉴权开启时只列调用者**可见范围**内的（owner = 自己触发的；approvers_only =
+    审批人看全部，见模块 docstring）；鉴权关闭时列全部（`user is None`），
     后者是改造前的行为。
     """
     pending = _agent(request).pending_approvals()

@@ -62,9 +62,13 @@ def may_decide(
 ) -> bool:
     """调用者是否有权列出 / 决策这条待审批项。
 
-    - 鉴权未启用：没有身份可比，一律放行；
-    - ``approvers_only=True``：只允许显式审批人，支持职责分离；
-    - 默认模式：要求 ``pending.user`` 精确匹配，保持既有行为。
+    - 鉴权未启用：没有身份可比，一律放行（fail-open，见 ``api/approvals.py`` 的说明）；
+    - ``approvers_only=True``：只允许 ``approvers`` 里的身份，支持职责分离——审批人是
+      **岗位**，可列出并批准**任何人**触发的项，不限于自己发起的；
+    - 默认模式（``owner``）：要求 ``pending.user`` 精确匹配，即只有触发人自己。
+
+    两个调用点必须都走这里：``GET /approvals`` 的过滤与 ``POST /approvals/{id}`` 的授权，
+    否则会出现「列表里看不见、却批得动」这种最糟的组合。
     """
     if identity is None:
         return True

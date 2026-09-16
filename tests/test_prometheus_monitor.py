@@ -297,3 +297,27 @@ def test_query_metric_trend_chooses_worst_series(monkeypatch, monitor):
 def test_query_metric_unknown_id_is_monitor_error(monitor):
     with pytest.raises(MonitorError, match="未知指标"):
         monitor.query_metric("missing.metric")
+
+
+def test_alert_count_honors_caller_selector(monkeypatch, monitor):
+    """alert_count 分支也必须认 `selector` 里的 instance。
+
+    该分支曾经直接 `_effective_selector(definition)` 覆盖掉入参，于是「按实例数告警」
+    静默退化成「数全部告警」：不报错、不留痕，只是答案不对——而调用方拿它当实例级
+    读数用（`query_metric` 的 selector 契约就是为这个存在的）。
+    """
+    _patch_request(monkeypatch, {"alerts": [
+        {"labels": {"alertname": "A", "instance": "h1"}, "state": "firing"},
+        {"labels": {"alertname": "B", "instance": "h2"}, "state": "firing"},
+        {"labels": {"alertname": "C", "instance": "h2"}, "state": "pending"},
+        {"labels": {"alertname": "D", "instance": "h3"}, "state": "pending"},
+    ]})
+
+    everything = {s.labels["state"]: s.value for s in monitor.query_metric("alerts.active_count")}
+    only_h2 = {
+        s.labels["state"]: s.value
+        for s in monitor.query_metric("alerts.active_count", selector={"instance": "h2"})
+    }
+
+    assert everything == {"firing": 2.0, "pending": 2.0}
+    assert only_h2 == {"firing": 1.0, "pending": 1.0}

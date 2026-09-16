@@ -79,10 +79,15 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 有两种模式：
 
-| `approval_mode` | 行为 |
+| `approval_mode` | 谁可以审批 |
 |---|---|
-| `owner` | 触发写命令的人可以审批自己的申请 |
-| `approvers_only` | 只有 `approver_identities` 中的身份可以审批 |
+| `owner` | **只有触发人自己**。此模式**不看** `approver_identities`，列在里面的身份也批不了别人的申请 |
+| `approvers_only` | `approver_identities` 中的身份可以审批**任何人**触发的申请 |
+
+注意 `approvers_only` 的语义是「审批人是**岗位**，不是**当事人本人**」：`admin` 既能
+列出也能批准 `zhang` 触发的写命令。**同一份判定同时决定「看得见」与「批得动」**
+（`src/interfaces/approval.py` 的 `may_decide`），所以 `GET /approvals` 的列表范围和
+`POST /approvals/{id}` 的授权范围永远一致；范围外的 id 一律返回 404，与「不存在」同形。
 
 推荐使用 `approvers_only`：
 
@@ -150,8 +155,8 @@ http://127.0.0.1:8000/docs
 | `GET /sessions` | 只返回自己的会话 |
 | `GET/PATCH/DELETE /sessions/{id}` | 只能操作自己的会话；越权返回 404 |
 | `POST /chat` | 只能使用自己的会话 |
-| `GET /approvals` | 默认只显示自己触发的待审批项 |
-| `POST /approvals/{id}` | 默认只能审批自己的申请 |
+| `GET /approvals` | 只看得到可见范围内的：`owner` = 自己触发的；`approvers_only` = 审批人看到全部 |
+| `POST /approvals/{id}` | 同上；范围外返回 404（与「未知 id」同形） |
 | `POST /alert` | 身份必须匹配 `auth.alert_identity` |
 
 身份名只用于归属和授权，不用于选择模型、主机或命令。
@@ -164,7 +169,7 @@ http://127.0.0.1:8000/docs
 | Token 无效 | 401 |
 | Token 有效但无权调用 `/alert` | 403 |
 | Token 有效但访问别人的会话 | 404 |
-| Token 有效但审批别人的申请 | 404 |
+| Token 有效但审批范围外的申请 | 404（`owner` 下批别人的，或 `approvers_only` 下不在 `approver_identities` 里） |
 | 鉴权配置启用但没有有效 Token | 服务拒绝启动 |
 
 `GET /health`、`/docs`、`/openapi.json` 等应用路由不需要 Bearer Token。

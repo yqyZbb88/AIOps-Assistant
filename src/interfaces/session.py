@@ -288,7 +288,7 @@ class SessionStore(ABC):
 
     @abstractmethod
     def delete(self, session_id: str, *, user: str | None = None) -> bool:
-        """删除会话**连同其全部消息**（同事务；不依赖外键）。
+        """删除会话**连同其全部消息与审批决策记录**（同事务；不依赖外键）。
 
         `user` 给定时要求归属匹配，**不匹配则什么都不写、直接返回 False**。守卫必须在
         同一事务内、在**任何写之前**判定：先删 messages 再判归属，会让一次未授权的删除
@@ -401,8 +401,8 @@ class SessionStore(ABC):
 
         `decided_by` 是**决策人的身份**；空串 = 当时鉴权未启用。
         **必须落库而不只是写审计日志**：日志会轮转被冲掉（5 MiB × 3 份），而这张表
-        的 TTL 是 7 天——等你回头追问「那条 `unknown` 的命令到底是谁批的」时，
-        磁盘上的日志早就转没了，库里那行却还在。
+        的保留期是 `history_ttl_hours`（默认 7 天）——等你回头追问「那条 `unknown`
+        的命令到底是谁批的」时，磁盘上的日志早就转没了，库里那行却还在。
         """
 
     @abstractmethod
@@ -411,9 +411,15 @@ class SessionStore(ABC):
 
     @abstractmethod
     def purge_expired(self) -> int:
-        """清理过期会话（连同消息）**与过期的决策记录**，返回删除的会话数。
+        """清理过期 / 超容量的会话，连同它们的消息与审批决策记录，返回删除的会话数。
 
         由调用方节流后低频触发。
+
+        **决策记录另有独立的过期路径**：`approval_decisions` 的保留期是
+        `history_ttl_hours`（默认 7 天），由状态日志清理执行
+        （见 `SqliteHistoryStore.purge_expired`）。本方法只负责「会话消失时顺手删掉
+        它的决策记录」这条**快路径**——它按 session_id 删，扫不到 session_id 为空的行，
+        也覆盖不到「会话被 DELETE 掉的孤儿行」，没有兜底职责。
         """
 
 

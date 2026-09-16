@@ -223,7 +223,7 @@ class SqliteSessionStore(SessionStore):
         return [_row_to_session(r) for r in rows]
 
     def delete(self, session_id: str, *, user: str | None = None) -> bool:
-        """删会话连同其消息（同事务，不依赖外键）。
+        """删会话连同其消息与审批决策记录（同事务，不依赖外键）。
 
         归属守卫必须在**任何写之前**、在同一事务内判定：先删 messages 再判归属，
         一次未授权的删除就会抹掉别人的对话正文，而会话行还在。
@@ -237,6 +237,10 @@ class SqliteSessionStore(SessionStore):
             if user is not None and (row["user"] or "") != user:
                 return False  # 什么都不写
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            # 决策记录跟着会话走（理由同 purge_expired）。这里**必须显式删**：决策表没有外键，
+            # 也没人会因为会话消失而回头清理它；不删就留下一批 session_id 指向不存在会话的
+            # 孤儿行，只能等状态日志清理按 TTL 兜底扫掉。
+            conn.execute("DELETE FROM approval_decisions WHERE session_id = ?", (session_id,))
             cur = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
             deleted = cur.rowcount > 0
         return deleted
@@ -431,7 +435,12 @@ class SqliteSessionStore(SessionStore):
                 marks = ",".join("?" for _ in ids)
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({marks})", ids)
                 # 决策记录跟着会话一起走：它只为「重启后判 unknown」而存在，
-                # 会话没了就没人再读它。单靠 TTL 也行，但留着是纯粹的垃圾。
+                # 会话没了就没人再读它。
+                #
+                # 这是**快路径**，不是唯一路径：只按 session_id 删，扫不到 session_id 为空
+                # 的行与「会话已被 DELETE」的孤儿行；而且本方法只在**新建会话**时被节流触发，
+                # 长期不建新会话就不会跑。兜底过期由状态日志清理按 history_ttl_hours 执行
+                # （见 storage/history.py::purge_expired）——两处都留，别当成重复删掉。
                 conn.execute(
                     f"DELETE FROM approval_decisions WHERE session_id IN ({marks})", ids
                 )
@@ -528,6 +537,9 @@ class InMemorySessionStore(SessionStore):
         if user is not None and row.get("user", "") != user:
             return False  # 什么都不删
         self._messages.pop(session_id, None)
+        # 决策记录跟着会话走（与 SQLite 版一致）
+        for approval_id in [a for a, sid in self._decisions.items() if sid == session_id]:
+            self._decisions.pop(approval_id, None)
         self._sessions.pop(session_id, None)
         return True
 

@@ -108,7 +108,7 @@ http://127.0.0.1:8000/docs
 | `GET /sessions` | 会话列表 |
 | `GET /sessions/{id}` | 会话详情 |
 | `PATCH /sessions/{id}` | 修改会话标签 |
-| `DELETE /sessions/{id}` | 删除会话及未决审批 |
+| `DELETE /sessions/{id}` | 删除会话（连同消息与审批决策），未决审批一并取消 |
 
 除 `/health` 外，启用鉴权后都需要：
 

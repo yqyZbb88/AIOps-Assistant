@@ -32,7 +32,12 @@ class MonitorSource(ABC):
         *,
         selector: Mapping[str, str] | None = None,
     ) -> list[MetricSample]:
-        """通用即时指标查询；默认实现表示当前监控源未支持。"""
+        """通用即时指标查询；默认实现表示当前监控源未支持。
+
+        `selector` **只用于补充 `instance`**（同一指标按实例取数）：标签范围的正主是
+        指标定义与 metrics.yaml 里的 selector，调用方不得用它替换底层查询文本。
+        所有 kind（含 alert_count）都必须认这个参数。
+        """
         raise MonitorError(f"监控源不支持通用指标查询: {metric_id}")
 
     def query_metric_trend(

@@ -42,8 +42,10 @@ logger = logging.getLogger("aiops_assistant.storage.db")
 #                    不再参与选中会话，因此没有唯一性需求（允许重名）
 #   v4 (2026-09-13)：approval_decisions 加 decided_by 列。**决策人必须落库**，
 #                    不能只写审计日志——日志会轮转（5 MiB × 3 份）而被冲掉，
-#                    而这张表的 TTL 是 7 天：等你需要回答「那条 unknown 的命令是谁批的」时，
-#                    磁盘上的日志早就转没了，库里那行却还在。
+#                    而这张表的保留期是 history_ttl_hours（默认 7 天）：等你需要回答
+#                    「那条 unknown 的命令是谁批的」时，磁盘上的日志早就转没了，
+#                    库里那行却还在。过期由状态日志清理执行，会话消失时另有一条快路径
+#                    （见 storage/history.py 与 storage/session.py 的 purge_expired）。
 #   v5 (2026-09-15)：remediation_claims 自动处置幂等抢占表。
 #   v6 (2026-09-15)：inspection_runs 固定指标巡检异常归档表。
 SCHEMA_VERSION = 6

@@ -23,6 +23,7 @@ from src.interfaces.agent_action import AgentActionError
 from src.interfaces.command import CommandSpec, ParamSpec
 from src.plugins.common import cmddef as _cmddef
 from src.plugins.common.cmddef import CmdDef, CmdDefError, ParamError
+from src.plugins.common.endpoint import DEFAULT_CONNECT_TIMEOUT
 from src.utils.config_loader import ROOT_DIR, interpolate
 
 logger = logging.getLogger("aiops_assistant.agent_actions.catalog")
@@ -61,7 +62,8 @@ class AgentActionsTarget:
     password: str = ""
     key_filename: str = ""
     known_hosts: str = ""
-    connect_timeout: int = 8
+    #: 连接与命令超时；默认值来自 SSH 层唯一的那处定义（见 common/endpoint.py）
+    connect_timeout: int = DEFAULT_CONNECT_TIMEOUT
 
 
 @dataclass(frozen=True)
@@ -120,7 +122,11 @@ def _parse_target(data: Any) -> AgentActionsTarget:
         password=str(password),
         key_filename=str(key_filename),
         known_hosts=str(known_hosts),
-        connect_timeout=_as_int(data.get("connect_timeout", 8), "target.connect_timeout", minimum=1),
+        connect_timeout=_as_int(
+            data.get("connect_timeout", DEFAULT_CONNECT_TIMEOUT),
+            "target.connect_timeout",
+            minimum=1,
+        ),
     )
 
 
