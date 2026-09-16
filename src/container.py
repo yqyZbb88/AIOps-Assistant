@@ -112,7 +112,7 @@ class Container:
     def executors(self) -> dict[str, ActionExecutor]:
         """把 config/actions.yaml 写命令目录实例化为执行器（键 = 目录 key = rules.action）。
 
-        M1b：动作收敛为「写命令目录 + 通用执行器」（见 plugins/actions/catalog、executor），
+        动作收敛为「写命令目录 + 通用执行器」（见 plugins/actions/catalog、executor），
         不再从 registry 按动作类实例化；目录缺失/关闭/校验失败 → 空（自动处置失效，服务照常）。
         """
         if self._executors is None:

@@ -1,16 +1,11 @@
-"""规则引擎：加载 config/rules.yaml + 匹配决策 + 经注入执行器执行。
+"""规则引擎：加载 config/rules.yaml，按告警匹配并调用注入的执行器。
 
-承接原 ops_bot/rules.py（加载/校验）与 remediation.py（匹配/决策/记录）：
-- 加载：读 config/rules.yaml，先做 ${ENV} 插值（密码等占位在加载期解析为环境变量值），
-  再解析为 ActionRule；动作名不在注入执行器集合中的规则被过滤并告警；
-- 决策：按 alertname 匹配（同 alertname 多条规则按文件顺序执行）；resolved 跳过；
-  auto_execute=false → 仅命中不做动作（SKIP_MARK 状态）；
-- 执行：只依赖 ActionExecutor 接口，execute 结果记录进处置记录；
-  审计（真实 SSH 尝试前后）由执行器内部完成（见 plugins/actions/executor.py 与 common/audit.py）。
+- 加载：环境变量插值后解析规则，过滤没有对应执行器的动作；
+- 匹配：按 alertname 精确匹配，同一告警可命中多条规则；
+- 决策：auto_execute=false 时只记录命中，不执行写命令；
+- 执行：只依赖 ActionExecutor 接口，具体实现由容器注入。
 
-本模块不感知具体动作实现；executors 由 container 注入（可注入假执行器做单测）。
-**本模块不做任何输出**：处置结果的终端打印在 OpsAgent（见 core/agent.py），
-规则引擎只负责「匹配 + 决策 + 执行 + 产出记录」，保持纯净可测。
+本模块只负责匹配、决策、执行和产出记录，不负责终端输出。
 """
 from __future__ import annotations
 

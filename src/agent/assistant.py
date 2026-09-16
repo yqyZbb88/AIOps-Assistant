@@ -1,34 +1,17 @@
-"""智能运维 Agent 封装（对齐「尚硅谷-07-智能体」第 9 节推荐格式，重构后保留编排层）。
+"""智能运维 Agent 封装层。
 
-讲义第 9 节《实战：多功能智能助手》结构：模型初始化 → @tool 工具 →
-create_agent(model, tools, system_prompt) → 封装类(chat/reset) → invoke 取末条 AI 消息。
-本模块把这段结构落到运维场景，成为聊天链路的主入口：
+职责：
+- 使用模型、工具和系统提示词构建聊天 Agent；
+- 管理单轮对话和多轮对话；
+- 在启用写命令时，通过人工审批中间件在命令执行前中断，批准后继续执行。
 
-    模型     = 惰性复用根目录 init.py 的 init_chat_model（经 utils/model_loader 取用，单一入口）
-    工具     = agent/tools.py 的 build_tools(monitor)（CPU/内存/磁盘/告警，注入 monitor）
-    封装类   = OpsAssistant（reply=单轮；reply_turn=带历史的一轮，见下）
+设计约束：
+- 模型和 LangChain 依赖只在构建 Agent 时惰性加载；
+- 中断不是异常，调用方必须先识别待审批状态；
+- 审批续跑必须使用同一个 thread_id；
+- Agent 不保存历史，多轮历史由会话存储每轮传入。
 
-与旧 ops_bot/assistant.py 的差异：
-- OpsAssistant(monitor=…)：工具绑定注入的 MonitorSource，不再 import 全局 prometheus 模块；
-- analyze_alert / ask_llm 已迁至 core/analysis.py + plugins/llm_clients（走 LLMClient 接口）；
-- 不再维护模块级全局单例：由 container 装配，经工厂注入 ChatService。
-
-人工审批（M3，仅在配置了 Agent 写命令时启用）：
-- 写命令工具经 HumanInTheLoopMiddleware 在**执行前中断**，人工经 /approvals 决策后才续跑；
-- 中断不是异常：invoke 正常返回 {"__interrupt__": [...]}，因此 reply() **必须先判中断**
-  再取 AI 文本——中断那轮的 AI 消息 content 为空，否则会把待审批伪装成「无法回答」；
-- 续跑要求 **同一个 thread_id**：错误 thread_id 会静默无操作、且决策负载错误会**永久毒化**
-  该线程，故 decide() 在 resume 前先校验、且审批 id 单次性；
-- 有 checkpointer 时 invoke 必须带 thread_id（否则抛 ValueError，会被 ChatService 吞掉
-  并导致整条聊天回落关键词）。
-
-预留扩展接口（用户要求方便后面扩展）：
-    - name / debug            : create_agent 的归因与调试开关（可观测）；
-    - response_format         : 结构化输出（讲义 7.3 ToolStrategy），默认 None 保持自然语言；
-    - memory / checkpointer   : 仅在有写命令时创建（用于中断续跑）；reply 仍为单轮无历史。
-
-模块顶层不 import langchain：只有构建 OpsAssistant（_build_agent）时才惰性导入；
-因此未装可选依赖的环境 import 本模块不报错，构建失败由上层（ChatService）回落关键词。
+未安装可选依赖时导入本模块不应报错，构建失败由上层回退到关键词能力。
 """
 from __future__ import annotations
 
@@ -72,7 +55,7 @@ class LLMError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Agent 构建与封装类（讲义第 9.3 节结构）
+# Agent 构建与封装类
 # ---------------------------------------------------------------------------
 def _build_agent(
     *,
@@ -87,7 +70,7 @@ def _build_agent(
 ):
     """调用 create_agent 构建一个 LangGraph 智能体（惰性 import langchain）。
 
-    - name 用 AGENT_NAME（日志/trace 归因，讲义第 5 节）；
+    - name 用 AGENT_NAME（日志/trace 归因）；
     - debug 传 create_agent 的 debug 开关（可观测，默认关）；
     - response_format 为结构化输出预留参数（默认 None = 自然语言）；
     - interrupt_on 非空 → 挂 HumanInTheLoopMiddleware（写命令人工审批）。
@@ -188,15 +171,14 @@ def _last_ai_content(response: dict[str, Any]) -> str:
 
 
 class OpsAssistant:
-    """智能运维 Agent 封装类（对齐讲义第 9.3 节 SmartAssistant 结构）。
+    """智能运维 Agent 封装类。
 
-    字段/方法：model / tools / system_prompt / agent（沿用讲义结构），
-    对话入口为 reply()（单轮）与 reply_turn(history=…)（多轮，M4 新增）。
+    对话入口：
+    - reply()：单轮对话；
+    - reply_turn(history=...)：带历史的一轮对话。
 
-    多轮走**路线 B**：每轮 `thread_id` 都是全新的、跑完即删，历史由调用方每轮从会话表
-    取出后整段传入——checkpointer 始终只当「审批中断的临时草稿纸」，不承担记忆职责。
-    本类因此也**不持有任何历史**（讲义原样的 `messages`/`chat`/`reset` 已删，
-    单例共享列表会串味，见文件末尾注）。
+    多轮历史由调用方每轮从会话表读取后整段传入；checkpointer 只保存审批中断的临时状态，
+    本类不持有对话历史。
     """
 
     def __init__(
@@ -322,7 +304,7 @@ class OpsAssistant:
         `session_id` / `user` **只用于登记待审批项的归属**（`/approvals` 要按身份隔离、
         `approval_decisions` 表要记会话），不影响这一轮怎么跑、也不进模型上下文。
 
-        **每轮仍是全新的 thread_id**（路线 B）：历史由调用方每轮重新拼进来，
+        **每轮仍是全新的 thread_id**：历史由调用方每轮重新拼进来，
         checkpointer 只当「审批中断的临时草稿纸」，跑完即删——已实测：新 thread +
         完整历史不会跨轮累积。
         """
@@ -596,6 +578,4 @@ class OpsAssistant:
         except Exception as exc:  # pragma: no cover - 清理失败不应影响主流程
             logger.debug("删除线程 %s 失败: %s", thread_id, exc)
 
-    # 注：讲义第 9.3 节的 chat() / reset() / self.messages（实例级共享列表）已于
-    # 2026-09-11 M4 删除。Agent 是单例，那个列表谁用谁串味，全仓无调用方；
-    # 多轮改由 reply_turn(history=…) 由调用方从会话表取历史，见 interfaces/session.py。
+    # Agent 是单例，不保存实例级对话历史；多轮历史由 reply_turn(history=...) 传入。

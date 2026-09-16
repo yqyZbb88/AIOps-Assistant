@@ -1,20 +1,8 @@
-"""对话会话契约：中性类型 + 存储抽象 + Agent 多轮能力探测（无第三方依赖）。
+"""对话会话契约：中性类型、存储抽象和多轮能力探测。
 
-背景：Agent 原先**结构上只能单轮**——每轮一个临时 thread_id、跑完即销毁，
-`/chat` 连会话概念都没有。本模块描述「一段对话」与「一轮的结果」的形状，
-让 core / api 能在**不感知 langchain** 的前提下做多轮。
-
-两条路线里本项目选的是**路线 B**：历史表是唯一真相，每轮从表里取窗口内的历史
-重新拼给模型；checkpointer 继续只当「审批中断的临时草稿纸」（每轮新 thread_id、
-跑完即删，用法与改造前完全一致）。
-
-分层：
-- `ChatMessage` / `SessionInfo` / `TurnResult` 是**中性数据**，谁都能用；
-- `SessionStore` 是抽象基类，实现落在 src/storage/session.py（sqlite）；
-- `HistoryCapable` 是**能力探测** Protocol，实现在 src/agent/assistant.py。
-
-为什么 `HistoryCapable` 用 Protocol 而非并入 `Assistant`：见 interfaces/assistant.py
-里 `ApprovalCapable` 的同类说明——把方法加进 `Assistant` 会让所有既有假对象结构性失效。
+定义聊天消息、会话信息、单轮结果和会话存储接口，使 core/api 能在不依赖 LangChain
+的前提下支持多轮对话。历史记录以会话表为唯一事实来源，每轮只读取窗口内历史传给模型；
+checkpointer 仅保存审批中断所需的临时状态。
 """
 from __future__ import annotations
 

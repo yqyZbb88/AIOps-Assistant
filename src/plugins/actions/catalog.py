@@ -1,6 +1,6 @@
 """写命令目录：config/actions.yaml 解析（纯，可离线单测）。
 
-M1b 起「允许执行的修复命令」以目录形式集中声明（模板 + 参数 schema + sudo），
+「允许执行的修复命令」以目录形式集中声明（模板 + 参数 schema + sudo），
 rules.yaml 的规则只引用目录 key 并提供语义参数；executor 按 key 找到目录项执行。
 
 - 文件缺失 / enabled=false / 结构或校验失败 → 返回 None（自动处置关闭，服务照常）；

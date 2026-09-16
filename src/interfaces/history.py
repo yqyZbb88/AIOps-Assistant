@@ -1,16 +1,9 @@
-"""状态日志契约：告警 / 处置 / AI 建议三类归档记录（中性类型，无第三方依赖）。
+"""状态日志契约：告警、处置和 AI 建议三类归档记录。
 
-背景：这三份数据原先**全是重启即丢**——告警只在 `AlertStore` 的 `deque(maxlen=100)` 里，
-处置结果与 AI 建议只随 `/alert` 的 HTTP 响应返回一次就蒸发（另有一次 `print()`）。
-本模块描述落盘后的形状，实现见 [src/storage/history.py](../storage/history.py)。
+定义落盘后的数据结构，存储实现见 src/storage/history.py。三类归档通过
+`alert_key` 关联；同一告警可能对应多条处置或一条 AI 建议。
 
-三张表靠 `alert_key` 关联（见 `storage/models.py::Alert.alert_key`）：
-一条告警可能命中多条规则（多条处置）或没有规则（转 AI 分析），所以是一对多。
-
-安全约定（**落盘会把这些内容写到磁盘上，比只进 console 严重得多**）：
-- `detail` 里可能含远端命令的 stdout（执行器把整个 result 拼了进去），
-  而既有不变量是「整段命令输出不落日志」——故存储层在写之前**必须截断**；
-- `advice` 是模型自由文本，同样定长度上限，避免一次超长回复撑爆库。
+写入前必须限制 detail、advice 等文本长度，避免远端输出或模型长文本撑爆数据库。
 """
 from __future__ import annotations
 

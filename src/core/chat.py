@@ -1,22 +1,8 @@
-"""聊天链路 ChatService：Agent-first + 关键词兜底。
+"""聊天服务：优先使用 Agent，失败时回退关键词规则。
 
-承接原 ops_bot/bot.py 的 get_reply 与关键词规则：
-    主链路  用户消息 → Agent（DeepSeek + 监控工具，见 src/agent/assistant.py）；
-            模型自主判断是否查 CPU/内存/磁盘/告警。
-    兜底    Agent 构建/调用不可用（未装 langchain、.env 缺 key、网络失败）→
-            本模块关键词规则：CPU/内存/磁盘/告警/状态/帮助，仍可答复监控指标。
-    未命中 → DEFAULT_REPLY。
-
-重构要点：
-- 关键词 handler 转发 src/core/capabilities.py 的纯函数（与 Agent 工具同一套能力实现），
-  绑定「注入的 MonitorSource」，不再 import 具体监控模块（可注入 FakeMonitor）；
-- Agent 经 `assistant_factory` 注入（container 提供），ChatService 不感知 langchain：
-  首次聊天时尝试构建，失败即回落并标记，服务在无 key / 无 langchain 环境照常运行。
-
-扩展方式：
-    - 新增监控能力：先在 src/core/capabilities.py 加一个 `xxx_text(monitor)` 纯函数，
-      再到本模块 RULES 与 agent/tools.py build_tools 各转发一行（两处产出同款文案）；
-    - 关键词兜底新增"状态/帮助"类静态规则：向 __init__ 里 RULES 追加 Rule(keyword, reply=...)。
+主链路：用户消息 -> Agent -> 按需查询监控或诊断工具 -> 回答。
+回退链路：Agent 不可用时，使用关键词规则回答 CPU、内存、磁盘、告警等常见问题。
+监控查询和格式化逻辑与 Agent 工具共用 capabilities。
 """
 from __future__ import annotations
 

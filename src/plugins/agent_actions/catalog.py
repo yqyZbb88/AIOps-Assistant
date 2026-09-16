@@ -1,9 +1,7 @@
 """Agent 写命令目录：config/agent_actions.yaml 解析（纯，可离线单测）。
 
-这是**第三条**命令目录边界（前两条：diagnostics.yaml 只读、actions.yaml 规则自动处置），
-与 src/plugins/diagnostics/commands.py 外壳同构——属**有意重复**：交接文档「明确不做 P2-1」
-已判定抽象配置外壳收益中等、回归风险不小，故此处不引入新抽象，只复用真正的共享内核
-src/plugins/common/cmddef.py（模板/参数/校验/转义）。
+本文件负责解析 Agent 写命令目录和审批策略，并复用 diagnostics.yaml、actions.yaml
+共用的命令模板、参数校验和命令构建内核。
 
 与另两条边界的差异：
 1) allow_sudo=True —— 写命令的 sudo 由管理员逐条声明（与 actions.yaml 一致）；

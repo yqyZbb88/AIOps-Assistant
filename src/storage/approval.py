@@ -58,9 +58,8 @@ class ApprovalStore:
         """存入一条待审批记录（须含 approval_id）；超容量时返回**被淘汰的整条记录**，否则 None。
 
         返回被淘汰记录是为了让调用方 `delete_thread` —— 不返回就等于泄漏 checkpoint 线程。
-        **必须返回完整记录而非只有 approval_id**：调用方要的是 `thread_id`，
-        只给 id 等于没给（2026-09-11 修：原先只回 `{"approval_id": …}`，调用方拿到后
-        无从删除线程，`_delete_thread(None)` 静默无操作，泄漏照旧发生）。
+        **必须返回完整记录而非只有 approval_id**：调用方还需要 `thread_id`，
+        否则无法删除对应线程，可能造成 checkpoint 线程泄漏。
         """
         approval_id = record["approval_id"]
         record.setdefault("created_at", _now_iso())

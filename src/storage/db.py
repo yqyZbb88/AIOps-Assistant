@@ -36,8 +36,8 @@ from typing import Any, Callable, Iterator, Sequence
 logger = logging.getLogger("aiops_assistant.storage.db")
 
 # 当前 schema 版本。改动 DDL 时**必须**递增，并在 _migrate 里补上追加式迁移。
-#   v1 (2026-09-11 M4 第一批)：六张表
-#   v2 (2026-09-11 M4 第二批)：sessions 加 name 列 + (user, name) 部分唯一索引
+#   v1（2026-09-11）：六张表
+#   v2（2026-09-11）：sessions 增加 name 列和 (user, name) 部分唯一索引
 #   v3 (2026-09-12)：**撤掉**那个唯一索引——session_name 从「别名」降为「纯标签」，
 #                    不再参与选中会话，因此没有唯一性需求（允许重名）
 #   v4 (2026-09-13)：approval_decisions 加 decided_by 列。**决策人必须落库**，

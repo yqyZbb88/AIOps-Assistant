@@ -1,6 +1,6 @@
 """写命令通用执行器（WRITE 边界）：按 config/actions.yaml 目录项执行一条管理员声明的命令。
 
-M1b 起动作不再「一个动作一个 Python 类」，而是目录（actions.yaml）里声明的命令 +
+动作不再是「一个动作一个 Python 类」，而是目录（actions.yaml）里声明的命令 +
 本通用执行器绑定执行：
 - 命令模板/参数 schema 复用 src/plugins/common/cmddef（build_command 逐参校验 + shlex 转义）；
 - 连接（endpoint）来自规则 params 的连接字段，经 common/endpoint 规约，凭据只在 .env 占位；

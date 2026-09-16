@@ -1,12 +1,12 @@
-"""Agent 提示词与命名常量集中地。
+"""Agent 提示词与命名常量。
 
-原散落在 ops_bot/assistant.py 的提示词重构后统一收敛于此，供 agent/assistant.py（聊天 Agent）使用。
-告警 AI 分析的 system 提示词在 src/core/prompts.py（core 不得反向依赖 agent）。
-本模块零第三方依赖（纯字符串常量）。
+集中维护聊天 Agent 的系统提示词、能力补充提示词和名称常量。
+告警分析提示词位于 src/core/prompts.py，避免 core 反向依赖 agent。
+本模块只包含字符串常量，不引入第三方依赖。
 """
 from __future__ import annotations
 
-# Agent 名称：用于日志 / trace 归因（讲义第 5 节），后续多 Agent 编排时可区分来源
+# Agent 名称：用于日志 / trace 归因，后续多 Agent 编排时可区分来源
 AGENT_NAME = "ops_assistant"
 
 # 聊天主 Agent 的系统提示词：角色 + 工具决策规则 + 行为约束
@@ -48,7 +48,7 @@ WRITE_TOOLS_ADDENDUM = (
     "5. 只能使用工具列表中列出的写命令及其声明的参数，不得编造命令名或参数。\n"
 )
 
-# 结构化输出预留（讲义 7.3 ToolStrategy）——默认不启用。
+# 结构化输出预留（默认不启用）。
 # 可定义告警分析的固定结构，包含根因假设、排查步骤、处理建议和人工介入标记；
 # 构建助手时再启用对应结构化输出策略。
 #

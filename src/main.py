@@ -9,7 +9,7 @@
     身份由密钥推断（服务端事实）——请求体里自报的用户名一律不采信。
     `auth.enabled: true` 却没有任何可用密钥时会**拒绝启动**，绝不静默地无鉴权运行。
 
-对外路由（与旧 ops_bot 一致）：
+对外路由：
     GET  /health            健康检查
     POST /chat              聊天 {"user","message"} → {"reply"}
     POST /alert             Alertmanager webhook

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# 打码判定的键名子串（大小写不敏感；涵盖旧 ops_bot 的 password/token/secret/api_key）
+# 打码判定的键名子串（大小写不敏感，涵盖 password/token/secret/api_key）
 _SENSITIVE_SUBSTRINGS: tuple[str, ...] = ("password", "token", "secret", "api_key", "passwd")
 
 # 打码后统一显示的掩码

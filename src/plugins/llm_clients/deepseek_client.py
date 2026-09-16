@@ -1,9 +1,7 @@
-"""DeepSeek LLM 客户端插件（实现 LLMClient.complete）。
+"""DeepSeek LLM 客户端插件，实现无工具场景下的文本补全。
 
-承接原 ops_bot/llm.py 的 ask_llm「直连实现」：供告警 AI 分析等「无需工具」场景调用。
-- 惰性复用根目录 init.py 的模型入口（经 utils/model_loader 取用），顶层不 import langchain / dotenv：
-  未装可选依赖时本模块可被安全导入，真正 complete() 时才报 LLMError；
-- 模型实例由 utils/model_loader 进程内缓存，与聊天 Agent 共用同一份。
+惰性复用根目录 init.py 创建的模型实例；未安装可选依赖时模块仍可安全导入，
+真正调用 complete() 时才抛出 LLMError。
 """
 from __future__ import annotations
 

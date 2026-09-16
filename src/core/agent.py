@@ -142,7 +142,7 @@ class OpsAgent:
         )
         return ack
 
-    # -- 状态日志归档（M4 第二批；可选能力，未注入时整体跳过） -----------------
+    # -- 状态日志归档（可选能力，未注入时整体跳过） -----------------
     def _archive(self, payload: AlertmanagerPayload, ack: AlertAck) -> None:
         """把本次处理的产出落进归档表。
 

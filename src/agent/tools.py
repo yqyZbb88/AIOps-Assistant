@@ -1,4 +1,4 @@
-"""运维工具集（对齐「尚硅谷-07-智能体」第 9.2 节工具定义格式）。
+"""运维工具集。
 
 三块能力都封装成 LangChain 工具交给 Agent 按需调用：
 1) `build_tools(monitor)`：读监控数据（CPU / 内存 / 磁盘 / 告警），闭包注入 MonitorSource；
@@ -8,7 +8,7 @@
 3) `build_agent_action_tools(source)`：**会改动系统**的写命令（config/agent_actions.yaml），
    与 2) 的区别是它返回 WriteToolBundle——工具与人工审批策略成对产出，无法只取其一。
 
-设计约束（与旧 ops_bot/tools.py 一致）：
+设计约束：
 - 每个工具返回 str，docstring 写清 Args / Returns / Examples；
 - 监控工具（build_tools）是**薄接线**：查询+格式化的真正实现收编在
   src/core/capabilities.py（无 langchain 纯函数，Agent 工具与关键词兜底共用同一套）；
@@ -240,7 +240,7 @@ def build_diag_tools(diag: DiagnosticSource | None) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Agent 写命令工具（M3：强制人工审批，默认关闭）
+# Agent 写命令工具（强制人工审批，默认关闭）
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class WriteToolBundle:

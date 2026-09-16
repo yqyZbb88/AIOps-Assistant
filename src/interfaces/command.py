@@ -1,13 +1,7 @@
-"""命令元信息契约（中性层）：白名单命令对 Agent 可见的「只读面」。
+"""命令元信息契约（中性层）：白名单命令对 Agent 可见的只读信息。
 
-一条白名单命令（无论只读诊断还是写动作）暴露给工具层的信息只有：
-命令名 + 说明 + 参数声明。**不包含**主机、凭据、执行实现——那些只活在插件实例里。
-
-本模块为零依赖叶子（不 import 任何第三方），被 interfaces/diagnostic.py 与
-interfaces/agent_action.py 共同复用，避免两条边界的类型定义漂移。
-
-历史：ParamSpec / CommandSpec 原先定义在 interfaces/diagnostic.py（只读侧专用）；
-2026-09-10 引入写动作边界时迁出到本模块，diagnostic.py 保留同名 re-export 以兼容既有引用。
+只暴露命令名、说明和参数声明，不包含主机、凭据或执行实现。
+本模块不依赖第三方，被只读诊断和写命令边界共同复用。
 """
 from __future__ import annotations
 

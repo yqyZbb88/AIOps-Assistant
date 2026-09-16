@@ -1,7 +1,6 @@
-"""最近告警的内存缓冲（AlertStore）。
+"""最近告警的内存缓冲实现。
 
-承接原 ops_bot/alerts.py 中 handle_alert 的「记录 + 日志 + deque」逻辑，
-收敛为可注入的类，便于 core/agent 装配与单测替换（进程重启即清空）。
+按容量保留进程内最近的告警记录，便于核心流程和测试注入替换；进程重启后数据清空。
 """
 from __future__ import annotations
 

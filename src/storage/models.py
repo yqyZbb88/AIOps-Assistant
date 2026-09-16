@@ -1,9 +1,7 @@
-"""数据模型（跨层复用）。
+"""跨层复用的数据模型。
 
-两类模型原先分居 ops_bot/alerts.py 与 ops_bot/rules.py，重构后统一收敛：
-- 告警模型：与 Alertmanager webhook JSON 一一对应（Alert / AlertmanagerPayload /
-  AlertAck），API 层请求响应与 core 处理共用；
-- 规则模型：config/rules.yaml 的「alertname → 动作」映射（ActionRule / RulesFile）。
+- 告警模型：对应 Alertmanager webhook JSON 和内部处理结果；
+- 规则模型：对应 config/rules.yaml 的 alertname 到动作映射。
 """
 from __future__ import annotations
 

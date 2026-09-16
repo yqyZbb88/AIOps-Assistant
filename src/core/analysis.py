@@ -1,12 +1,9 @@
-"""告警 AI 分析：上下文组装 + LLM 编排。
+"""告警 AI 分析：上下文组装和 LLM 调用。
 
-承接原 ops_bot/context.py 的 alert_context_text（趋势取数已下沉到 MonitorSource。
-instance_trend）与 ops_bot/assistant.py 的 analyze_alert 编排，改为走 LLMClient 接口：
-- build_alert_context：告警详情 + 实例近 N 分钟趋势 → 纯文本（尽力而为，永不抛错）；
-- AlertAnalyzer：注入 monitor + llm，analyze_many 对多条无规则告警逐个分析，
-  失败 / LLM 未配置仅记日志，绝不阻塞告警接收。
+- build_alert_context：告警详情 + 实例近期趋势，生成分析上下文；
+- AlertAnalyzer：注入监控源和 LLM 客户端，逐条分析无规则告警。
 
-「AI 分析」的终端打印由调用方（core/agent.py）负责，本模块保持纯净可测。
+分析失败或 LLM 未配置时只记录日志，不阻塞告警接收。
 """
 from __future__ import annotations
 
@@ -27,7 +24,7 @@ logger = logging.getLogger("aiops_assistant.analysis")
 
 _UNAVAILABLE = "暂无趋势数据（Prometheus 不可达或无 Node Exporter）"
 
-# 给 LLM 的分析提问（与旧 ops_bot/assistant.py 的 _ALERT_ASK_TPL 语义一致）
+# 给 LLM 的分析提问
 _ANALYSIS_QUESTION = "请分析下面这条告警，给出根因假设与处理建议："
 
 

@@ -51,7 +51,7 @@ class ApprovalCancellable(Protocol):
     """可**作废**待审批项的 Agent（可选能力）。
 
     用于「会话被删除 → 该会话的未决审批一并作废」：宁可让人重新发起，也不能让一个
-    陈旧的写命令还挂在队列里等着被执行（继承 M3 的 fail-safe 取向）。
+    陈旧的写命令不能继续挂在队列里等待执行。
 
     **刻意另立协议而不往 `ApprovalCapable` 里加方法**：它是 runtime_checkable 的
     结构化协议，加方法会让所有既有实现（如 tests 的 FakeApprovalAssistant）**静默地
