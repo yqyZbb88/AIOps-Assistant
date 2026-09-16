@@ -10,9 +10,13 @@
 """
 from __future__ import annotations
 
+import logging
 import shlex
 
 from src.plugins.common.endpoint import SshEndpoint
+
+
+logger = logging.getLogger("aiops_assistant.ssh")
 
 
 class SshError(Exception):
@@ -35,9 +39,22 @@ def _new_client(paramiko, endpoint: SshEndpoint):
     connect 会直接失败，而不是像 AutoAddPolicy 那样把连接交给任意返回密钥的远端。
     """
     client = paramiko.SSHClient()
-    client.load_system_host_keys()
+    try:
+        client.load_system_host_keys()
+    except Exception as exc:  # 系统文件不可读/损坏不应阻断显式配置的文件
+        logger.warning(
+            "加载系统 known_hosts 失败，已跳过: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
     if endpoint.known_hosts:
-        client.load_host_keys(endpoint.known_hosts)
+        try:
+            client.load_host_keys(endpoint.known_hosts)
+        except Exception as exc:
+            raise SshError(
+                f"加载 known_hosts 失败 ({endpoint.known_hosts}): "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
     return client
 
@@ -57,8 +74,12 @@ def exec_command(
     full_cmd = f"sudo sh -c {shlex.quote(command)}" if sudo else command
     try:
         client = _new_client(paramiko, endpoint)
+    except SshError:
+        raise
     except Exception as exc:
-        raise SshError(f"加载 SSH 主机密钥配置失败: {exc}") from exc
+        raise SshError(
+            f"初始化 SSH 客户端失败: {type(exc).__name__}: {exc}"
+        ) from exc
     try:
         client.connect(
             hostname=endpoint.host,
