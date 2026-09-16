@@ -48,18 +48,9 @@ WRITE_TOOLS_ADDENDUM = (
     "5. 只能使用工具列表中列出的写命令及其声明的参数，不得编造命令名或参数。\n"
 )
 
-# 结构化输出预留（讲义 7.3 ToolStrategy）——默认不启用，只给出 Schema 与启用示例：
-# from pydantic import BaseModel, Field
-# from langchain.agents.structured_output import ToolStrategy
+# 结构化输出预留（讲义 7.3 ToolStrategy）——默认不启用。
+# 可定义告警分析的固定结构，包含根因假设、排查步骤、处理建议和人工介入标记；
+# 构建助手时再启用对应结构化输出策略。
 #
-# class AlertAnalysis(BaseModel):
-#     """告警分析的固定结构（启用结构化输出时的 Schema）。"""
-#     root_cause: list[str] = Field(description="按可能性排序的根因假设")
-#     check_steps: list[str] = Field(description="建议的排查与验证步骤")
-#     suggestion: str = Field(description="处理 / 缓解建议")
-#     need_human: bool = Field(description="是否需要人工介入")
-#
-# # assistant 构建时：response_format=ToolStrategy(AlertAnalysis) ← 启用后含 structured_response
-#
-# 说明：DeepSeek 结构化输出需模型处于非 thinking 模式才稳妥（见 init.py 注释），
-# 默认返回自然语言更稳；需要固定结构时再按上述开启。
+# 说明：DeepSeek 结构化输出需模型处于非思考模式才稳妥；
+# 默认返回自然语言更稳定，需要固定结构时再开启。

@@ -49,7 +49,7 @@ class SshAgentActionSource(AgentActionSource):
         self.target = config.target
         self.output_limit = config.output_limit
 
-    # -- AgentActionSource -------------------------------------------------
+    # -- AgentActionSource 接口实现 -----------------------------------------
     def commands(self) -> tuple[CommandSpec, ...]:
         return command_specs(self.config)
 

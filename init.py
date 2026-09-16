@@ -1,6 +1,6 @@
-"""DeepSeek model initialization entrypoint.
+"""DeepSeek 模型初始化入口。
 
-Model credentials and parameters are configured through environment variables.
+模型凭据和参数统一通过环境变量配置。
 """
 import os
 
@@ -24,7 +24,5 @@ model = init_chat_model(        # 实际上就是调用了ChatDeepSeek函数
     timeout=DEEPSEEK_TIMEOUT,
     max_retries=DEEPSEEK_MAX_RETRIES,
     max_tokens=DEEPSEEK_MAX_TOKENS,
-    # extra_body={
-    #     "thinking": {"type": "disabled"}  # 关闭思考模式,开启情况下无法测试结构化输出
-    # }
+    # 如需关闭思考模式，可按 DeepSeek 接口文档传入额外请求参数；默认不启用。
 )

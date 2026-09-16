@@ -36,10 +36,10 @@ data/
 *.db-wal
 *.db-shm
 
-# Developer-only local documents (kept locally, not committed)
+# 仅本地保留、不提交的开发者文档
 PROJECT_HANDOVER.md
 docs/developer-guide.md
 
-# Local load-test scripts (kept locally, not committed)
+# 仅本地保留、不提交的压测脚本
 scripts/load_gen.sh
 scripts/load_mem.sh

@@ -44,7 +44,7 @@ class SshDiagnostics(DiagnosticSource):
         self.target = config.target
         self.output_limit = config.output_limit
 
-    # -- DiagnosticSource --------------------------------------------------
+    # -- DiagnosticSource 接口实现 ------------------------------------------
     def commands(self) -> tuple[CommandSpec, ...]:
         return command_specs(self.config)
 

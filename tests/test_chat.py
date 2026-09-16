@@ -233,7 +233,7 @@ def test_agent_tools_share_text_with_fallback(fakemonitor):
 
 
 # ---------------------------------------------------------------------------
-# OpsAgent
+# OpsAgent 回归测试
 # ---------------------------------------------------------------------------
 def test_aiops_assistant_chat_fallback(fakemonitor):
     agent = OpsAgent(monitor=fakemonitor)

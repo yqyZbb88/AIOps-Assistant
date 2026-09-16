@@ -102,7 +102,7 @@ def parse_param(name: str, spec: Any) -> CmdParam:
             raise CmdDefError(f"str 参数 {name} 的 pattern 不是合法正则: {exc}") from exc
         return CmdParam(name=name, type="str", required=required, default=default,
                         pattern=str(pattern), description=description)
-    # int
+    # 整数参数
     minimum = spec.get("min")
     maximum = spec.get("max")
     if minimum is not None:
@@ -181,7 +181,7 @@ def _validate_value(param: CmdParam, raw: Any) -> Any:
         if param.maximum is not None and value > param.maximum:
             value = param.maximum
         return value
-    # str
+    # 字符串参数
     value = str(raw)
     if param.pattern is not None and re.fullmatch(param.pattern, value) is None:
         raise ParamError(f"参数 {name} 含有非法字符（白名单正则校验不通过）")

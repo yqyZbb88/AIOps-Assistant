@@ -243,7 +243,7 @@ def interpolate(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# YAML → dataclass
+# YAML 到数据类
 # ---------------------------------------------------------------------------
 _TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})

@@ -1,4 +1,4 @@
-"""AIOps-Assistant tests.
+"""AIOps-Assistant 测试包。
 
-Tests must remain offline and must not access real DeepSeek, Prometheus, SSH, or the public network.
+测试必须保持离线，不得访问真实 DeepSeek、Prometheus、SSH 或公共网络。
 """
