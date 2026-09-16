@@ -319,6 +319,12 @@ def _build_dataclass(model_type: type, data: Any, *, prefix: str) -> Any:
 
 def _validate_settings(settings: Settings) -> None:
     """跨字段配置约束；只在服务启动加载时执行。"""
+    if settings.app.version != __version__:
+        raise ConfigError(
+            "app.version 由 src/__init__.py 的 __version__ 统一管理，"
+            "请从 settings.yaml 删除该字段"
+        )
+
     ins = settings.inspection
     if not 30 <= ins.interval_seconds <= 86400:
         raise ConfigError("inspection.interval_seconds 必须在 30~86400 秒之间")

@@ -56,7 +56,8 @@ settings.yaml
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `app.name` | string | `AIOps-Assistant` | FastAPI 标题和日志应用名 |
-| `app.version` | string | `0.3.0` | 对外应用版本，与 `src/__init__.py` 保持一致 |
+
+应用版本不在 YAML 中配置，由 `src/__init__.py` 的 `__version__` 统一提供。
 
 ### server
 

@@ -33,7 +33,6 @@ def test_load_settings_parses_types_and_env(tmp_path, monkeypatch):
             [
                 "app:",
                 "  name: ops-test",
-                "  version: 9.9.9",
                 "server:",
                 "  host: 0.0.0.0",
                 "  port: 9999",
