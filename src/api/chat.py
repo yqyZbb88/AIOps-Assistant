@@ -1,15 +1,8 @@
-"""聊天路由：POST /chat。
+"""聊天路由：`POST /chat`。
 
-**契约变更（2026-09-12，破坏性）**：请求体删掉了 `user` 与 `session_name`，
-`session_id` 由可选改为**必填**。理由有两条：
-
-1. 调用者身份改由**密钥**推出（见 `src/api/deps.py`），请求体里自报的用户名不再采信——
-   自报的东西无从核实，基于它的任何校验都只是装饰；
-2. **建会话**拆到了 `POST /sessions`（名字在建会话时给）。`/chat` 只管聊天，
-   不再兼职建会话。
-
-响应体三个键不变（`reply` / `session_id` / `session_name`），`session_name` 现在
-是**回带**该会话的标签。
+请求只包含本轮 `message` 和必填 `session_id`；会话由 `POST /sessions` 创建，调用者
+身份由 Bearer Token 推断。存储可用时会校验会话归属并加载历史；存储关闭或降级为
+无存储时聊天仍可回答，但响应中的 `session_id` / `session_name` 为 null，且不保留历史。
 """
 from __future__ import annotations
 
@@ -71,7 +64,7 @@ class ChatResponse(BaseModel):
 
     reply: str = Field(..., description="机器人回复")
     session_id: str | None = Field(
-        None, description="本次使用的会话 id（持久化未启用时为 null）"
+        None, description="本次使用的会话 id（无会话存储时为 null）"
     )
     session_name: str | None = Field(
         None, description="本次使用的会话的标签（未命名会话为 null，只读不改）"

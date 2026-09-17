@@ -174,6 +174,10 @@ http://127.0.0.1:8000/docs
 
 `GET /health`、`/docs`、`/openapi.json` 等应用路由不需要 Bearer Token。
 
+这里的“应用路由”特指 FastAPI 自动生成的文档/OpenAPI 路由；它们不属于项目挂载的
+业务 router，因此不会经过 `require_auth`。如需隐藏接口结构，应在反向代理层限制
+`/docs`、`/redoc` 和 `/openapi.json`，或在后续版本中显式关闭这些路由。
+
 ## 八、Alertmanager webhook 配置
 
 ### 1. 准备专用 Token

@@ -1,22 +1,23 @@
-# AIOps-Assistant 全局配置。密钥只写入 .env，不要写入本文件。
+# AIOps-Assistant 全局配置。
+# 所有字段在启动时读取；修改后需要重启。密钥只放 .env/环境变量，不写入本文件。
 
 app:
   name: AIOps-Assistant          # 应用名称，用于 API 文档和日志
 
 server:
-  host: 127.0.0.1          # 默认只监听本机；对外服务建议使用反向代理
-  port: 8000
+  host: 127.0.0.1          # 仅 python src/main.py 使用；uvicorn 命令行参数会覆盖
+  port: 8000               # 默认仅监听本机；开放 0.0.0.0 前必须启用鉴权
 
 prometheus:
   base_url: ${PROMETHEUS_URL:-http://localhost:9090}
   timeout: 5               # 查询超时秒数
 
 monitor:
-  provider: prometheus
+  provider: prometheus     # 当前注册的监控源插件
 
 llm:
   provider: deepseek
-  enabled: true            # false 时跳过告警 AI 分析
+  enabled: true            # 控制告警 AI 分析；聊天 Agent 由 agent.enabled 单独控制
 
 agent:
   enabled: true            # false 时聊天只走关键词兜底
@@ -25,10 +26,10 @@ agent:
   recursion_limit: 25      # 单轮 Agent 最大工具调用步骤
 
 chat:
-  max_message_chars: 8000
+  max_message_chars: 8000  # POST /chat 单条消息字符上限，超过返回 413
 
 metrics:
-  file: config/metrics.yaml
+  file: config/metrics.yaml  # 空字符串表示使用代码内置默认配置
 
 alert:
   recent_limit: 100        # 内存中保留的最近告警数
@@ -43,18 +44,18 @@ inspection:
   max_rows: 2500           # 异常巡检最大记录数，可覆盖约 7 天
 
 storage:
-  enabled: true
+  enabled: true             # false 时不持久化；聊天仍可无状态运行
   db_path: "data/aiops_assistant.db"
-  session_ttl_hours: 72
-  max_sessions: 200
-  message_window: 20
-  history_ttl_hours: 168
-  max_history_rows: 5000
-  purge_interval_seconds: 60
+  session_ttl_hours: 72     # 会话按最后活动时间过期
+  max_sessions: 200         # 超出时淘汰最旧会话
+  message_window: 20        # 每轮最多发送给模型的 final 历史消息数
+  history_ttl_hours: 168    # 告警、处置、建议、幂等和审批决策保留期
+  max_history_rows: 5000    # 上述各类历史表各自的容量上限
+  purge_interval_seconds: 60  # 惰性清理的最小触发间隔
 
 logging:
-  level: INFO
-  audit: true
+  level: INFO               # DEBUG / INFO / WARNING / ERROR
+  audit: true               # false 时只记录 WARNING 及以上，不等于完全关闭审计
   audit_file: "logs/audit.log"
   audit_max_bytes: 5242880
   audit_backup_count: 3
@@ -63,14 +64,14 @@ logging:
   inspection_backup_count: 3
 
 auth:
-  enabled: true
+  enabled: true             # true 且没有有效 tokens 时拒绝启动
 
   # 密钥到身份的 JSON 映射，启用鉴权时必须配置。
   tokens: '${OPS_API_TOKENS:-}'
 
-  # approvers_only：只有列出的身份可以批准写命令。
+  # owner：仅触发人可审批；approvers_only：列出的审批人可审批所有人的申请。
   approval_mode: approvers_only
   approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
 
-  # 只有该身份可以调用 Alertmanager webhook。
+  # 只有该身份可以调用 POST /alert；留空会放宽为任何有效身份并产生 WARNING。
   alert_identity: alertmanager

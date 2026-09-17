@@ -243,12 +243,7 @@ def test_decision_is_recorded_before_the_command_runs(monkeypatch, fake_actions,
 
 
 def test_decision_record_failure_aborts_without_running(monkeypatch, fake_actions, approvals):
-    """记录写不进去 → **不执行命令**，整次决策失败。
-
-    看起来严厉，但方向是对的：审批项已 pop、命令没跑，调用方给出的「没执行」结论是
-    **正确**的。反过来吞掉错误继续执行，一旦随后崩溃就会得到「以为没执行、其实执行了」
-    的错误审计结论——正是这套机制要消除的方向。
-    """
+    """记录写不进去 → **不执行命令**，审批项恢复后仍可重试。"""
     class BrokenLedger:
         def record_decision(self, *a, **k):
             raise RuntimeError("磁盘满了")
@@ -271,6 +266,47 @@ def test_decision_record_failure_aborts_without_running(monkeypatch, fake_action
         agent.decide(turn.approval_id, action="approve")
 
     assert called == [], "命令绝不能执行"
+    assert approvals.get(turn.approval_id) is not None, "落盘失败后必须恢复，才能按提示重试"
+
+
+def test_decision_record_failure_can_retry_exactly_once(monkeypatch, fake_actions, approvals):
+    """瞬时落盘失败后，同一 id 重试成功，写命令总共只执行一次。"""
+    class FlakyLedger(RecordingLedger):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
+
+        def record_decision(self, approval_id, *, session_id, action, decided_by=""):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("数据库暂时锁定")
+            super().record_decision(
+                approval_id,
+                session_id=session_id,
+                action=action,
+                decided_by=decided_by,
+            )
+
+    ledger = FlakyLedger()
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"}),
+         AIMessage(content="已重启 nginx")],
+        fake_actions=fake_actions,
+        approvals=approvals,
+        ledger=ledger,
+    )
+    turn = agent.reply_turn_ctx("重启 nginx", session_id="s", user="alice")
+
+    with pytest.raises(ApprovalUnavailableError):
+        agent.decide(turn.approval_id, action="approve")
+
+    outcome = agent.decide(turn.approval_id, action="approve")
+
+    assert outcome.status == "completed"
+    assert fake_actions.calls == [("restart_service", {"service": "nginx"})]
+    assert ledger.records == [(turn.approval_id, "s", "approve", "alice")]
+    assert approvals.get(turn.approval_id) is None, "成功消费后仍须保持单次性"
 
 
 def test_crash_window_ends_up_unknown_not_abandoned(monkeypatch, fake_actions, approvals):

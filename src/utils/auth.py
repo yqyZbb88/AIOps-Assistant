@@ -24,10 +24,8 @@ def parse_tokens(raw: str | None) -> tuple[tuple[str, str], ...]:
 
     用元组而非 dict：可哈希（喂 lru_cache）、有序、不可变。
 
-    `raw` 允许是 `None`：yaml 里写 `tokens:` 且不带值时，`_as_scalar` 会让 `None`
-    一路穿到 dataclass —— 它只对「键缺失」应用 dataclass 默认值，不管「键存在但值为
-    null」。settings.yaml 用单引号占位符（`'${...:-}'`）本来就能避免这种情况，
-    这里再容错一次，免得配置方式一变就炸在 `None.strip()` 上。
+    `raw` 允许是 `None`，便于纯逻辑调用方直接表达“未配置”。正式的 settings 加载器会
+    严格拒绝 YAML null；出厂配置使用带引号的环境变量占位符，因此正常路径得到字符串。
     """
     text = (raw or "").strip()
     if not text:

@@ -63,13 +63,19 @@ curl http://127.0.0.1:8000/health
 ### 6. 创建会话并聊天
 
 ```bash
-curl -X POST http://127.0.0.1:8000/sessions   -H "Authorization: Bearer 随机密钥"   -H "Content-Type: application/json"   -d '{"name":"第一次使用"}'
+curl -X POST http://127.0.0.1:8000/sessions \
+  -H "Authorization: Bearer 随机密钥" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"第一次使用"}'
 ```
 
 复制返回的 `session_id`，然后：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/chat   -H "Authorization: Bearer 随机密钥"   -H "Content-Type: application/json"   -d '{"message":"CPU 使用率是多少","session_id":"会话ID"}'
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Authorization: Bearer 随机密钥" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"CPU 使用率是多少","session_id":"会话ID"}'
 ```
 
 ## 一、适用范围
@@ -94,7 +100,7 @@ curl -X POST http://127.0.0.1:8000/chat   -H "Authorization: Bearer 随机密钥
 - 任意 PromQL 执行
 - AI 任意读取日志文件
 
-后续拓展方向和阶段计划见 [roadmap.md](roadmap.md)。
+后续版本以维护者的本地规划为准；本指南只描述当前已经实现的能力。
 
 ## 二、主要能力
 
@@ -170,7 +176,8 @@ OPS_APPROVER_IDENTITIES=["admin"]
 Authorization: Bearer <密钥>
 ```
 
-除 `/health` 外，其它接口都需要鉴权。
+所有业务接口除 `/health` 外都需要鉴权。FastAPI 自带的 `/docs`、`/redoc` 和
+`/openapi.json` 当前公开；在不可信网络部署时应由反向代理限制这些文档路由。
 
 ### Alertmanager
 
@@ -233,7 +240,8 @@ receivers:
 | `agent_actions.yaml` | Agent 写命令白名单，强制人工审批 |
 | `diagnostics.yaml` | SSH 只读诊断命令白名单 |
 
-所有配置修改后都需要重启服务。字段说明见 [configuration.md](configuration.md)。
+所有配置修改后都需要重启服务；`RuleEngine` 虽有内部重载方法，但当前没有提供给用户的
+热更新 API。字段说明见 [configuration.md](configuration.md)。
 
 ## 七、指标和巡检
 
@@ -287,12 +295,18 @@ curl http://127.0.0.1:8000/health
 | `POST /alert` | Alertmanager webhook |
 | `GET /alerts/recent` | 最近接收的告警 |
 | `GET /alerts/active` | 当前 pending/firing 告警 |
-| `GET /alerts/history` | 告警和处置归档 |
+| `GET /alerts/history` | 告警、处置和 AI 建议归档 |
 | `GET /inspections/recent` | 异常巡检记录 |
 | `GET /approvals` | 待审批写命令 |
 | `POST /approvals/{id}` | 批准或拒绝 |
 | `GET /sessions` | 会话列表 |
 | `GET /sessions/{id}` | 会话详情 |
+| `PATCH /sessions/{id}` | 修改或清除会话标签 |
+| `DELETE /sessions/{id}` | 删除会话并取消关联未决审批 |
+
+`storage.enabled=false` 或数据库初始化失败且未获得会话存储时，聊天仍可无状态回答，但
+`POST /sessions` 不可用，`POST /chat` 不保存历史且响应会话字段为 null。告警实时缓冲与
+Prometheus 查询不依赖会话存储。
 
 ### 写命令审批
 
@@ -409,6 +423,10 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - 用户名和密码/私钥
 - 网络与端口
 - 目标主机是否可达
+- 命令是否超过 `connect_timeout`
+
+`output_limit` 限制返回给 Agent 的字符数；当前版本底层仍会先读取完整 SSH 输出，因此
+不要在命令目录中加入可能产生无界输出的命令。流式限量读取已列入 0.4.0 路线图。
 
 ### 巡检没有数据
 

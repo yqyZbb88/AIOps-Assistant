@@ -36,9 +36,10 @@ data/
 *.db-wal
 *.db-shm
 
-# 仅本地保留、不提交的开发者文档
+# 仅本地保留、不提交的规划与维护文档
 PROJECT_HANDOVER.md
-docs/developer-guide.md
+ARCHITECTURE.md
+docs/roadmap.md
 
 # 仅本地保留、不提交的压测脚本
 scripts/load_gen.sh

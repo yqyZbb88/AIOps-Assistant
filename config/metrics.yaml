@@ -1,12 +1,14 @@
 # 统一指标配置。
-# 查询表达式由程序内置维护；此文件只配置启用范围、阈值、实例和 selector。
+# PromQL、单位、阈值方向和工具名由代码目录维护；本文件只配置启用范围、阈值和 selector。
 # 修改后需要重启服务。
 
-version: 1
-instance: ${PROMETHEUS_INSTANCE:-localhost:9100}  # 默认监控实例，可用环境变量覆盖
+version: 1                                        # 当前只支持 version=1
+instance: ${PROMETHEUS_INSTANCE:-localhost:9100}  # 全局 instance 标签；指标级 selector 可覆盖
 max_alert_analysis_metrics: 8                     # 告警 AI 单次最多分析的指标数
 
 metrics:
+  # enabled=true 时至少要启用一个 surface。
+  # severity_enabled=true 时必须提供符合指标方向的 warning/critical。
   # 核心指标：参与巡检、聊天工具和告警分析。
   cpu.usage:
     enabled: true

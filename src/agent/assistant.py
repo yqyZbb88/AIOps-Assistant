@@ -383,7 +383,8 @@ class OpsAssistant:
         """提交一次审批决策并续跑：approve → 真正执行；reject → 放弃。
 
         严格性说明（都对应实测过的坑）：
-        - **单次性**：先 pop 再续跑，重复提交同一 id 直接报错，不会二次执行；
+        - **单次性**：先 pop 再续跑，成功进入续跑后重复提交同一 id 不会二次执行；
+          若决策记录在续跑前明确落盘失败，则恢复审批项，允许同一 id 安全重试；
         - **先校验后 resume**：决策类型必须在 allowed_decisions 内、且决策条数必须等于挂起的
           工具调用数。负载不合法时 LangGraph 会把该负载缓存为线程的 resume 值 →
           **线程被永久毒化**，之后连正确负载也执行不了，因此绝不能让错误负载进入 resume。
@@ -413,7 +414,19 @@ class OpsAssistant:
         # ★ 落决策记录。**位置就是这套机制的全部要害**：必须在 pop() 之后、resume() 之前。
         #   进程若恰好死在这两者之间，重启时 reconcile_pending 才能把那一轮标成
         #   「结果未知」而不是错误的「未执行」——命令可能已经执行过了。
-        self._record_decision(approval_id, record, action)
+        # 落盘明确失败时命令尚未开始执行，可以安全恢复原审批项供调用方重试。
+        # resume() 失败时绝不能恢复：那时远端命令可能已经执行，重试会造成重复写。
+        try:
+            self._record_decision(approval_id, record, action)
+        except ApprovalUnavailableError:
+            evicted = self.approvals.add(record)
+            if evicted is not None and evicted.get("approval_id") != approval_id:
+                self._delete_thread(evicted.get("thread_id"))
+                self._reconcile_ledger()
+            logger.warning(
+                "审批决策记录失败，待审批项已恢复，可重试 id=%s", approval_id
+            )
+            raise
 
         # 决策顺序与条数必须与挂起调用一一对应（多了少了都会毒化线程）
         decisions = [{"type": action} for _ in actions]
@@ -513,11 +526,10 @@ class OpsAssistant:
     def _record_decision(self, approval_id: str, record: dict, action: str) -> None:
         """落一条决策记录（在 `pop()` 与 `resume()` 之间调用）。
 
-        **写失败就中止这次决策**（抛 `ApprovalUnavailableError` → api 503）——看起来
-        严厉，但方向是对的：审批项这时已经 pop 掉了、**命令不会执行**，而调用方据此
-        给出的「没执行」结论是**正确**的。反过来若吞掉错误继续执行，一旦进程随后崩溃，
-        重启后就会得到「以为没执行、其实执行了」的错误审计结论——正是这套机制要消除的方向。
-        （卡住的显示会由下一次对账自愈：那时它不在 live 里、又没有决策记录 → 标 abandoned。）
+        **写失败就中止这次决策**（抛 `ApprovalUnavailableError` → api 503）。调用方会在
+        `decide()` 中把审批项恢复到队列，供同一 id 重试；恢复是安全的，因为失败发生在
+        resume 之前，命令确定尚未执行。反过来若吞掉错误继续执行，一旦进程随后崩溃，
+        重启后就会得到「以为没执行、其实执行了」的错误审计结论。
 
         `ledger` 为 None（持久化未启用）时直接跳过：没有会话表，也就没有要分辨的东西。
         """

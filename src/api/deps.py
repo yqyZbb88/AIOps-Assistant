@@ -5,7 +5,8 @@
 只是装饰。
 
 挂载方式见 `src/main.py`：`include_router(..., dependencies=[Depends(require_auth)])`。
-这种写法是 **fail-closed** 的——要豁免某组路由必须显式写出来（目前只有 /health）。
+这种写法让业务 router 默认显式挂鉴权；目前只有 `/health` 业务路由豁免。
+`/docs`、`/redoc`、`/openapi.json` 属于 FastAPI 应用级路由，不经过这些 router 依赖。
 
 两条纪律：
 - **不在 import 期读配置文件**，设置一律从 `request.app.state.settings` 取

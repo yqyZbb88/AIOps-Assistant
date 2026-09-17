@@ -8,8 +8,8 @@
 契约见 src/interfaces/history.py::HistoryStore。要点：
 
 - **一次 `record_batch` = 一个事务**：三张表同批落，不留「告警写了、处置没写」的半批；
-- **写入前强制截断** `detail` / `advice` / `summary`：`detail` 里可能含远端命令的 stdout，
-  而既有不变量是「整段命令输出不落日志」——只进 console 时无所谓，一落盘就变成磁盘明文；
+- **写入前强制截断** `detail` / `advice` / `summary`，控制外部文本和命令输出造成的库增长；
+  截断不是脱敏，调用方仍不得把凭据或其它敏感内容放入这些字段；
 - 告警表用 `UNIQUE(alert_key, starts_at, status)` + `INSERT OR IGNORE` 做**重投幂等**，
   同时保留 firing → resolved 的状态迁移（Alertmanager 会重投，但不要
   `UNIQUE(alert_key)` + REPLACE——那会让「曾经 firing 过」的痕迹消失）；

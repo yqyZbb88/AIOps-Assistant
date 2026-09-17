@@ -16,7 +16,7 @@ DEEPSEEK_TIMEOUT = float(os.getenv("DEEPSEEK_TIMEOUT", "30"))
 DEEPSEEK_MAX_RETRIES = int(os.getenv("DEEPSEEK_MAX_RETRIES", "2"))
 DEEPSEEK_MAX_TOKENS = int(os.getenv("DEEPSEEK_MAX_TOKENS", "2048"))
 
-model = init_chat_model(        # 实际上就是调用了ChatDeepSeek函数
+model = init_chat_model(
     model=DEEPSEEK_MODEL,
     model_provider="deepseek",
     api_key=DEEPSEEK_API_KEY,

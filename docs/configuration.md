@@ -31,7 +31,8 @@ value: ${VAR:-default}
 
 ### 2. 严格校验
 
-- 未知字段通常会导致配置解析失败。
+- `settings.yaml` 与 `metrics.yaml` 严格拒绝未知字段；命令目录还会严格检查模板占位符、
+  参数声明和审批段字段。可选能力配置失败时会记录错误并关闭对应能力。
 - 布尔值只接受明确的 `true/false`、`yes/no`、`on/off`、`1/0`。
 - 类型不合法、阈值顺序错误、未知指标等会拒绝启动或在启动时关闭对应能力。
 - 修改配置后需要重启服务，当前没有热更新入口。
@@ -49,7 +50,28 @@ settings.yaml
 `metrics.yaml` 不控制 `rules.yaml` 或 SSH 诊断。  
 `rules.yaml` 不直接查 Prometheus 指标，只按 Alertmanager 的 `alertname` 匹配。
 
+### 4. 配置文件路径
+
+默认从仓库根目录下的 `config/` 读取。以下环境变量可替换加载路径，适合测试、容器挂载或
+多套环境配置：
+
+| 环境变量 | 默认文件 |
+|---|---|
+| `OPS_SETTINGS_FILE` | `config/settings.yaml` |
+| `OPS_RULES_FILE` | `config/rules.yaml` |
+| `OPS_ACTIONS_FILE` | `config/actions.yaml` |
+| `OPS_AGENT_ACTIONS_FILE` | `config/agent_actions.yaml` |
+| `OPS_DIAGNOSTICS_FILE` | `config/diagnostics.yaml` |
+
+`metrics.yaml` 没有单独的路径环境变量；它由 `settings.yaml` 的 `metrics.file` 指定。相对
+路径按仓库根目录解析，空字符串表示使用代码内置的默认运行配置。显式传给加载函数的路径
+优先级高于上述环境变量。
+
 ## 二、settings.yaml
+
+下列表格的“默认值”指仓库自带 `config/settings.yaml` 的出厂值。代码中的部分 dataclass
+默认值会为离线测试关闭鉴权、存储和巡检；生产启动读取 YAML，不应把直接构造
+`Settings()` 的测试默认值当作部署默认值。
 
 ### app
 
@@ -145,7 +167,7 @@ settings.yaml
 | `storage.max_sessions` | int | `200` | 最大会话数，超出淘汰最旧会话 |
 | `storage.message_window` | int | `20` | 每轮发送给模型的历史消息上限 |
 | `storage.history_ttl_hours` | int | `168` | 告警/处置/AI 建议归档保留时间 |
-| `storage.max_history_rows` | int | `5000` | 上述归档表各自的容量上限 |
+| `storage.max_history_rows` | int | `5000` | 告警/处置/建议表及幂等、审批决策表各自的容量上限 |
 | `storage.purge_interval_seconds` | int | `60` | 过期清理节流间隔 |
 
 ### logging
@@ -327,7 +349,7 @@ rules:
 | `alertname` | string | 是 | 与 Alertmanager alertname 精确匹配 |
 | `action` | string | 是 | 必须存在于 `actions.yaml.commands` |
 | `target_instance` | string | auto_execute 时是 | 允许处理的告警实例，必须精确匹配 |
-| `params` | map | 是 | 写命令参数与 SSH 连接参数 |
+| `params` | map | 否 | 写命令参数与 SSH 连接参数；省略时为空映射 |
 | `auto_execute` | bool | 否 | true 自动执行，false 只命中不执行 |
 | `description` | string | 否 | 给人看的说明 |
 
@@ -442,6 +464,9 @@ commands:
 | `approval.max_pending` | int | 最大待审批数量 |
 | `commands` | map | 写命令定义，格式同 actions.yaml |
 
+`output_limit` 目前在 SSH 命令完成、输出读入内存后生效，用于限制模型上下文，不是底层
+内存上限。命令模板仍应主动限制输出规模；流式限量读取属于 0.4.0 安全项。
+
 审批段只接受 `timeout_seconds` 和 `max_pending`，没有关闭审批的开关。命令 key 不能与聊天指标工具或 SSH 诊断工具重名。
 
 ## 七、diagnostics.yaml
@@ -476,6 +501,9 @@ commands:
 | `target` | map | SSH 连接参数，同 agent_actions（`connect_timeout` 省略则 8） |
 | `output_limit` | int | 单条命令回传上限 |
 | `commands` | map | 只读命令白名单 |
+
+`output_limit` 与 Agent 写命令具有相同边界：限制返回字符数，但当前不会阻止远端命令先
+产生大量输出。因此命令必须使用 `head`、`journalctl -n` 等静态或参数化上限。
 
 命令参数格式与 `actions.yaml` 相同，但：
 

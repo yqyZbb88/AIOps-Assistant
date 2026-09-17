@@ -1,66 +1,65 @@
 # AIOps-Assistant
 
-AIOps-Assistant 是一套面向单主机环境的智能运维助手，基于 FastAPI、Prometheus、Alertmanager、LangChain 和 SQLite。
+AIOps-Assistant 是面向单主机、单 Prometheus 环境的轻量智能运维助手。它把
+Prometheus/Alertmanager 的事实数据、白名单 SSH 诊断、人工审批写操作、周期巡检和
+SQLite 历史记录组织成一条可审计的运维链路。
 
 当前版本：`0.3.0`
 
-## 主要能力
+## 能力与边界
 
-- AI 对话：按配置调用 Prometheus 指标工具回答问题
-- 统一指标目录：内置 CPU、Memory、Disk、Network、System、Alerts 指标
-- 告警接收：接收 Alertmanager webhook
-- 告警分析：对未匹配规则的告警生成 AI 分析建议
-- 自动巡检：按周期检查固定指标并生成等级
-- 异常归档：异常巡检写入 SQLite，正常轮次写日志文件
-- SSH 只读诊断：执行白名单诊断命令
-- Agent 写命令：白名单写操作必须经过人工审批
-- 会话历史：多轮聊天和状态归档
-- API 鉴权：Bearer Token 到身份映射
-- 数据时效：AI 工具结果明确标注观测时间
+当前已实现：
 
-## 适用环境
+- AI 多轮对话：模型按配置调用指标、告警、巡检和诊断工具
+- 统一指标目录：内置 CPU、Memory、Disk、Network、System、Alerts 共 17 个指标
+- Alertmanager webhook：接收告警、执行规则匹配，并分析未匹配告警
+- 固定指标巡检：周期查询、等级判定、异常归档和独立巡检日志
+- SSH 只读诊断：只执行管理员配置的命令模板和受控参数
+- 两类写操作：规则自动处置，以及必须人工审批的 Agent 写命令
+- Bearer Token 鉴权：Token 映射为身份，用于会话归属、审批授权和 webhook 隔离
+- SQLite 持久化：保存会话、告警、处置、AI 建议、审批决策和异常巡检
+- 数据时效：所有提供给 Agent 的工具结果都标明观测或生成时间
 
-当前版本适合：
+当前适合：单主机、单 Prometheus、单 Alertmanager、单 worker、内网和少量用户。
+
+当前不支持：
+
+- 多主机选择和资产注册
+- 多 worker 下可靠审批与调度
+- 待审批 checkpoint 跨进程恢复
+- 配置热更新入口
+- 任意 PromQL、任意 Shell 或任意日志文件读取
+- 生产级容器部署、高可用和灾备
+
+## 架构
 
 ```text
-单主机
-单 Prometheus
-单 Alertmanager
-单 worker
-内网环境
-少量用户
+FastAPI API
+    ↓
+Core services
+    ↓
+Interfaces
+    ↑
+Plugins / Storage
 ```
 
-当前限制：
+- `src/api/`：HTTP 校验、鉴权依赖和异常映射
+- `src/core/`：聊天、告警、分析、规则和巡检编排
+- `src/interfaces/`：跨层契约和中性数据类型
+- `src/plugins/`：Prometheus、DeepSeek、SSH 诊断和命令执行实现
+- `src/storage/`：SQLite、内存缓冲、审批队列和幂等守卫
+- `src/agent/`：LangChain/LangGraph Agent、工具和人工审批续跑
+- `src/container.py`：按配置惰性装配并缓存组件
 
-- 不支持多主机选择
-- 不支持多 worker 下可靠审批
-- 审批不跨进程重启恢复
-- 配置修改后需要重启
-- 不提供任意 PromQL 执行接口
-- AI 不能读取任意日志文件
-
-## 文档
-
-| 文档 | 内容 |
-|---|---|
-| [docs/guide.md](docs/guide.md) | 快速开始、部署、鉴权、API、巡检、备份和排障 |
-| [docs/roadmap.md](docs/roadmap.md) | 后续拓展方向、阶段计划、优先级和验收标准 |
-| [docs/configuration.md](docs/configuration.md) | 所有运行时 YAML 字段、默认值、约束和示例 |
-| [docs/auth.md](docs/auth.md) | API 密钥、身份、Alertmanager webhook 和审批角色详细说明 |
-| [docs/database.md](docs/database.md) | SQLite 表结构、数据生命周期、维护和备份详细说明 |
+核心原则是：Prometheus 提供事实，模型负责解释和选择受控工具；模型不能提交自由
+PromQL 或自由 Shell。写命令只能来自管理员维护的目录。
 
 ## 快速开始
 
-安装依赖：
+建议使用独立虚拟环境。项目当前测试环境为 Conda `langchain1.2`。
 
 ```bash
 pip install -r requirements.txt
-```
-
-复制环境变量样例：
-
-```bash
 cp .env.example .env
 ```
 
@@ -79,73 +78,86 @@ OPS_APPROVER_IDENTITIES=["admin"]
 uvicorn src.main:app --host 127.0.0.1 --port 8000
 ```
 
-或直接运行：
+也可以使用 `python src/main.py`；此时监听地址和端口来自 `config/settings.yaml`。
+
+验证：
 
 ```bash
-python src/main.py
+curl http://127.0.0.1:8000/health
 ```
 
-访问：
+创建会话后聊天：
 
-```text
-http://127.0.0.1:8000/docs
+```bash
+curl -X POST http://127.0.0.1:8000/sessions \
+  -H "Authorization: Bearer <密钥>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"首次排查"}'
+
+curl -X POST http://127.0.0.1:8000/chat \
+  -H "Authorization: Bearer <密钥>" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"<上一步返回的 id>","message":"CPU 使用率是多少"}'
 ```
 
-## 常用接口
+Swagger UI 位于 `http://127.0.0.1:8000/docs`。
 
-| 方法/路径 | 说明 |
+## 鉴权说明
+
+`auth.enabled=true` 时，所有业务 API（除 `GET /health`）都需要 Bearer Token。
+`/docs`、`/redoc` 和 `/openapi.json` 是 FastAPI 应用级文档路由，当前公开；在不可信网络
+部署时应由反向代理限制它们。
+
+`POST /alert` 还要求调用身份等于 `auth.alert_identity`。不要让普通聊天用户与
+Alertmanager 共用 Token，因为 webhook 可触发 `auto_execute=true` 的规则写操作。
+
+## API
+
+| 方法和路径 | 说明 |
 |---|---|
-| `GET /health` | 健康检查 |
+| `GET /health` | 进程状态和存储降级状态 |
 | `POST /sessions` | 创建会话 |
-| `POST /chat` | 使用 `session_id` 进行聊天 |
+| `GET /sessions` | 列出当前身份的会话 |
+| `GET /sessions/{id}` | 会话详情和全部消息状态 |
+| `PATCH /sessions/{id}` | 修改或清除会话标签 |
+| `DELETE /sessions/{id}` | 删除会话并取消关联未决审批 |
+| `POST /chat` | 使用既有 `session_id` 聊天 |
 | `POST /alert` | Alertmanager webhook |
-| `GET /alerts/recent` | 最近接收的告警 |
-| `GET /alerts/active` | 当前 pending/firing 告警 |
-| `GET /alerts/history` | 落盘的告警、处置和 AI 建议 |
-| `GET /approvals` | 待人工审批的写命令 |
+| `GET /alerts/recent` | 进程内最近接收的告警 |
+| `GET /alerts/active` | Prometheus 当前 pending/firing 告警 |
+| `GET /alerts/history` | 告警、处置和 AI 建议归档 |
+| `GET /approvals` | 当前身份可见的待审批写命令 |
 | `POST /approvals/{id}` | 批准或拒绝写命令 |
-| `GET /inspections/recent` | 最近的异常巡检记录 |
-| `GET /sessions` | 会话列表 |
-| `GET /sessions/{id}` | 会话详情 |
-| `PATCH /sessions/{id}` | 修改会话标签 |
-| `DELETE /sessions/{id}` | 删除会话（连同消息与审批决策），未决审批一并取消 |
+| `GET /inspections/recent` | 最近异常巡检归档 |
 
-除 `/health` 外，启用鉴权后都需要：
+## 配置
 
-```text
-Authorization: Bearer <密钥>
-```
-
-## 配置文件
-
-运行时配置位于 `config/`：
+运行时配置位于 `config/`，所有文件修改后都需要重启进程：
 
 | 文件 | 作用 |
 |---|---|
-| `settings.yaml` | 应用、服务、存储、日志、鉴权和巡检调度 |
-| `metrics.yaml` | 指标启用范围、阈值、实例和 selector |
-| `rules.yaml` | Alertmanager alertname 到写命令的规则映射 |
-| `actions.yaml` | 规则自动处置的写命令白名单 |
-| `agent_actions.yaml` | Agent 写命令白名单，强制人工审批 |
-| `diagnostics.yaml` | SSH 只读诊断命令白名单 |
+| `settings.yaml` | 服务、监控源、LLM、存储、日志、鉴权和巡检调度 |
+| `metrics.yaml` | 指标启用范围、surface、阈值、instance 和 selector |
+| `rules.yaml` | Alertmanager `alertname` 到规则写命令的映射 |
+| `actions.yaml` | 规则自动处置写命令目录；该路径没有人工审批 |
+| `agent_actions.yaml` | Agent 写命令目录；执行前强制人工审批 |
+| `diagnostics.yaml` | Agent SSH 只读诊断命令目录 |
 
-字段说明：
+完整字段、默认值、约束和能力关闭语义见
+[配置指南](docs/configuration.md)。
 
-- [配置指南](docs/configuration.md)
-- [使用指南](docs/guide.md)
+## 安全提示
 
-## 安全建议
-
-- 使用随机 Bearer Token
-- Alertmanager 使用专用密钥
+- 密钥只放 `.env` 或运行环境，不写入 YAML、日志、截图或工单
+- 对外监听前启用鉴权，并由反向代理提供 TLS
+- Alertmanager 使用独立身份和 Token
 - 多用户环境使用 `approvers_only`
-- 生产环境优先使用 SSH 私钥
-- 保持严格 known_hosts 校验
-- 不要把 `.env`、数据库和日志提交到 Git
-- 自动写命令先保持 `auto_execute: false`
-- 写命令必须人工检查命令、目标和参数
+- SSH 优先使用专用账号和私钥，并严格校验 known_hosts
+- `actions.yaml` 的规则自动处置不经过人工审批，启用 `auto_execute` 前必须实测
+- `agent_actions.yaml` 的审批记录在内存中，进程重启会使未决审批失效
+- 不提交 `.env`、数据库、WAL/SHM 文件和日志
 
-## 日志和数据
+## 数据与日志
 
 默认位置：
 
@@ -155,8 +167,25 @@ logs/audit.log
 logs/inspection.log
 ```
 
-- `audit.log` 记录动作和审批审计，一行一个 JSON 对象
-- `inspection.log` 记录每轮巡检结果，按指标分组输出多行文本
-- SQLite 保存会话、告警归档、审批决策和异常巡检
+- `audit.log`：写命令尝试与审批决策，JSON Lines，支持轮转
+- `inspection.log`：每轮巡检的人类可读分组结果
+- SQLite：八张表，schema 当前为 v6；详见 [数据库说明](docs/database.md)
 
-详细说明见 [使用指南](docs/guide.md)。
+## 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [使用指南](docs/guide.md) | 部署、日常操作、备份和排障 |
+| [配置指南](docs/configuration.md) | 全部运行时 YAML 字段和示例 |
+| [鉴权说明](docs/auth.md) | Token、身份、审批角色和 Alertmanager 配置 |
+| [数据库说明](docs/database.md) | 表结构、清理、迁移、备份和恢复 |
+| [贡献约定](CONTRIBUTING.md) | 分层、安全、测试和文档同步要求 |
+
+## 开发验证
+
+```bash
+conda run -n langchain1.2 python -m pytest -q
+python -m compileall -q src tests init.py
+```
+
+当前基线：`627 passed`。测试必须离线，不访问真实 DeepSeek、Prometheus、SSH 或公共网络。

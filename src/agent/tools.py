@@ -1,11 +1,12 @@
 """运维工具集。
 
-三块能力都封装成 LangChain 工具交给 Agent 按需调用：
+四块能力都封装成 LangChain 工具交给 Agent 按需调用：
 1) `build_tools(monitor)`：读监控数据（CPU / 内存 / 磁盘 / 告警），闭包注入 MonitorSource；
 2) `build_diag_tools(diag)`：只读主机诊断（free / df / ps / systemctl / journalctl），
    命令白名单在 config/diagnostics.yaml 声明，工具按白名单动态生成——Agent 只选命令名 +
    受控语义参数，凭据 / 自由命令永不进模型上下文；
-3) `build_agent_action_tools(source)`：**会改动系统**的写命令（config/agent_actions.yaml），
+3) `build_inspection_tools(store)`：查询已归档的异常巡检轮次，结果明确标注为历史数据；
+4) `build_agent_action_tools(source)`：**会改动系统**的写命令（config/agent_actions.yaml），
    与 2) 的区别是它返回 WriteToolBundle——工具与人工审批策略成对产出，无法只取其一。
 
 设计约束：

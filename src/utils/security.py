@@ -1,8 +1,9 @@
 """安全工具：敏感信息打码。
 
 设计：
-- 记录 / 日志里任何包含密钥类字段的 dict 都应先过 redact_sensitive()，
-  保证 password/token/secret/api_key 等永不落入日志与审计。
+- 结构化记录中包含密钥类字段的 dict 应先过 `redact_sensitive()`。
+- 当前实现只按顶层键名做浅层打码，不是通用文本脱敏器；自由文本、嵌套对象和异常信息
+  仍需调用方避免写入敏感值。统一文本脱敏属于后续安全加固项。
 
 注：参数必填校验不在本模块——host 由 plugins/common/endpoint.py 的
 endpoint_from_params 校验，命令参数由 plugins/common/cmddef.py 的 validated_params 校验。
