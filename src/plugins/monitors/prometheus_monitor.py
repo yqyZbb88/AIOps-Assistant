@@ -97,6 +97,14 @@ class PrometheusMonitor(MonitorSource):
             raise MonitorError("Prometheus 返回数据格式异常")
         return data
 
+    def check_health(self) -> None:
+        """使用 Prometheus 自身 readiness 端点，不执行用户可控查询。"""
+        try:
+            response = requests.get(f"{self.base_url}/-/ready", timeout=self.timeout)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise MonitorError(f"Prometheus 未就绪: {exc}") from exc
+
     def _query(self, expr: str) -> list[dict[str, Any]]:
         result = self._request("query", {"query": expr}).get("result", [])
         if not isinstance(result, list):

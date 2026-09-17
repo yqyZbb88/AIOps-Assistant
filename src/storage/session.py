@@ -38,6 +38,7 @@ from src.interfaces.session import (
 )
 from src.storage.db import Database
 from src.utils.time import cutoff_iso, to_iso
+from src.utils.security import redact_text
 
 logger = logging.getLogger("aiops_assistant.storage.session")
 
@@ -71,7 +72,7 @@ _INSERT_MESSAGE = (
 
 def _title_from(content: str) -> str:
     """把首条用户消息截成会话标题。"""
-    text = " ".join((content or "").split())
+    text = " ".join(redact_text(content or "").split())
     return text[:_TITLE_MAX_CHARS]
 
 
@@ -92,7 +93,7 @@ def _row_to_session(row: dict[str, Any]) -> SessionInfo:
 def _row_to_message(row: dict[str, Any]) -> ChatMessage:
     return ChatMessage(
         role=row["role"],
-        content=row["content"],
+        content=redact_text(row["content"]),
         seq=int(row["seq"]),
         status=row["status"],
         approval_id=row["approval_id"],
@@ -297,11 +298,11 @@ class SqliteSessionStore(SessionStore):
         with self._tx() as conn:
             conn.execute(
                 _INSERT_MESSAGE,
-                (session_id, session_id, ROLE_USER, user_content, status, approval_id, stamp),
+                (session_id, session_id, ROLE_USER, redact_text(user_content), status, approval_id, stamp),
             )
             conn.execute(
                 _INSERT_MESSAGE,
-                (session_id, session_id, ROLE_ASSISTANT, assistant_content, status, approval_id, stamp),
+                (session_id, session_id, ROLE_ASSISTANT, redact_text(assistant_content), status, approval_id, stamp),
             )
             conn.execute(
                 "UPDATE sessions SET updated_at = ?, "
@@ -338,7 +339,7 @@ class SqliteSessionStore(SessionStore):
                 "UPDATE messages SET status = ?, approval_id = ?, "
                 "content = CASE WHEN role = ? THEN ? ELSE content END "
                 "WHERE approval_id = ? AND status = ?",
-                (status, stored_id, ROLE_ASSISTANT, content,
+                (status, stored_id, ROLE_ASSISTANT, redact_text(content),
                  approval_id, STATUS_PENDING_APPROVAL),
             )
             conn.execute(
@@ -574,8 +575,8 @@ class InMemorySessionStore(SessionStore):
         stamp = to_iso(self._clock())
         msgs = self._messages.setdefault(session_id, [])
         # 两行共享 status / approval_id（理由见 SQLite 版 append_turn 的 docstring）
-        msgs.append(ChatMessage(ROLE_USER, user_content, len(msgs) + 1, status, approval_id, stamp))
-        msgs.append(ChatMessage(ROLE_ASSISTANT, assistant_content, len(msgs) + 1, status, approval_id, stamp))
+        msgs.append(ChatMessage(ROLE_USER, redact_text(user_content), len(msgs) + 1, status, approval_id, stamp))
+        msgs.append(ChatMessage(ROLE_ASSISTANT, redact_text(assistant_content), len(msgs) + 1, status, approval_id, stamp))
         row = self._sessions[session_id]
         row["updated_at"] = stamp
         if not row["title"]:
@@ -600,7 +601,7 @@ class InMemorySessionStore(SessionStore):
             for idx, msg in enumerate(msgs):
                 if msg.approval_id == approval_id and msg.status == STATUS_PENDING_APPROVAL:
                     # 命中整轮；只替换 assistant 行的 content
-                    new_content = content if msg.role == ROLE_ASSISTANT else msg.content
+                    new_content = redact_text(content) if msg.role == ROLE_ASSISTANT else msg.content
                     msgs[idx] = ChatMessage(
                         msg.role, new_content, msg.seq, status, stored_id, msg.created_at
                     )

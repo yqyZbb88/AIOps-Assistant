@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.storage.models import Alert
+from src.utils.security import redact_sensitive
 
 logger = logging.getLogger("aiops_assistant.alert_store")
 
@@ -28,7 +29,7 @@ class AlertStore:
 
     def record(self, alert: Alert) -> dict[str, Any]:
         """记录一条告警到缓冲，返回其结构化摘要。"""
-        record: dict[str, Any] = {
+        record: dict[str, Any] = redact_sensitive({
             "status": alert.status,
             "alertname": alert.alertname,
             "severity": alert.severity,
@@ -36,7 +37,7 @@ class AlertStore:
             "summary": alert.annotations.get("summary", ""),
             "startsAt": alert.startsAt,
             "received_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        }
+        })
         self._buffer.append(record)
 
         if alert.is_resolved:
@@ -54,7 +55,7 @@ class AlertStore:
     def recent(self, limit: int = 20) -> list[dict[str, Any]]:
         """返回最近接收的告警记录，新的在前；limit 夹取到 [1, maxlen]。"""
         limit = max(1, min(int(limit), self.maxlen))
-        return list(self._buffer)[-limit:][::-1]
+        return redact_sensitive(list(self._buffer)[-limit:][::-1])
 
     def __len__(self) -> int:
         return len(self._buffer)

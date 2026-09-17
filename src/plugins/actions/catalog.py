@@ -33,6 +33,7 @@ class ActionsConfigError(ValueError):
 @dataclass(frozen=True)
 class ActionsConfig:
     enabled: bool = True
+    output_limit: int = 4000
     commands: tuple[CmdDef, ...] = field(default_factory=tuple)
 
 
@@ -42,6 +43,9 @@ def build_actions(data: Mapping[str, Any]) -> ActionsConfig:
     enabled = data.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ActionsConfigError("enabled 必须是布尔值")
+    output_limit = data.get("output_limit", 4000)
+    if isinstance(output_limit, bool) or not isinstance(output_limit, int) or output_limit < 1:
+        raise ActionsConfigError("output_limit 必须是正整数")
 
     raw_cmds = data.get("commands") or {}
     if enabled and not isinstance(raw_cmds, Mapping):
@@ -55,7 +59,7 @@ def build_actions(data: Mapping[str, Any]) -> ActionsConfig:
         raise ActionsConfigError(str(exc)) from exc
     if enabled and not commands:
         logger.warning("actions.yaml 未声明任何 commands，写命令目录为空（自动处置将全部失效）")
-    return ActionsConfig(enabled=enabled, commands=commands)
+    return ActionsConfig(enabled=enabled, output_limit=output_limit, commands=commands)
 
 
 def parse_actions(text: str) -> ActionsConfig:

@@ -74,7 +74,10 @@ class SshDiagnostics(DiagnosticSource):
         )
         started_at = audit_common.now_iso()
         try:
-            code, out, err = ssh_common.exec_command(endpoint, cmd_str, sudo=False)
+            result = ssh_common.exec_command(
+                endpoint, cmd_str, sudo=False, output_limit=self.output_limit
+            )
+            code, out, err = result
         except ssh_common.SshError as exc:  # paramiko 缺失 / 连接 / 认证 / 执行失败
             audit_common.record_execution(
                 action="diagnostics", command=command, host=host,
@@ -83,7 +86,7 @@ class SshDiagnostics(DiagnosticSource):
             raise DiagnosticError(f"SSH 诊断执行失败（host={host}）: {exc}") from exc
 
         raw_output = (out or err).strip() or "(无输出)"
-        truncated = len(raw_output) > self.output_limit
+        truncated = bool(getattr(result, "truncated", False)) or len(raw_output) > self.output_limit
         output = raw_output[: self.output_limit]
         if truncated:
             output += f"\n…（输出超过 {self.output_limit} 字符已截断）"
@@ -91,7 +94,8 @@ class SshDiagnostics(DiagnosticSource):
             action="diagnostics", command=command, host=host,
             params=dict(params or {}), started_at=started_at,
             result={"exit_code": code, "ok": code == 0, "truncated": truncated,
-                    "chars": len(raw_output)},
+                    "chars": len(raw_output),
+                    "bytes_read": int(getattr(result, "bytes_read", len(raw_output)))},
         )
         return {
             "ok": code == 0,

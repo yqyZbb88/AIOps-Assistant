@@ -227,18 +227,18 @@ class OpsAgent:
         本模块成为**唯一**的输出口子（与 _print_ai_advice 并列），便于将来整体替换通知渠道。
         """
         for r in records:
-            print(
-                f"[自动处置] alertname={r['alertname']} status={r['status']} "
-                f"action={r['action'] or r['matched_rule']} detail={r['detail']}"
+            logger.info(
+                "自动处置 alertname=%s status=%s action=%s detail=%s",
+                r["alertname"], r["status"], r["action"] or r["matched_rule"], r["detail"],
             )
 
     @staticmethod
     def _print_ai_advice(advice: list[dict[str, Any]]) -> None:
         """把 AI 分析结果打印到控制台（阶段先以终端推送；后续可换钉钉/企微）。"""
         for entry in advice:
-            print(
-                f"\n[AI 分析] {entry['alertname']} severity={entry['severity']} "
-                f"instance={entry['instance']}\n{entry['advice']}\n"
+            logger.info(
+                "AI 分析 alertname=%s severity=%s instance=%s advice=%s",
+                entry["alertname"], entry["severity"], entry["instance"], entry["advice"],
             )
 
     # -- 查询 -----------------------------------------------------------

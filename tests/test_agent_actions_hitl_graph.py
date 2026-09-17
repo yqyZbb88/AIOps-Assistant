@@ -616,7 +616,7 @@ def test_container_wiring_drives_full_approval_flow(monkeypatch, tmp_path):
 
     calls: list[tuple[str, dict]] = []
 
-    def fake_exec(endpoint, command, sudo=False):
+    def fake_exec(endpoint, command, sudo=False, output_limit=4000):
         calls.append((command, {"sudo": sudo, "host": endpoint.host}))
         return 0, "restarted", ""
 

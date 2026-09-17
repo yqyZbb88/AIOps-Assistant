@@ -1,29 +1,35 @@
-"""共享 SSH 执行内核：给定 SshEndpoint + 一条命令串执行，返回 (exit_code, stdout, stderr)。
-
-- 中性：连接/认证/执行失败统一抛本模块的 SshError，由各边界自行映射
-  （actions → ActionError，diagnostics → DiagnosticError），共享层不依赖任何业务异常；
-- paramiko 惰性导入：未安装时抛清晰错误，不影响模块加载 / 未装依赖环境的降级；
-- 认证优先级 key_filename（私钥）→ password；显式给了 key_filename 时不再试 agent/默认密钥；
-- sudo=True 用 `sudo sh -c <command>` 整体包裹，保证整条命令都有 root 权限
-  （是否允许 sudo 由调用边界决定，本函数只按标志执行）。
-"""
+"""共享 SSH 执行内核：主机密钥拒绝优先、惰性导入、流式有界读取。"""
 from __future__ import annotations
 
 import shlex
+import time
+from dataclasses import dataclass
+from typing import Iterator
 
 from src.plugins.common.endpoint import SshEndpoint
+from src.utils.security import redact_text, register_secrets
 
 
 class SshError(Exception):
-    """SSH 连接 / 认证 / 执行失败（共享层中性异常）。"""
+    """SSH 连接、认证或执行失败。"""
+
+
+@dataclass(frozen=True)
+class SshCommandResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+    truncated: bool = False
+    bytes_read: int = 0
+
+    def __iter__(self) -> Iterator[object]:
+        """兼容既有 ``code, out, err = result`` 调用。"""
+        yield self.exit_code
+        yield self.stdout
+        yield self.stderr
 
 
 def _new_client(paramiko, endpoint: SshEndpoint):
-    """构造默认拒绝未知主机密钥的 SSH 客户端。
-
-    先加载系统 known_hosts，再加载 endpoint 指定的 known_hosts。没有可信主机密钥时
-    connect 会直接失败，而不是像 AutoAddPolicy 那样把连接交给任意返回密钥的远端。
-    """
     client = paramiko.SSHClient()
     client.load_system_host_keys()
     if endpoint.known_hosts:
@@ -32,23 +38,68 @@ def _new_client(paramiko, endpoint: SshEndpoint):
     return client
 
 
+def _read_channel(channel, *, output_limit: int, timeout: float) -> SshCommandResult:
+    """排空 stdout/stderr，但只保留共享字节预算内的数据。"""
+    budget = max(int(output_limit), 1) * 4
+    out = bytearray()
+    err = bytearray()
+    total = 0
+    truncated = False
+    deadline = time.monotonic() + max(float(timeout), 0.001)
+
+    while True:
+        progressed = False
+        for ready_name, recv_name, target in (
+            ("recv_ready", "recv", out),
+            ("recv_stderr_ready", "recv_stderr", err),
+        ):
+            if getattr(channel, ready_name)():
+                chunk = getattr(channel, recv_name)(32768)
+                if chunk:
+                    progressed = True
+                    total += len(chunk)
+                    remaining = max(budget - len(out) - len(err), 0)
+                    if remaining:
+                        target.extend(chunk[:remaining])
+                    if len(chunk) > remaining:
+                        truncated = True
+        if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+            break
+        if time.monotonic() >= deadline:
+            channel.close()
+            raise SshError(f"SSH 命令执行超时（{timeout:g} 秒）")
+        if not progressed:
+            time.sleep(0.01)
+
+    code = int(channel.recv_exit_status())
+    stdout = redact_text(out.decode(errors="replace").strip())
+    stderr = redact_text(err.decode(errors="replace").strip())
+    if len(stdout) > output_limit:
+        stdout, truncated = stdout[:output_limit], True
+    if len(stderr) > output_limit:
+        stderr, truncated = stderr[:output_limit], True
+    return SshCommandResult(code, stdout, stderr, truncated, total)
+
+
 def exec_command(
     endpoint: SshEndpoint,
     command: str,
     *,
     sudo: bool = False,
-) -> tuple[int, str, str]:
-    """经 SSH 在 endpoint 上执行一条命令，返回 (exit_code, stdout, stderr)。"""
+    output_limit: int = 4000,
+) -> SshCommandResult:
+    """执行白名单命令；完整排空远端输出，但本地只保留有界内容。"""
     try:
         import paramiko
     except ImportError as exc:
         raise SshError("缺少可选依赖 paramiko，请先安装：pip install paramiko") from exc
 
+    register_secrets(endpoint.password)
     full_cmd = f"sudo sh -c {shlex.quote(command)}" if sudo else command
     try:
         client = _new_client(paramiko, endpoint)
     except Exception as exc:
-        raise SshError(f"加载 SSH 主机密钥配置失败: {exc}") from exc
+        raise SshError(f"加载 SSH 主机密钥配置失败: {redact_text(exc)}") from exc
     try:
         client.connect(
             hostname=endpoint.host,
@@ -60,19 +111,17 @@ def exec_command(
             allow_agent=endpoint.key_filename is None,
             look_for_keys=endpoint.key_filename is None,
         )
-    except Exception as exc:  # paramiko 各类连接/认证异常统一收敛
-        client.close()
-        raise SshError(
-            f"SSH 连接 {endpoint.username}@{endpoint.host}:{endpoint.port} 失败: {exc}"
-        ) from exc
-
-    try:
-        _, stdout, stderr = client.exec_command(full_cmd, timeout=endpoint.connect_timeout)
-        out = stdout.read().decode(errors="replace").strip()
-        err = stderr.read().decode(errors="replace").strip()
-        code = stdout.channel.recv_exit_status()
+        _, stdout, _ = client.exec_command(full_cmd, timeout=endpoint.connect_timeout)
+        return _read_channel(
+            stdout.channel,
+            output_limit=max(int(output_limit), 1),
+            timeout=endpoint.connect_timeout,
+        )
+    except SshError:
+        raise
     except Exception as exc:
-        raise SshError(f"SSH 执行失败 host={endpoint.host}: {exc}") from exc
+        raise SshError(
+            f"SSH 执行失败 host={endpoint.host}: {redact_text(exc)}"
+        ) from exc
     finally:
         client.close()
-    return code, out, err

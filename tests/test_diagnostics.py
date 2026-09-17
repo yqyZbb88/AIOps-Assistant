@@ -183,10 +183,11 @@ class TestSshRun:
     def test_run_ok_audits_and_truncates(self, diag, monkeypatch, caplog):
         seen = {}
 
-        def fake_ssh(endpoint, command, *, sudo):
+        def fake_ssh(endpoint, command, *, sudo, output_limit):
             seen["host"] = endpoint.host
             seen["cmd"] = command
             assert sudo is False  # 只读诊断恒不 sudo
+            assert output_limit == 20
             return (0, "MEM-LINE " + "x" * 60, "")
 
         monkeypatch.setattr("src.plugins.common.ssh.exec_command", fake_ssh)

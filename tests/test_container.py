@@ -312,7 +312,12 @@ def test_create_app_health_endpoint_responds():
         resp = client.get("/health")
     assert resp.status_code == 200
     # storage 是 M4 追加的字段，专为让「持久化降级」可被观测（否则只能翻日志发现）
-    assert resp.json() == {"status": "ok", "storage": "ok"}
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert body["storage"] == "ok"
+    assert body["version"] == "0.4.0"
+    assert body["components"]["prometheus"]["status"] == "unknown"
+    assert body["components"]["storage"]["status"] == "disabled"
 
 
 def test_create_app_health_reflects_history_degradation(tmp_path):
@@ -329,7 +334,30 @@ def test_create_app_health_reflects_history_degradation(tmp_path):
     with TestClient(app) as client:
         resp = client.get("/health")
 
-    assert resp.json() == {"status": "degraded", "storage": "degraded"}
+    assert resp.json()["status"] == "degraded"
+    assert resp.json()["storage"] == "degraded"
+
+
+def test_ready_probes_prometheus_and_returns_503_on_failure(monkeypatch):
+    from fastapi.testclient import TestClient
+    from src.main import create_app
+    from src.interfaces.monitor import MonitorError
+
+    app = create_app(settings=Settings())
+    monitor = app.state.container.monitor()
+    monkeypatch.setattr(monitor, "check_health", lambda: None)
+    with TestClient(app) as client:
+        assert client.get("/ready").status_code == 200
+
+    def boom():
+        raise MonitorError("secret backend detail")
+
+    monkeypatch.setattr(monitor, "check_health", boom)
+    with TestClient(app) as client:
+        response = client.get("/ready")
+    assert response.status_code == 503
+    assert response.json()["components"]["prometheus"]["status"] == "unreachable"
+    assert "secret backend detail" not in response.text
 
 
 def test_lifespan_starts_and_stops_inspection_scheduler():

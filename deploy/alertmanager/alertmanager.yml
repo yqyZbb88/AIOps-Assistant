@@ -1,0 +1,17 @@
+route:
+  receiver: aiops-assistant
+  group_by: [alertname, instance]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 4h
+
+receivers:
+  - name: aiops-assistant
+    webhook_configs:
+      - url: http://assistant:8000/alert
+        send_resolved: true
+        timeout: 10s
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /run/secrets/alertmanager_token

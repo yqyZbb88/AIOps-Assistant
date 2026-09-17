@@ -46,7 +46,7 @@ def _stub(monkeypatch, code=0, out="done", err=""):
     """替换共享内核 exec_command，记录调用参数。"""
     calls = []
 
-    def fake(endpoint, command, sudo=False):
+    def fake(endpoint, command, sudo=False, output_limit=4000):
         calls.append({"command": command, "sudo": sudo, "host": endpoint.host,
                       "password": endpoint.password})
         return code, out, err
@@ -90,7 +90,7 @@ def test_nonzero_exit_raises(source, monkeypatch):
 def test_ssh_error_raises_and_audits(source, monkeypatch, caplog):
     from src.plugins.common.ssh import SshError
 
-    def boom(endpoint, command, sudo=False):
+    def boom(endpoint, command, sudo=False, output_limit=4000):
         raise SshError("authentication failed")
 
     monkeypatch.setattr("src.plugins.common.ssh.exec_command", boom)
@@ -153,6 +153,8 @@ def test_audit_on_nonzero_records_error(source, monkeypatch, caplog):
         with pytest.raises(AgentActionError):
             source.run("cleanup_disk")
     assert "rc=1" in caplog.text
+    assert "boom" not in caplog.text
+    assert "chars=4" in caplog.text
 
 
 # ---------------------------------------------------------------------------

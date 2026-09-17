@@ -37,6 +37,7 @@ auth:
 | `OPS_APPROVER_IDENTITIES` | 审批人身份列表 | `.env` | 服务端 |
 | `SSH_KEY_FILENAME` / `SSH_PASSWORD` | SSH 私钥路径或登录密码 | `.env` | 服务连接目标主机 |
 | `DEEPSEEK_API_KEY` | 模型调用 | `.env` | 服务端 |
+| `OPS_REDACTION_SECRETS` | 额外精确脱敏值的 JSON 数组 | `.env` | 服务端 |
 | Alertmanager 凭据文件 | webhook Bearer Token | 独立文件 | Alertmanager |
 
 只有 API Token 和 Alertmanager webhook Token 用于“谁在调用本服务”。其它密钥用于本服务连接外部系统。
@@ -172,7 +173,9 @@ http://127.0.0.1:8000/docs
 | Token 有效但审批范围外的申请 | 404（`owner` 下批别人的，或 `approvers_only` 下不在 `approver_identities` 里） |
 | 鉴权配置启用但没有有效 Token | 服务拒绝启动 |
 
-`GET /health`、`/docs`、`/openapi.json` 等应用路由不需要 Bearer Token。
+`GET /health`、`GET /ready`、`GET /status`、状态页同源静态资源，以及 `/docs`、
+`/redoc`、`/openapi.json` 不需要 Bearer Token。前三类只返回无敏感信息的探针或 HTML/CSS/JS
+空壳；状态页调用 `/alerts/*`、`/inspections/recent`、`/approvals` 时仍必须携带 Token。
 
 这里的“应用路由”特指 FastAPI 自动生成的文档/OpenAPI 路由；它们不属于项目挂载的
 业务 router，因此不会经过 `require_auth`。如需隐藏接口结构，应在反向代理层限制
@@ -247,6 +250,10 @@ receivers:
 6. 再次重启。
 
 修改密钥后没有热更新，必须重启。
+
+应用会在写入和输出边界遮蔽当前 API Token、DeepSeek key、SSH 密码以及
+`OPS_REDACTION_SECRETS` 中长度足够的值，但不会自动改写已有数据库和历史日志。轮换曾经使用
+过的密钥，并按保留策略安全处理旧文件；不要把空值或短公共字符串加入额外脱敏列表。
 
 ## 十、历史会话和身份
 

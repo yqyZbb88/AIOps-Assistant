@@ -5,6 +5,7 @@
 # 修改后需要重启服务。
 
 enabled: true
+output_limit: 4000            # SSH channel 最多保留的输出字符数；超出部分排空但不驻留内存
 
 commands:
   restart_service:

@@ -1,5 +1,7 @@
 # 环境与依赖
 .env
+.runtime/
+.env.compose
 .venv/
 __pycache__/
 *.pyc

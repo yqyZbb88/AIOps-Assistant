@@ -61,6 +61,7 @@ class Container:
         self._inspection_store: InspectionStore | None = None
         self._inspection_store_ready = False
         self._inspection_scheduler = None
+        self._health_service = None
         self._db: Database | None = None
         self._db_ready = False
 
@@ -344,6 +345,21 @@ class Container:
                 store=self.inspection_store(),
             )
         return self._inspection_scheduler
+
+    def health_service(self):
+        """构造并缓存非网络健康快照服务；仅 /ready 主动探测 Prometheus。"""
+        if self._health_service is None:
+            from src.core.health import HealthService
+
+            self._health_service = HealthService(
+                self.monitor(),
+                storage_enabled=self.settings.storage.enabled,
+                stores=lambda: [self.sessions(), self.history(), self.inspection_store()],
+                inspection_enabled=self.settings.inspection.enabled,
+                scheduler=self.inspection_scheduler,
+                version=self.settings.app.version,
+            )
+        return self._health_service
 
     @staticmethod
     def _reconcile_pending(store: SessionStore) -> None:

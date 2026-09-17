@@ -4,13 +4,36 @@
 
 ## 快速开始
 
-### 1. 安装依赖
+### 一分钟 Compose 启动
+
+前提是已安装 Docker Desktop（Windows）或 Docker Engine + Compose（Linux）：
+
+```bash
+python scripts/dev_stack.py up
+```
+
+脚本首次运行会创建 `.runtime/`、生成用户 Token、Alertmanager 专用 Token 和 Grafana
+管理员密码，然后构建并启动全部五个服务。打开 `http://127.0.0.1:8000/status`，把终端显示的
+用户 Token 保存到页面会话即可。Token 只进入浏览器 `sessionStorage`，关闭该标签页会话后清除。
+
+```bash
+python scripts/dev_stack.py status
+python scripts/dev_stack.py show-token
+python scripts/dev_stack.py logs
+python scripts/dev_stack.py down
+```
+
+`down` 默认保留 Prometheus、Alertmanager 和 Grafana 命名卷。
+
+### 本地 Python 启动
+
+#### 1. 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 创建环境变量文件
+#### 2. 创建环境变量文件
 
 ```bash
 cp .env.example .env
@@ -31,7 +54,7 @@ OPS_APPROVER_IDENTITIES=["admin"]
 python -c "import secrets;print(secrets.token_urlsafe(32))"
 ```
 
-### 3. 检查配置
+#### 3. 检查配置
 
 至少确认：
 
@@ -42,7 +65,7 @@ python -c "import secrets;print(secrets.token_urlsafe(32))"
 
 详细字段见 [configuration.md](configuration.md)。
 
-### 4. 启动服务
+#### 4. 启动服务
 
 ```bash
 uvicorn src.main:app --host 127.0.0.1 --port 8000
@@ -54,13 +77,13 @@ uvicorn src.main:app --host 127.0.0.1 --port 8000
 python src/main.py
 ```
 
-### 5. 验证服务
+#### 5. 验证服务
 
 ```bash
 curl http://127.0.0.1:8000/health
 ```
 
-### 6. 创建会话并聊天
+#### 6. 创建会话并聊天
 
 ```bash
 curl -X POST http://127.0.0.1:8000/sessions \
@@ -77,6 +100,26 @@ curl -X POST http://127.0.0.1:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"CPU 使用率是多少","session_id":"会话ID"}'
 ```
+
+### 五分钟安全告警演示
+
+Compose 启动后，用 textfile 指标模拟高 CPU，不会制造真实负载：
+
+```bash
+python scripts/demo_fault.py cpu on
+```
+
+规则包含 `for: 30s`，等待 Prometheus 评估和 Alertmanager 推送后，在状态页查看活动告警、
+告警归档和处置记录。`HighCPUUsage` 命中项目规则，但默认只生成“不自动执行”的记录。
+
+```bash
+python scripts/demo_fault.py reset
+docker compose stop node-exporter
+docker compose start node-exporter
+```
+
+停止 Node Exporter 可演示 `NodeExporterDown`。该告警没有处置规则：配置了 DeepSeek key 时
+可生成 AI 建议；未配置时告警仍会被接收和归档，并明确显示 AI 不可用。
 
 ## 一、适用范围
 
@@ -99,6 +142,7 @@ curl -X POST http://127.0.0.1:8000/chat \
 - 配置热更新
 - 任意 PromQL 执行
 - AI 任意读取日志文件
+- 生产级容器加固、TLS、高可用和灾备
 
 后续版本以维护者的本地规划为准；本指南只描述当前已经实现的能力。
 
@@ -113,6 +157,9 @@ curl -X POST http://127.0.0.1:8000/chat \
 - 执行 SSH 白名单只读诊断
 - 申请执行 SSH 白名单写命令
 - 写命令人工审批
+- 统一敏感信息脱敏和有界 SSH 输出读取
+- 健康/就绪探针和只读状态页
+- 可重复启动的五服务开发监控栈
 - 保存会话和历史归档
 - API Bearer Token 鉴权
 - 所有 AI 工具结果显示数据时效
@@ -176,8 +223,9 @@ OPS_APPROVER_IDENTITIES=["admin"]
 Authorization: Bearer <密钥>
 ```
 
-所有业务接口除 `/health` 外都需要鉴权。FastAPI 自带的 `/docs`、`/redoc` 和
-`/openapi.json` 当前公开；在不可信网络部署时应由反向代理限制这些文档路由。
+`/health`、`/ready`、`/status` 及状态页静态资源公开，但不返回凭据、地址或详细异常。
+状态页的所有实际运维数据仍通过受保护 API 获取。FastAPI 自带的 `/docs`、`/redoc` 和
+`/openapi.json` 也公开；在不可信网络部署时应由反向代理限制这些路由。
 
 ### Alertmanager
 
@@ -284,12 +332,20 @@ inspection:
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl -i http://127.0.0.1:8000/ready
 ```
+
+`/health` 是进程存活探针，只读取缓存并始终返回 200。`/ready` 主动检查 Prometheus；
+Prometheus 不可达，或已启用巡检但调度器未运行时返回 503。存储降级时仍 ready，但整体
+状态为 `degraded`，因为服务会按既有语义退化到内存能力。
 
 ### 常用 API
 
 | 路径 | 用途 |
 |---|---|
+| `GET /health` | 缓存的组件存活状态 |
+| `GET /ready` | 主动就绪检查 |
+| `GET /status` | 只读状态页空壳 |
 | `POST /sessions` | 创建会话 |
 | `POST /chat` | 聊天 |
 | `POST /alert` | Alertmanager webhook |
@@ -342,6 +398,20 @@ logs/inspection.log
 
 旧版本默认数据库为 `data/ops_agent.db`。如果新库不存在但旧库存在，程序会继续使用旧库并记录 WARNING。
 
+Compose 的挂载和网络：
+
+| 内容 | 位置 |
+|---|---|
+| Assistant SQLite | `.runtime/assistant-data/` |
+| Assistant 日志 | `.runtime/assistant-logs/` |
+| 本地凭据 | `.runtime/compose.env`、`.runtime/secrets/` |
+| 演示 textfile 指标 | `.runtime/textfile/` |
+| Prometheus/Alertmanager/Grafana 数据 | Docker 命名卷 |
+
+所有发布端口默认只绑定 `127.0.0.1`。容器内 Assistant 使用 `prometheus:9090`，指标实例为
+`node-exporter:9100`。Windows 上 Node Exporter 看到 Docker Linux 环境，不是 Windows 宿主机；
+Linux 默认栈同样只保证容器环境采集，不承诺完整宿主机挂载。
+
 ## 十、备份
 
 数据库结构和维护细节见 [database.md](database.md)。
@@ -362,6 +432,8 @@ logs/
 - 优先停服务后复制
 - 或使用 SQLite `.backup`
 - 不要只复制 `.db` 而遗漏 WAL/SHM
+- Compose 下同时备份 `.runtime/assistant-data`、`.runtime/assistant-logs` 和需要保留的命名卷
+- `.runtime/compose.env` 与 secrets 必须按密钥材料单独加密保管，不要提交版本库
 
 示例：
 
@@ -425,8 +497,9 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - 目标主机是否可达
 - 命令是否超过 `connect_timeout`
 
-`output_limit` 限制返回给 Agent 的字符数；当前版本底层仍会先读取完整 SSH 输出，因此
-不要在命令目录中加入可能产生无界输出的命令。流式限量读取已列入 0.4.0 路线图。
+`output_limit` 同时约束 stdout/stderr 的共享保留预算。底层会交替读取 channel，超出预算后
+继续排空但不再保留，并用单调时钟强制截止时间。截断不能替代命令本身的范围限制，命令
+目录仍不应加入无界或长时间运行的命令。
 
 ### 巡检没有数据
 
@@ -455,6 +528,9 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - SSH 优先使用私钥
 - 严格校验 known_hosts
 - 不提交 `.env`、数据库和日志
+- 不提交 `.runtime/`、生成 Token、textfile 指标或监控数据卷
+- 可用 `OPS_REDACTION_SECRETS` JSON 数组注册额外需精确遮蔽的旧密钥
+- 历史日志和数据库不会自动改写；怀疑曾泄露时应轮换相应密钥
 - 自动写命令保持关闭直到充分验证
 - 写命令审批前仔细核对命令和参数
 

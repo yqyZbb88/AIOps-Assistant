@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AIOps Assistant 状态</title>
+  <link rel="stylesheet" href="/status-assets/status.css">
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">AIOPS ASSISTANT</p><h1>运行状态</h1></div>
+    <div class="auth">
+      <label for="token">Bearer Token</label>
+      <input id="token" type="password" autocomplete="off" placeholder="仅保存在当前标签页">
+      <button id="connect">连接</button><button id="clear" class="quiet">清除</button>
+    </div>
+  </header>
+  <main>
+    <div class="toolbar"><span id="state">尚未连接</span><button id="refresh" class="quiet">立即刷新</button></div>
+    <section id="health" class="wide"><h2>健康与就绪</h2><div class="content muted">等待刷新</div></section>
+    <section id="active"><h2>活动告警</h2><div class="content muted">需要 Token</div></section>
+    <section id="inspections"><h2>最近异常巡检</h2><div class="content muted">需要 Token</div></section>
+    <section id="approvals"><h2>待审批（只读）</h2><div class="content muted">需要 Token</div></section>
+    <section id="remediations"><h2>最近处置</h2><div class="content muted">需要 Token</div></section>
+    <section id="advice"><h2>AI 建议</h2><div class="content muted">需要 Token</div></section>
+  </main>
+  <footer>只读页面 · 不提供批准、拒绝或执行入口 · 指标趋势请使用 Grafana</footer>
+  <script src="/status-assets/status.js" defer></script>
+</body>
+</html>

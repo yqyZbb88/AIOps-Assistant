@@ -4,7 +4,9 @@ from __future__ import annotations
 import sys
 
 from src.plugins.common.endpoint import SshEndpoint, endpoint_from_params
-from src.plugins.common.ssh import _new_client
+import pytest
+
+from src.plugins.common.ssh import SshError, _new_client, _read_channel
 
 
 class FakeRejectPolicy:
@@ -77,3 +79,47 @@ def test_new_client_rejects_unknown_hosts(monkeypatch):
     assert client.system_keys_loaded is True
     assert client.loaded_paths == ["custom_known_hosts"]
     assert isinstance(client.policy, FakeRejectPolicy)
+
+
+class FakeChannel:
+    def __init__(self, out=(), err=(), *, exits=True):
+        self.out = list(out)
+        self.err = list(err)
+        self.exits = exits
+        self.closed = False
+
+    def recv_ready(self):
+        return bool(self.out)
+
+    def recv(self, _size):
+        return self.out.pop(0)
+
+    def recv_stderr_ready(self):
+        return bool(self.err)
+
+    def recv_stderr(self, _size):
+        return self.err.pop(0)
+
+    def exit_status_ready(self):
+        return self.exits and not self.out and not self.err
+
+    def recv_exit_status(self):
+        return 0
+
+    def close(self):
+        self.closed = True
+
+
+def test_stream_reader_drains_but_retains_bounded_output():
+    channel = FakeChannel([b"x" * 10000], [b"error"])
+    result = _read_channel(channel, output_limit=20, timeout=1)
+    assert result.truncated is True
+    assert result.bytes_read == 10005
+    assert len(result.stdout) + len(result.stderr) <= 40
+
+
+def test_stream_reader_times_out_and_closes_channel():
+    channel = FakeChannel(exits=False)
+    with pytest.raises(SshError, match="超时"):
+        _read_channel(channel, output_limit=20, timeout=0.001)
+    assert channel.closed is True

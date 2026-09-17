@@ -344,6 +344,9 @@ class InspectionScheduler:
         self._thread: threading.Thread | None = None
         self._run_lock = threading.Lock()
         self.logger = logger_ or get_inspection_logger()
+        self.last_run_at = ""
+        self.last_level = ""
+        self.last_error = ""
 
     @property
     def running(self) -> bool:
@@ -385,6 +388,9 @@ class InspectionScheduler:
                     self.store.record(result)
                 except Exception as exc:  # noqa: BLE001 - 归档失败只降级
                     self.logger.error("巡检异常归档失败，结果仅保留在日志: %s", exc, exc_info=True)
+            self.last_run_at = result.checked_at
+            self.last_level = result.level
+            self.last_error = "present" if result.error else ""
             return result
 
     def _loop(self) -> None:

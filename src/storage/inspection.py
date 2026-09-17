@@ -15,6 +15,7 @@ from src.interfaces.inspection import (
 )
 from src.storage.db import Database
 from src.utils.time import cutoff_iso
+from src.utils.security import redact_sensitive, redact_text
 
 logger = logging.getLogger("aiops_assistant.storage.inspection")
 
@@ -66,13 +67,13 @@ class SqliteInspectionStore(InspectionStore):
                 (
                     result.checked_at,
                     result.level,
-                    json.dumps(result.snapshot, ensure_ascii=False, separators=(",", ":")),
+                    json.dumps(redact_sensitive(result.snapshot), ensure_ascii=False, separators=(",", ":")),
                     json.dumps(
-                        [finding.to_dict() for finding in result.findings],
+                        redact_sensitive([finding.to_dict() for finding in result.findings]),
                         ensure_ascii=False,
                         separators=(",", ":"),
                     ),
-                    result.error,
+                    redact_text(result.error),
                 ),
             )
         except sqlite3.Error as exc:

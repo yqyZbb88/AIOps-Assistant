@@ -4,7 +4,7 @@ AIOps-Assistant 是面向单主机、单 Prometheus 环境的轻量智能运维�
 Prometheus/Alertmanager 的事实数据、白名单 SSH 诊断、人工审批写操作、周期巡检和
 SQLite 历史记录组织成一条可审计的运维链路。
 
-当前版本：`0.3.0`
+当前版本：`0.4.0`
 
 ## 能力与边界
 
@@ -19,6 +19,10 @@ SQLite 历史记录组织成一条可审计的运维链路。
 - Bearer Token 鉴权：Token 映射为身份，用于会话归属、审批授权和 webhook 隔离
 - SQLite 持久化：保存会话、告警、处置、AI 建议、审批决策和异常巡检
 - 数据时效：所有提供给 Agent 的工具结果都标明观测或生成时间
+- 统一脱敏：日志、审计、SQLite、API、模型和 SSH 输出执行递归与自由文本脱敏
+- 健康探针：`/health` 只读缓存状态，`/ready` 主动检查 Prometheus
+- 开发部署栈：固定版本的 Assistant、Prometheus、Alertmanager、Node Exporter 和 Grafana
+- 只读状态页：会话级 Bearer Token 取数，不提供批准、拒绝或其它写入口
 
 当前适合：单主机、单 Prometheus、单 Alertmanager、单 worker、内网和少量用户。
 
@@ -29,7 +33,7 @@ SQLite 历史记录组织成一条可审计的运维链路。
 - 待审批 checkpoint 跨进程恢复
 - 配置热更新入口
 - 任意 PromQL、任意 Shell 或任意日志文件读取
-- 生产级容器部署、高可用和灾备
+- 生产级容器加固、TLS、高可用和灾备
 
 ## 架构
 
@@ -55,6 +59,31 @@ Plugins / Storage
 PromQL 或自由 Shell。写命令只能来自管理员维护的目录。
 
 ## 快速开始
+
+### 一分钟 Compose 启动
+
+安装 Docker Desktop（Windows）或 Docker Engine + Compose（Linux）后运行：
+
+```bash
+python scripts/dev_stack.py up
+```
+
+脚本会在被忽略的 `.runtime/` 中生成本地 Token、Grafana 密码、数据和日志目录，构建
+Assistant 并启动五个服务。终端会显示状态页地址和本次生成的用户 Token。再次查看 Token：
+
+```bash
+python scripts/dev_stack.py show-token
+```
+
+停止服务但保留监控数据卷：
+
+```bash
+python scripts/dev_stack.py down
+```
+
+Windows 上的 Node Exporter 观察 Docker Linux 虚拟机/容器环境，不代表 Windows 宿主机指标。
+
+### 本地 Python 启动
 
 建议使用独立虚拟环境。项目当前测试环境为 Conda `langchain1.2`。
 
@@ -104,7 +133,8 @@ Swagger UI 位于 `http://127.0.0.1:8000/docs`。
 
 ## 鉴权说明
 
-`auth.enabled=true` 时，所有业务 API（除 `GET /health`）都需要 Bearer Token。
+`auth.enabled=true` 时，数据和写操作 API 都需要 Bearer Token。`GET /health`、`GET /ready`、
+`GET /status` 及其同源静态资源公开；状态页空壳不含运维数据，取数仍需用户输入 Token。
 `/docs`、`/redoc` 和 `/openapi.json` 是 FastAPI 应用级文档路由，当前公开；在不可信网络
 部署时应由反向代理限制它们。
 
@@ -115,7 +145,9 @@ Alertmanager 共用 Token，因为 webhook 可触发 `auto_execute=true` 的规�
 
 | 方法和路径 | 说明 |
 |---|---|
-| `GET /health` | 进程状态和存储降级状态 |
+| `GET /health` | 始终 200 的进程存活与缓存组件状态 |
+| `GET /ready` | 主动检查 Prometheus；核心依赖未就绪返回 503 |
+| `GET /status` | 公开的只读状态页空壳；数据接口仍鉴权 |
 | `POST /sessions` | 创建会话 |
 | `GET /sessions` | 列出当前身份的会话 |
 | `GET /sessions/{id}` | 会话详情和全部消息状态 |
@@ -156,6 +188,8 @@ Alertmanager 共用 Token，因为 webhook 可触发 `auto_execute=true` 的规�
 - `actions.yaml` 的规则自动处置不经过人工审批，启用 `auto_execute` 前必须实测
 - `agent_actions.yaml` 的审批记录在内存中，进程重启会使未决审批失效
 - 不提交 `.env`、数据库、WAL/SHM 文件和日志
+- 可选用 `OPS_REDACTION_SECRETS` JSON 数组注册额外需遮蔽的值；不要加入空值或短值
+- 升级前若历史日志或数据库可能保存旧密钥，应先轮换密钥；程序不会自动改写历史文件
 
 ## 数据与日志
 
@@ -188,4 +222,4 @@ conda run -n langchain1.2 python -m pytest -q
 python -m compileall -q src tests init.py
 ```
 
-当前基线：`627 passed`。测试必须离线，不访问真实 DeepSeek、Prometheus、SSH 或公共网络。
+当前基线：`636 passed`。测试必须离线，不访问真实 DeepSeek、Prometheus、SSH 或公共网络。

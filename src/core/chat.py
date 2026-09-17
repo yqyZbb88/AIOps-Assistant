@@ -27,6 +27,7 @@ from src.interfaces.metric import MetricDefinition, MetricsConfig
 from src.interfaces.monitor import MonitorSource
 from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
 from src.utils.metrics_config import default_metrics_config
+from src.utils.security import redact_text
 from src.interfaces.session import (
     DEFAULT_MESSAGE_WINDOW,
     STATUS_ABANDONED,
@@ -173,6 +174,7 @@ class ChatService:
            仓库把降级部署当一等公民（有专门的 no-langchain 回归测试）。
         3. **持久化不可用时只是不落库**，聊天照常（`_sessions is None` → 全程跳过）。
         """
+        message = redact_text(message)
         sid, sname = self._resolve_session(session_id, user)
         history = self._load_history(sid)
 
@@ -190,7 +192,7 @@ class ChatService:
 
         self._record_turn(sid, message, turn)
         return ChatReply(
-            reply=turn.text,
+            reply=redact_text(turn.text),
             session_id=sid,
             session_name=sname or None,
             approval_id=turn.approval_id,
@@ -370,7 +372,7 @@ class ChatService:
         try:
             self._sessions.update_pending(
                 approval_id,
-                content=outcome.reply,
+                content=redact_text(outcome.reply),
                 status=STATUS_PENDING_APPROVAL if chained else STATUS_FINAL,
                 next_approval_id=outcome.next_approval_id,
             )

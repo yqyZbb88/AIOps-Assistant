@@ -99,10 +99,11 @@ class TestCatalogExecutor:
     def test_execute_ok_builds_and_audits(self, executor, monkeypatch, caplog):
         seen = {}
 
-        def fake(endpoint, command, *, sudo):
+        def fake(endpoint, command, *, sudo, output_limit):
             seen["host"] = endpoint.host
             seen["cmd"] = command
             seen["sudo"] = sudo
+            seen["output_limit"] = output_limit
             return (0, "restarted ok", "")
 
         monkeypatch.setattr("src.plugins.common.ssh.exec_command", fake)

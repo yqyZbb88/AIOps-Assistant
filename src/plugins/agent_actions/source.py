@@ -88,7 +88,10 @@ class SshAgentActionSource(AgentActionSource):
         )
         started_at = audit_common.now_iso()
         try:
-            code, out, err = ssh_common.exec_command(endpoint, cmd_str, sudo=cmd_def.sudo)
+            result = ssh_common.exec_command(
+                endpoint, cmd_str, sudo=cmd_def.sudo, output_limit=self.output_limit
+            )
+            code, out, err = result
         except ssh_common.SshError as exc:  # paramiko 缺失 / 连接 / 认证 / 执行失败
             audit_common.record_execution(
                 action="agent_action", command=command, host=host,
@@ -99,17 +102,19 @@ class SshAgentActionSource(AgentActionSource):
         # 写语义：非零退出码就是失败（与只读诊断相反）
         if code != 0:
             detail = (err or out or "").strip()
+            truncated = bool(getattr(result, "truncated", False))
             audit_common.record_execution(
                 action="agent_action", command=command, host=host,
                 params=supplied, started_at=started_at,
-                error=f"rc={code}: {detail}",
+                error=(f"rc={code}; truncated={truncated}; chars={len(detail)}; "
+                       f"bytes_read={int(getattr(result, 'bytes_read', len(detail)))}"),
             )
             raise AgentActionError(
                 f"写命令执行失败（host={host}，exit_code={code}）：{detail or '(无输出)'}"
             )
 
         raw_output = (out or err).strip() or "(无输出)"
-        truncated = len(raw_output) > self.output_limit
+        truncated = bool(getattr(result, "truncated", False)) or len(raw_output) > self.output_limit
         output = raw_output[: self.output_limit]
         if truncated:
             output += f"\n…（输出超过 {self.output_limit} 字符已截断）"
@@ -117,7 +122,9 @@ class SshAgentActionSource(AgentActionSource):
         audit_common.record_execution(
             action="agent_action", command=command, host=host,
             params=supplied, started_at=started_at,
-            result={"exit_code": code, "ok": True, "truncated": truncated, "chars": len(raw_output)},
+            result={"exit_code": code, "ok": True, "truncated": truncated,
+                    "chars": len(raw_output),
+                    "bytes_read": int(getattr(result, "bytes_read", len(raw_output)))},
         )
         logger.info("已执行 Agent 写命令 action=%s host=%s", command, host)
         return {

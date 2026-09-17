@@ -1,37 +1,83 @@
-"""安全工具：敏感信息打码。
-
-设计：
-- 结构化记录中包含密钥类字段的 dict 应先过 `redact_sensitive()`。
-- 当前实现只按顶层键名做浅层打码，不是通用文本脱敏器；自由文本、嵌套对象和异常信息
-  仍需调用方避免写入敏感值。统一文本脱敏属于后续安全加固项。
-
-注：参数必填校验不在本模块——host 由 plugins/common/endpoint.py 的
-endpoint_from_params 校验，命令参数由 plugins/common/cmddef.py 的 validated_params 校验。
-"""
+"""递归结构化与自由文本敏感信息脱敏。"""
 from __future__ import annotations
 
-from typing import Any
+import json
+import os
+import re
+import threading
+from dataclasses import fields, is_dataclass
+from typing import Any, Mapping
 
-# 打码判定的键名子串（大小写不敏感，涵盖 password/token/secret/api_key）
-_SENSITIVE_SUBSTRINGS: tuple[str, ...] = ("password", "token", "secret", "api_key", "passwd")
-
-# 打码后统一显示的掩码
 MASK = "***"
+_KEY = re.compile(r"password|passwd|passphrase|token|secret|api[_-]?key|authorization|credential", re.I)
+_PEM = re.compile(r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----", re.I | re.S)
+_AUTH = re.compile(r"(?i)(\bauthorization\s*[:=]\s*(?:bearer|basic)\s+)[^\s,;]+")
+_PAIR = re.compile(r"(?i)(\b(?:password|passwd|passphrase|token|secret|api[_-]?key)\b\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)")
+_USERINFO = re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://[^\s/:@]+:)[^\s/@]+(@)")
+_QUERY = re.compile(r"(?i)([?&](?:password|passwd|passphrase|token|secret|api[_-]?key)=)[^&#\s]*")
+_lock = threading.RLock()
+_known: set[str] = set()
 
 
 def _is_sensitive_key(key: Any) -> bool:
-    text = str(key).lower()
-    return any(s in text for s in _SENSITIVE_SUBSTRINGS)
+    return bool(_KEY.search(str(key)))
 
 
-def redact_sensitive(data: dict[str, Any]) -> dict[str, Any]:
-    """返回入参 dict 的浅拷贝，键名含敏感子串的字段值替换为 ***。
+def register_secrets(*values: Any) -> None:
+    """注册需要在任意自由文本中精确遮蔽的值。"""
+    with _lock:
+        for value in values:
+            text = "" if value is None else str(value)
+            if len(text) >= 4 and text != MASK:
+                _known.add(text)
 
-    用于记录 / 日志 / 审计：只返回副本，不改动原始参数（动作执行仍用原值）。
-    嵌套字段（如 list/dict）暂不深入递归，按顶层键名打码整个值。
-    """
-    redacted = dict(data)
-    for key in redacted:
-        if _is_sensitive_key(key):
-            redacted[key] = MASK
-    return redacted
+
+def configure_secrets(*, auth_tokens: str | None = None) -> None:
+    """从 API Token 和受支持环境变量注册已知密钥。"""
+    try:
+        tokens = json.loads(auth_tokens or "{}")
+    except (TypeError, json.JSONDecodeError):
+        tokens = {}
+    if isinstance(tokens, Mapping):
+        register_secrets(*tokens.keys())
+    register_secrets(os.getenv("DEEPSEEK_API_KEY"), os.getenv("SSH_PASSWORD"))
+    try:
+        extra = json.loads(os.getenv("OPS_REDACTION_SECRETS", "[]"))
+    except json.JSONDecodeError:
+        extra = []
+    if isinstance(extra, list):
+        register_secrets(*extra)
+
+
+def redact_text(value: Any) -> str:
+    """脱敏常见凭据语法、私钥块和已注册的精确值。"""
+    text = str(value)
+    text = _PEM.sub(MASK, text)
+    text = _AUTH.sub(lambda m: m.group(1) + MASK, text)
+    text = _PAIR.sub(lambda m: m.group(1) + MASK, text)
+    text = _USERINFO.sub(lambda m: m.group(1) + MASK + m.group(2), text)
+    text = _QUERY.sub(lambda m: m.group(1) + MASK, text)
+    with _lock:
+        secrets = sorted(_known, key=len, reverse=True)
+    for secret in secrets:
+        text = text.replace(secret, MASK)
+    return text
+
+
+def redact_sensitive(data: Any, *, _sensitive: bool = False) -> Any:
+    """递归返回脱敏副本；敏感键的整个值直接替换为掩码。"""
+    if _sensitive:
+        return MASK
+    if isinstance(data, str):
+        return redact_text(data)
+    if isinstance(data, Mapping):
+        return {key: redact_sensitive(value, _sensitive=_is_sensitive_key(key)) for key, value in data.items()}
+    if isinstance(data, list):
+        return [redact_sensitive(value) for value in data]
+    if isinstance(data, tuple):
+        return tuple(redact_sensitive(value) for value in data)
+    if isinstance(data, set):
+        return {redact_sensitive(value) for value in data}
+    if is_dataclass(data) and not isinstance(data, type):
+        return {field.name: redact_sensitive(getattr(data, field.name), _sensitive=_is_sensitive_key(field.name)) for field in fields(data)}
+    return data

@@ -26,6 +26,10 @@ class MonitorError(Exception):
 class MonitorSource(ABC):
     """监控源接口：聊天 / 工具 / 告警分析共用的取数契约。"""
 
+    def check_health(self) -> None:
+        """检查后端就绪状态；成功无返回，失败抛 ``MonitorError``。"""
+        raise MonitorError("监控源不支持健康检查")
+
     def query_metric(
         self,
         metric_id: str,

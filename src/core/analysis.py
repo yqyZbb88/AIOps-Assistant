@@ -19,6 +19,7 @@ from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
 from src.utils.freshness import freshness_note
 from src.utils.metrics_config import default_metrics_config
 from src.storage.models import Alert
+from src.utils.security import redact_text
 
 logger = logging.getLogger("aiops_assistant.analysis")
 
@@ -158,8 +159,8 @@ class AlertAnalyzer:
             trend_minutes=self.trend_minutes,
             metrics_config=self.metrics_config,
         )
-        prompt = f"{_ANALYSIS_QUESTION}\n\n{context}"
-        advice = self.llm.complete(prompt, system=self.system)
+        prompt = redact_text(f"{_ANALYSIS_QUESTION}\n\n{context}")
+        advice = redact_text(self.llm.complete(prompt, system=self.system))
         if len(advice) > 8000:
             advice = advice[:8000] + "\n…（AI 建议过长已截断）"
 

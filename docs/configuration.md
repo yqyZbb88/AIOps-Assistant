@@ -381,6 +381,7 @@ host, port, username, password, key_filename, known_hosts, connect_timeout
 
 ```yaml
 enabled: true
+output_limit: 4000
 commands:
   restart_service:
     summary: 重启 systemd 服务
@@ -396,6 +397,7 @@ commands:
 | 字段 | 类型 | 必填 | 含义 |
 |---|---:|---:|---|
 | `enabled` | bool | 否 | 文件总开关，默认 true |
+| `output_limit` | int | 否 | stdout/stderr 共享输出上限，默认 4000 字符 |
 | `commands` | map | 是 | 命令 key 到命令定义的映射 |
 | `summary` | string | 否 | 命令说明 |
 | `template` | string | 是 | 管理员可信命令模板 |
@@ -464,8 +466,9 @@ commands:
 | `approval.max_pending` | int | 最大待审批数量 |
 | `commands` | map | 写命令定义，格式同 actions.yaml |
 
-`output_limit` 目前在 SSH 命令完成、输出读入内存后生效，用于限制模型上下文，不是底层
-内存上限。命令模板仍应主动限制输出规模；流式限量读取属于 0.4.0 安全项。
+`output_limit` 由共享 SSH 内核在 channel 读取阶段执行。stdout/stderr 共用由字符上限推导的
+字节预算；超出后继续排空远端 channel，但不再把内容保留在内存。命令模板仍应主动限制
+范围和运行时间。
 
 审批段只接受 `timeout_seconds` 和 `max_pending`，没有关闭审批的开关。命令 key 不能与聊天指标工具或 SSH 诊断工具重名。
 
@@ -502,8 +505,9 @@ commands:
 | `output_limit` | int | 单条命令回传上限 |
 | `commands` | map | 只读命令白名单 |
 
-`output_limit` 与 Agent 写命令具有相同边界：限制返回字符数，但当前不会阻止远端命令先
-产生大量输出。因此命令必须使用 `head`、`journalctl -n` 等静态或参数化上限。
+`output_limit` 与 Agent 写命令具有相同的流式共享预算。即使超出预算也会继续排空 channel，
+避免远端阻塞；本地不再保留多余内容。命令仍应使用 `head`、`journalctl -n` 等静态或
+参数化上限。
 
 命令参数格式与 `actions.yaml` 相同，但：
 

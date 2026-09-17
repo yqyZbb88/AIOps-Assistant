@@ -34,6 +34,7 @@ from src.interfaces.history import (
 )
 from src.storage.db import Database
 from src.utils.time import cutoff_iso
+from src.utils.security import redact_text
 
 logger = logging.getLogger("aiops_assistant.storage.history")
 
@@ -81,6 +82,7 @@ _BUILDERS = {
 
 def _clip(text: str, limit: int) -> str:
     """截断超长文本（见模块 docstring 的安全说明）。"""
+    text = redact_text(text or "")
     if not text or len(text) <= limit:
         return text or ""
     return text[:limit] + "…（已截断）"

@@ -17,7 +17,10 @@ from tests.conftest import make_alert, make_payload
 _TOKENS = '{"k-alice": "alice", "k-bob": "bob", "k-am": "alertmanager"}'
 
 # FastAPI 自己建的 app 级路由，不属于任何一个 router，本就不该被拦
-_EXEMPT_PATHS = {"/health", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+_EXEMPT_PATHS = {
+    "/health", "/ready", "/status", "/status-assets/status.css",
+    "/status-assets/status.js", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc",
+}
 
 _PARAM = re.compile(r"\{[^}]+\}")
 
@@ -67,6 +70,20 @@ def test_missing_credentials_are_401(client):
 
 def test_wrong_token_is_401(client):
     assert client.get("/sessions", headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
+def test_json_response_redacts_registered_api_token(client, monkeypatch):
+    monkeypatch.setattr(
+        client.app.state.agent,
+        "active_alerts",
+        lambda: [{"alertname": "Leak", "summary": "token=k-alice"}],
+    )
+
+    response = client.get("/alerts/active", headers=_as("k-bob"))
+
+    assert response.status_code == 200
+    assert "k-alice" not in response.text
+    assert "***" in response.text
 
 
 def test_non_bearer_scheme_is_401(client):

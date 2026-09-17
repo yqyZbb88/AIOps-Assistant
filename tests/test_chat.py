@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+import logging
 
 from src.core.agent import OpsAgent
 from src.core.analysis import AlertAnalyzer
@@ -330,12 +331,8 @@ def test_aiops_assistant_process_alert_llm_unavailable_not_blocking(fakemonitor)
         assert len(agent.recent()) == 2
 
 
-def test_aiops_assistant_prints_remediation_to_console(fakemonitor, capsys):
-    """处置结果的终端输出由 OpsAgent 负责（阶段 9 从 RuleEngine 移入）。
-
-    文案逐字锁定：print 内容是用户观察 auto_execute=true 效果的主要窗口，
-    搬动实现时最容易悄悄改掉的就是这里。
-    """
+def test_aiops_assistant_logs_remediation(fakemonitor, caplog):
+    """处置结果由 OpsAgent 通过带脱敏的 logger 统一输出。"""
     class OkExecutor(ActionExecutor):
         name = "ok_action"
         description = "fake"
@@ -355,11 +352,12 @@ def test_aiops_assistant_prints_remediation_to_console(fakemonitor, capsys):
             encoding="utf-8",
         )
         engine = RuleEngine(executors={"ok_action": OkExecutor()}, rules_file=rf)
-        agent = OpsAgent(monitor=fakemonitor, rule_engine=engine)
+    agent = OpsAgent(monitor=fakemonitor, rule_engine=engine)
+    with caplog.at_level(logging.INFO, logger="aiops_assistant.core"):
         agent.process_alert(make_payload(make_alert("HighCPUUsage")))
 
-    out = capsys.readouterr().out
-    assert "[自动处置]" in out
+    out = caplog.text
+    assert "自动处置" in out
     assert "alertname=HighCPUUsage" in out
     assert "status=ok" in out
     assert "action=ok_action" in out

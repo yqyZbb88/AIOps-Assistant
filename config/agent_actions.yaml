@@ -15,7 +15,7 @@ target:
   known_hosts: "${SSH_KNOWN_HOSTS:-}"  # 留空时使用系统 known_hosts
   connect_timeout: 8       # SSH 连接与命令超时秒数，必须 >= 1
 
-output_limit: 4000  # 返回 Agent 的字符上限；当前底层仍会先完整读取 SSH 输出
+output_limit: 4000  # SSH channel 最多保留的输出字符数；超出部分排空但不驻留内存
 
 approval:
   timeout_seconds: 900  # 待审批项有效期

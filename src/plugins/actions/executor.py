@@ -28,8 +28,9 @@ logger = logging.getLogger("aiops_assistant.actions.executor")
 class CatalogCommandExecutor(ActionExecutor):
     """绑定一条 actions.yaml 写命令的通用执行器（name = 目录 key，规则按名引用）。"""
 
-    def __init__(self, cmd: CmdDef) -> None:
+    def __init__(self, cmd: CmdDef, *, output_limit: int = 4000) -> None:
         self.cmd = cmd
+        self.output_limit = max(int(output_limit), 1)
         self.name = cmd.key
         self.description = cmd.summary or f"执行写命令 {cmd.key}（来自 config/actions.yaml）"
 
@@ -55,7 +56,10 @@ class CatalogCommandExecutor(ActionExecutor):
         host = endpoint.host
         started_at = audit_common.now_iso()
         try:
-            code, out, err = ssh_common.exec_command(endpoint, command, sudo=self.cmd.sudo)
+            result = ssh_common.exec_command(
+                endpoint, command, sudo=self.cmd.sudo, output_limit=self.output_limit
+            )
+            code, out, err = result
         except ssh_common.SshError as exc:
             audit_common.record_execution(
                 action=self.name, command=command, host=host,
@@ -64,17 +68,23 @@ class CatalogCommandExecutor(ActionExecutor):
             raise ActionError(str(exc)) from exc
 
         if code != 0:
-            msg = f"命令执行失败 rc={code} host={host}: {err or out}"
+            detail = (err or out or "").strip()
+            truncated = bool(getattr(result, "truncated", False))
+            msg = f"命令执行失败 rc={code} host={host}: {detail or '(无输出)'}"
             audit_common.record_execution(
                 action=self.name, command=command, host=host,
-                params=clean, started_at=started_at, error=msg,
+                params=clean, started_at=started_at,
+                error=(f"rc={code}; truncated={truncated}; chars={len(detail)}; "
+                       f"bytes_read={int(getattr(result, 'bytes_read', len(detail)))}"),
             )
             raise ActionError(msg)
 
         audit_common.record_execution(
             action=self.name, command=command, host=host,
             params=clean, started_at=started_at,
-            result={"ok": True, "exit_code": code},
+            result={"ok": True, "exit_code": code,
+                    "truncated": bool(getattr(result, "truncated", False)),
+                    "bytes_read": int(getattr(result, "bytes_read", len(out) + len(err)))},
         )
         logger.info("已执行命令 action=%s host=%s", self.name, host)
         return {
@@ -83,6 +93,7 @@ class CatalogCommandExecutor(ActionExecutor):
             "command": command,
             "exit_code": code,
             "output": out or "(无输出)",
+            "truncated": bool(getattr(result, "truncated", False)),
         }
 
 
@@ -92,4 +103,7 @@ def build_catalog_executors(cfg) -> dict[str, CatalogCommandExecutor]:
     供 container.executors() 使用：executors map 语义与 RuleEngine 期望一致
     （key = rules.yaml 的 action 字段 → execute(params)）。
     """
-    return {cmd.key: CatalogCommandExecutor(cmd) for cmd in cfg.commands}
+    return {
+        cmd.key: CatalogCommandExecutor(cmd, output_limit=cfg.output_limit)
+        for cmd in cfg.commands
+    }

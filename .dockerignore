@@ -1,0 +1,17 @@
+.git
+.github
+.runtime
+.env
+.env.compose
+__pycache__
+*.pyc
+.pytest_cache
+.pytest_tmp*
+.venv
+data
+logs
+参考
+PROJECT_HANDOVER.md
+ARCHITECTURE.md
+docs/roadmap.md
+roadmap.md

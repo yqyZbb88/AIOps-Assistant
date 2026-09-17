@@ -15,6 +15,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+from src.utils.security import redact_sensitive, redact_text
+
 # 审计日志专用 logger 名：动作执行器在其 execute 前后写入
 AUDIT_LOGGER_NAME = "aiops_assistant.audit"
 # 固定指标巡检专用 logger：每轮写一条汇总，并可选落到独立轮转文件。
@@ -28,6 +30,32 @@ _INSPECTION_FILE_HANDLER_TAG = "_aiops_assistant_inspection_file"
 
 DEFAULT_AUDIT_MAX_BYTES = 5 * 1024 * 1024
 DEFAULT_AUDIT_BACKUP_COUNT = 3
+
+
+class RedactingFormatter(logging.Formatter):
+    """在写入目的地前清理最终渲染文本（包括异常 traceback）。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_text(super().format(record))
+
+
+class RedactingFilter(logging.Filter):
+    """清理 LogRecord，使第三方 handler 也不会收到常见明文凭据。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = redact_sensitive(record.msg)
+        if isinstance(record.args, dict):
+            record.args = redact_sensitive(record.args)
+        elif isinstance(record.args, tuple):
+            record.args = tuple(redact_sensitive(value) for value in record.args)
+        record.exc_text = None
+        return True
+
+
+def _secure_handler(handler: logging.Handler) -> None:
+    if not any(isinstance(item, RedactingFilter) for item in handler.filters):
+        handler.addFilter(RedactingFilter())
+    handler.setFormatter(RedactingFormatter(_FORMAT))
 
 
 def configure_logging(
@@ -53,6 +81,8 @@ def configure_logging(
         level=getattr(logging, str(level).upper(), logging.INFO),
         format=_FORMAT,
     )
+    for handler in logging.getLogger().handlers:
+        _secure_handler(handler)
     audit_logger = logging.getLogger(AUDIT_LOGGER_NAME)
     if not audit:
         audit_logger.setLevel(logging.WARNING)
@@ -113,7 +143,7 @@ def _attach_rotating_file(
         encoding="utf-8",
         delay=True,
     )
-    handler.setFormatter(logging.Formatter(_FORMAT))
+    _secure_handler(handler)
     setattr(handler, tag, target)
     target_logger.addHandler(handler)
 
@@ -172,6 +202,8 @@ def write_audit(record: dict[str, Any], *, level: int = logging.INFO) -> None:
     `redact_sensitive`）。失败只记 ERROR——审计写不进去不该让主流程炸掉。
     """
     try:
-        get_audit_logger().log(level, "%s", json.dumps(record, ensure_ascii=False))
+        get_audit_logger().log(
+            level, "%s", json.dumps(redact_sensitive(record), ensure_ascii=False)
+        )
     except Exception as exc:  # noqa: BLE001 - 序列化失败（如含不可序列化对象）
         logging.getLogger("aiops_assistant.logger").error("审计记录写入失败: %s", exc)

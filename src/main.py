@@ -5,13 +5,15 @@
     python src/main.py                                              （直跑分支）
 
 鉴权（config/settings.yaml 的 auth 段）：
-    启用后所有业务 API（除 GET /health）都要求 `Authorization: Bearer <密钥>`。
+    启用后所有含运维数据或写操作的 API 都要求 `Authorization: Bearer <密钥>`；
+    /health、/ready 和无数据的 /status 静态壳公开。
     FastAPI 自带的 /docs、/redoc、/openapi.json 是应用级文档路由，当前公开。
     身份由密钥推断（服务端事实），请求体不能自报用户身份。
     `auth.enabled: true` 却没有任何可用密钥时会**拒绝启动**，绝不静默地无鉴权运行。
 
 对外路由：
-    GET  /health            健康检查
+    GET  /health            进程存活与缓存健康状态
+    GET  /ready             主动依赖就绪检查
     POST /chat              使用既有 session_id 进行聊天
     POST /alert             Alertmanager webhook
     GET  /alerts/recent     最近接收的告警
@@ -36,7 +38,9 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 
 # 兼容直接运行（python src/main.py）：__package__ 为空时把仓库根加入 sys.path
 if __package__ in (None, ""):
@@ -48,11 +52,14 @@ from src.api import chat as chat_api
 from src.api import health as health_api
 from src.api import inspections as inspections_api
 from src.api import sessions as sessions_api
+from src.api import status as status_api
 from src.api.deps import require_auth
+from src.api.response import RedactingJSONResponse
 from src.container import Container
 from src.utils.auth import AuthConfigError, ensure_usable
 from src.utils.config_loader import Settings
 from src.utils.logger import configure_logging
+from src.utils.security import configure_secrets
 
 logger = logging.getLogger("aiops_assistant.main")
 
@@ -80,6 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """装配依赖容器并构建 FastAPI 应用（app.state.agent 供路由依赖注入取用）。"""
     container = Container(settings=settings)
     settings_ = container.settings
+    configure_secrets(auth_tokens=settings_.auth.tokens)
     configure_logging(
         level=settings_.logging.level,
         audit=settings_.logging.audit,
@@ -98,7 +106,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description=_DESCRIPTION,
         version=settings_.app.version,
         lifespan=_lifespan,
+        default_response_class=RedactingJSONResponse,
     )
+
+    @app.exception_handler(HTTPException)
+    async def _http_error(_request: Request, exc: HTTPException):
+        return RedactingJSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error(_request: Request, exc: RequestValidationError):
+        return RedactingJSONResponse(
+            status_code=422,
+            content={"detail": jsonable_encoder(exc.errors())},
+        )
     app.state.container = container
     app.state.settings = settings_
     app.state.agent = agent
@@ -112,6 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     #
     # /docs、/redoc、/openapi.json 是 app 级路由，不在任何 router 里，不会被拦。
     app.include_router(health_api.router)  # 探针豁免：健康检查不该要密钥
+    app.include_router(status_api.router)  # 无数据静态壳；真实数据 API 仍要求 Bearer
     app.include_router(chat_api.router, dependencies=[Depends(require_auth)])
     app.include_router(alert_api.router, dependencies=[Depends(require_auth)])
     app.include_router(approvals_api.router, dependencies=[Depends(require_auth)])

@@ -48,7 +48,7 @@ def record_execution(
     record["finished_at"] = now_iso()
 
     if error is not None:
-        record["error"] = error
+        record["error"] = redact_sensitive(error)
     else:
-        record["result"] = result
+        record["result"] = redact_sensitive(result)
     write_audit(record, level=logging.ERROR if error is not None else logging.INFO)
