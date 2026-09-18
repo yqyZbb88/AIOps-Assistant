@@ -31,6 +31,7 @@ def bootstrap() -> dict[str, str]:
         "DEEPSEEK_API_KEY": os.getenv("DEEPSEEK_API_KEY", ""),
         "GF_SECURITY_ADMIN_USER": "admin",
         "GF_SECURITY_ADMIN_PASSWORD": secrets.token_urlsafe(18),
+        "GRAFANA_HOST_PORT": os.getenv("GRAFANA_HOST_PORT", "3000"),
         "AIOPS_USER_TOKEN": user_token,
     }
     ENV_FILE.write_text("\n".join(f"{key}={value}" for key, value in values.items()) + "\n", encoding="utf-8")
@@ -56,8 +57,9 @@ def main() -> int:
         subprocess.run([os.sys.executable, str(ROOT / "scripts" / "demo_fault.py"), "reset"], check=True)
         code = compose("up", "--build", "-d")
         if code == 0:
+            grafana_port = os.getenv("GRAFANA_HOST_PORT", values.get("GRAFANA_HOST_PORT", "3000"))
             print("状态页: http://127.0.0.1:8000/status")
-            print("Grafana: http://127.0.0.1:3000")
+            print(f"Grafana: http://127.0.0.1:{grafana_port}")
             print("状态页 Token: " + values.get("AIOPS_USER_TOKEN", ""))
         return code
     if args.command == "down":

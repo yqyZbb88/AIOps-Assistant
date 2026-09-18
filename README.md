@@ -75,6 +75,9 @@ Assistant 并启动五个服务。终端会显示状态页地址和本次生成�
 python scripts/dev_stack.py show-token
 ```
 
+Grafana 默认绑定 `127.0.0.1:3000`。端口已被本机服务占用时，可在启动前设置
+`GRAFANA_HOST_PORT`（例如 `3001`）；容器内端口仍为 `3000`。
+
 停止服务但保留监控数据卷：
 
 ```bash

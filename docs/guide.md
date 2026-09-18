@@ -16,6 +16,9 @@ python scripts/dev_stack.py up
 管理员密码，然后构建并启动全部五个服务。打开 `http://127.0.0.1:8000/status`，把终端显示的
 用户 Token 保存到页面会话即可。Token 只进入浏览器 `sessionStorage`，关闭该标签页会话后清除。
 
+Grafana 默认地址是 `http://127.0.0.1:3000`。若宿主机端口已被占用，先设置
+`GRAFANA_HOST_PORT`（例如 `3001`）再执行 `up`；这不会改变容器内端口。
+
 ```bash
 python scripts/dev_stack.py status
 python scripts/dev_stack.py show-token
