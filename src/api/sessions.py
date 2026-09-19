@@ -31,6 +31,7 @@ from src.interfaces.session import (
     is_owner,
     normalize_session_name,
 )
+from src.interfaces.host import HostError
 
 logger = logging.getLogger("aiops_assistant.api.sessions")
 
@@ -48,6 +49,10 @@ class SessionCreateRequest(BaseModel):
         None,
         description=f"给人识别的标签（任意可见字符，最长 {SESSION_NAME_MAX_CHARS}）；"
                     "不填 = 未命名。**不要求唯一**，同一人可以有多段同名对话",
+    )
+    host_id: str | None = Field(
+        None,
+        description="会话固定主机 ID；多主机部署必须显式提供，创建后不可修改",
     )
 
     @field_validator("name")
@@ -127,8 +132,22 @@ def create_session(
     调用方也不必再猜「我这次是新建还是续聊」。
     """
     store = _store(request)
+    hosts = request.app.state.container.hosts()
+    if body.host_id:
+        try:
+            host = hosts.require(body.host_id)
+        except HostError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    else:
+        enabled = hosts.enabled()
+        if len(enabled) != 1:
+            raise HTTPException(
+                status_code=422,
+                detail="多主机模式创建会话必须明确提供 host_id",
+            )
+        host = enabled[0]
     try:
-        info = store.create(user=user, name=body.name or "")
+        info = store.create(user=user, name=body.name or "", host_id=host.host_id)
     except SessionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("会话已创建 id=%s user=%s name=%r", info.session_id, info.user, info.name)

@@ -19,9 +19,13 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from src.interfaces.agent_action import AgentActionError, AgentActionSource
+from src.interfaces.host import HostSshTarget
+from src.interfaces.execution import ActionExecutionStore
 from src.interfaces.command import CommandSpec
 from src.plugins.common import audit as audit_common
 from src.plugins.common import ssh as ssh_common
@@ -41,17 +45,84 @@ class SshAgentActionSource(AgentActionSource):
     name = "ssh"
     description = "经 SSH 在目标主机执行白名单写命令（重启服务 / 清理磁盘等，需人工审批）"
 
-    def __init__(self, config: AgentActionsConfig) -> None:
+    def __init__(
+        self,
+        config: AgentActionsConfig,
+        *,
+        target: HostSshTarget | None = None,
+        allowed_commands: frozenset[str] | None = None,
+    ) -> None:
         # 构造不读文件：config 由容器/测试注入，便于离线单测
-        if config is None or not config.target.host:
+        if config is None or (target is None and not config.target.host):
             raise AgentActionError("Agent 写命令配置缺少 target.host，无法构造 SshAgentActionSource")
         self.config = config
-        self.target = config.target
+        self.target = target or config.target
+        self.allowed_commands = allowed_commands
         self.output_limit = config.output_limit
+        self.execution_store: ActionExecutionStore | None = None
+        self.execution_host_id = ""
+        self.target_summary = ""
+        self.config_fingerprint = ""
+        self._approval_context: ContextVar[dict[str, Any] | None] = ContextVar(
+            f"agent_action_approval_{id(self)}", default=None
+        )
+
+    def configure_execution(
+        self,
+        store: ActionExecutionStore | None,
+        *,
+        host_id: str,
+        target_summary: str,
+        config_fingerprint: str,
+    ) -> None:
+        self.execution_store = store
+        self.execution_host_id = host_id
+        self.target_summary = target_summary
+        self.config_fingerprint = config_fingerprint
+
+    @contextmanager
+    def approval_context(self, approval_id: str):
+        token = self._approval_context.set({"approval_id": approval_id, "index": 0})
+        try:
+            yield
+        finally:
+            self._approval_context.reset(token)
+
+    def record_rejection(
+        self, approval_id: str, actions: list[dict[str, Any]]
+    ) -> None:
+        if self.execution_store is None:
+            return
+        for index, action in enumerate(actions):
+            self.execution_store.create(
+                channel="agent",
+                idempotency_key=f"agent:{approval_id}:{index}",
+                host_id=self.execution_host_id,
+                action_name=str(action.get("name") or ""),
+                params=dict(action.get("args") or {}),
+                target_summary=self.target_summary,
+                config_fingerprint=self.config_fingerprint,
+                approval_id=approval_id,
+                status="rejected",
+                detail="人工审批拒绝",
+            )
+
+    def _finish_execution(self, execution_id: str, status: str, detail: str) -> None:
+        try:
+            self.execution_store.finish(execution_id, status=status, detail=detail)
+        except Exception as exc:
+            logger.error(
+                "Agent 执行状态收尾失败 execution_id=%s（保留 running，结果未知）: %s",
+                execution_id,
+                exc,
+            )
 
     # -- AgentActionSource 接口实现 -----------------------------------------
     def commands(self) -> tuple[CommandSpec, ...]:
-        return command_specs(self.config)
+        specs = command_specs(self.config)
+        if self.allowed_commands is None:
+            return specs
+        return tuple(spec for spec in specs if spec.key in self.allowed_commands)
 
     def run(
         self,
@@ -60,6 +131,8 @@ class SshAgentActionSource(AgentActionSource):
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         cmd_def = next((c for c in self.config.commands if c.key == command), None)
+        if self.allowed_commands is not None and command not in self.allowed_commands:
+            raise AgentActionError(f"目标主机未授权写命令 {command!r}")
         if cmd_def is None:
             available = ", ".join(c.key for c in self.config.commands) or "(空)"
             raise AgentActionError(f"未知写命令 {command!r}，可用: {available}")
@@ -75,6 +148,30 @@ class SshAgentActionSource(AgentActionSource):
 
         # 参数校验/默认/越权/全匹配 + 逐参 shlex 转义 → 安全命令串（非法抛 AgentActionError）
         cmd_str = build_command(cmd_def, supplied)
+
+        execution = None
+        context = self._approval_context.get()
+        if self.execution_store is not None:
+            if context is None:
+                raise AgentActionError("写命令缺少审批执行上下文，已拒绝执行")
+            index = int(context["index"])
+            context["index"] = index + 1
+            try:
+                execution = self.execution_store.create(
+                    channel="agent",
+                    idempotency_key=f"agent:{context['approval_id']}:{index}",
+                    host_id=self.execution_host_id,
+                    action_name=command,
+                    params=supplied,
+                    target_summary=self.target_summary,
+                    config_fingerprint=self.config_fingerprint,
+                    approval_id=str(context["approval_id"]),
+                    status="running",
+                )
+            except Exception as exc:
+                raise AgentActionError(f"无法创建执行审计记录，已拒绝写命令: {exc}") from exc
+            if execution is None:
+                raise AgentActionError("相同审批动作已执行或正在执行，拒绝重复写命令")
 
         host = self.target.host
         endpoint = SshEndpoint(
@@ -93,6 +190,8 @@ class SshAgentActionSource(AgentActionSource):
             )
             code, out, err = result
         except ssh_common.SshError as exc:  # paramiko 缺失 / 连接 / 认证 / 执行失败
+            if execution is not None:
+                self._finish_execution(execution.execution_id, "failed", str(exc))
             audit_common.record_execution(
                 action="agent_action", command=command, host=host,
                 params=supplied, started_at=started_at, error=str(exc),
@@ -109,6 +208,8 @@ class SshAgentActionSource(AgentActionSource):
                 error=(f"rc={code}; truncated={truncated}; chars={len(detail)}; "
                        f"bytes_read={int(getattr(result, 'bytes_read', len(detail)))}"),
             )
+            if execution is not None:
+                self._finish_execution(execution.execution_id, "failed", detail)
             raise AgentActionError(
                 f"写命令执行失败（host={host}，exit_code={code}）：{detail or '(无输出)'}"
             )
@@ -127,6 +228,10 @@ class SshAgentActionSource(AgentActionSource):
                     "bytes_read": int(getattr(result, "bytes_read", len(raw_output)))},
         )
         logger.info("已执行 Agent 写命令 action=%s host=%s", command, host)
+        if execution is not None:
+            self._finish_execution(
+                execution.execution_id, "succeeded", "写命令执行成功"
+            )
         return {
             "ok": True,
             "host": host,
@@ -134,4 +239,5 @@ class SshAgentActionSource(AgentActionSource):
             "exit_code": code,
             "output": output,
             "executed_at": audit_common.now_iso(),
+            "execution_id": execution.execution_id if execution is not None else None,
         }

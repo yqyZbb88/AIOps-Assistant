@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 
 from src import plugins  # noqa: F401  （导入即把插件注册进 registry）
 from src.core.agent import OpsAgent
@@ -27,6 +28,8 @@ from src.interfaces.agent_action import AgentActionSource
 from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.history import HistoryStore
+from src.interfaces.execution import ActionExecutionStore
+from src.interfaces.host import HostRegistry
 from src.interfaces.inspection import InspectionStore
 from src.interfaces.metric import MetricsConfig
 from src.interfaces.monitor import MonitorSource
@@ -48,6 +51,7 @@ class Container:
         self._aiops_assistant: OpsAgent | None = None
         self._monitor: MonitorSource | None = None
         self._metrics_config: MetricsConfig | None = None
+        self._hosts: HostRegistry | None = None
         self._llm: LLMClient | None = None
         self._executors: dict[str, ActionExecutor] | None = None
         self._execution_guard: RuleExecutionGuard | None = None
@@ -60,8 +64,11 @@ class Container:
         self._history_ready = False
         self._inspection_store: InspectionStore | None = None
         self._inspection_store_ready = False
+        self._execution_store: ActionExecutionStore | None = None
+        self._execution_store_ready = False
         self._inspection_scheduler = None
         self._health_service = None
+        self._host_status_service = None
         self._db: Database | None = None
         self._db_ready = False
 
@@ -73,6 +80,17 @@ class Container:
 
             self._metrics_config = load_metrics_config(self.settings.metrics.file or None)
         return self._metrics_config
+
+    def hosts(self) -> HostRegistry:
+        """加载并缓存唯一主机目标来源；无新配置时合成 legacy-default。"""
+        if self._hosts is None:
+            from src.utils.hosts_config import load_host_registry
+
+            self._hosts = load_host_registry(
+                self.settings.hosts.file or None,
+                legacy_instance=self.metrics_config().instance,
+            )
+        return self._hosts
 
     def monitor(self) -> MonitorSource:
         """按 settings.monitor.provider 从 registry 取监控源实现并实例化。"""
@@ -330,14 +348,28 @@ class Container:
         )
         return self._inspection_store
 
+    def execution_store(self) -> ActionExecutionStore | None:
+        """规则与人工审批写命令共用的执行状态存储。"""
+        if self._execution_store_ready:
+            return self._execution_store
+        self._execution_store_ready = True
+        db = self._database()
+        if db is None:
+            return None
+        from src.storage.execution import SqliteActionExecutionStore
+
+        self._execution_store = SqliteActionExecutionStore(db)
+        return self._execution_store
+
     def inspection_scheduler(self):
         """构造并缓存单进程巡检调度器。"""
         if self._inspection_scheduler is None:
-            from src.core.inspection import InspectionChecker, InspectionScheduler
+            from src.core.inspection import MultiHostInspectionChecker, InspectionScheduler
 
             self._inspection_scheduler = InspectionScheduler(
-                InspectionChecker(
+                MultiHostInspectionChecker(
                     self.monitor(),
+                    self.hosts(),
                     self.settings.inspection,
                     self.metrics_config(),
                 ),
@@ -360,6 +392,13 @@ class Container:
                 version=self.settings.app.version,
             )
         return self._health_service
+
+    def host_status_service(self):
+        if self._host_status_service is None:
+            from src.core.hosts import HostStatusService
+
+            self._host_status_service = HostStatusService(self.hosts(), self.monitor())
+        return self._host_status_service
 
     @staticmethod
     def _reconcile_pending(store: SessionStore) -> None:
@@ -433,6 +472,83 @@ class Container:
             recursion_limit=self.settings.agent.recursion_limit,
         )
 
+    def _host_assistant_factory(self, host_id: str):
+        """为会话固定主机构造 Agent；所有外部 IO 都从同一 Host 派生。"""
+        from src.agent.assistant import OpsAssistant
+        from src.plugins.diagnostics.commands import load_diagnostics_config
+        from src.plugins.diagnostics.ssh_diagnostics import SshDiagnostics
+        from src.plugins.agent_actions.catalog import load_agent_actions_config
+        from src.plugins.agent_actions.source import SshAgentActionSource
+
+        host = self.hosts().require(host_id)
+        diag = None
+        write_source = None
+        approvals = None
+
+        if host.ssh is not None:
+            diag_config = load_diagnostics_config()
+            if diag_config is not None:
+                allowed = None if host.legacy else host.capabilities.diagnostics
+                if host.legacy or allowed:
+                    diag = SshDiagnostics(
+                        diag_config,
+                        target=host.ssh,
+                        allowed_commands=allowed,
+                    )
+
+            action_config = load_agent_actions_config()
+            if action_config is not None:
+                allowed_actions = None if host.legacy else host.capabilities.agent_actions
+                if host.legacy or allowed_actions:
+                    write_source = SshAgentActionSource(
+                        action_config,
+                        target=host.ssh,
+                        allowed_commands=allowed_actions,
+                    )
+                    approvals = ApprovalStore(
+                        maxlen=action_config.approval.max_pending,
+                        ttl_seconds=action_config.approval.timeout_seconds,
+                    )
+
+        fingerprint_material = "|".join(
+            [
+                host.host_id,
+                host.credential_ref,
+                host.monitor.job,
+                host.monitor.instance,
+                ",".join(sorted(host.capabilities.diagnostics)),
+                ",".join(sorted(host.capabilities.agent_actions)),
+                ",".join(spec.key for spec in diag.commands()) if diag else "",
+                ",".join(spec.key for spec in write_source.commands()) if write_source else "",
+            ]
+        )
+        fingerprint = hashlib.sha256(
+            fingerprint_material.encode("utf-8")
+        ).hexdigest()
+        if write_source is not None:
+            write_source.configure_execution(
+                self.execution_store(),
+                host_id=host.host_id,
+                target_summary=f"{host.host_id} ({host.name})",
+                config_fingerprint=fingerprint,
+            )
+        return OpsAssistant(
+            monitor=self.monitor(),
+            metrics_config=self.metrics_config(),
+            inspection_store=self.inspection_store(),
+            diag=diag,
+            agent_actions=write_source,
+            approvals=approvals,
+            ledger=self.sessions(),
+            debug=self.settings.agent.debug,
+            name=self.settings.agent.name,
+            recursion_limit=self.settings.agent.recursion_limit,
+            host_id=host.host_id,
+            monitor_target=host.monitor,
+            target_summary=f"{host.host_id} ({host.name})",
+            config_fingerprint=fingerprint,
+        )
+
     # -- 主控制器 ---------------------------------------------------------
     def aiops_assistant(self) -> OpsAgent:
         """构造（并缓存）主控制器 OpsAgent。"""
@@ -444,14 +560,21 @@ class Container:
         llm = self.llm()
 
         rule_engine = RuleEngine(
-            executors=self.executors(), execution_guard=self.execution_guard()
+            executors=self.executors(),
+            execution_guard=self.execution_guard(),
+            hosts=self.hosts(),
+            execution_store=self.execution_store(),
         )
-        assistant_factory = self._assistant_factory if settings.agent.enabled else None
-        if assistant_factory is None:
+        host_assistant_factory = (
+            self._host_assistant_factory if settings.agent.enabled else None
+        )
+        if host_assistant_factory is None:
             logger.info("聊天 Agent 未启用（settings.agent.enabled=false），仅使用关键词兜底")
         chat_service = ChatService(
             monitor=monitor,
-            assistant_factory=assistant_factory,
+            assistant_factory=None,
+            host_assistant_factory=host_assistant_factory,
+            hosts=self.hosts(),
             sessions=self.sessions(),  # 未启用/打不开 → None，聊天照常
             message_window=settings.storage.message_window,
             metrics_config=self.metrics_config(),
@@ -461,6 +584,7 @@ class Container:
             llm=llm,
             trend_minutes=settings.alert.trend_minutes,
             metrics_config=self.metrics_config(),
+            hosts=self.hosts(),
         )
         self._aiops_assistant = OpsAgent(
             monitor=monitor,
@@ -470,6 +594,7 @@ class Container:
             analysis=analyzer,
             llm=llm,
             history=self.history(),  # 未启用 → None，告警接收照常
+            hosts=self.hosts(),
         )
         logger.info(
             "OpsAgent 装配完成: monitor=%s actions=%d llm=%s",

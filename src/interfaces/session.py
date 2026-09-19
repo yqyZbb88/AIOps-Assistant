@@ -154,6 +154,8 @@ class SessionInfo:
     updated_at: str = ""
     pending_approvals: int = 0
     message_count: int = 0
+    #: 会话级固定主机；空串只用于 v7 以前的存量会话。
+    host_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """转为 api 层直接可序列化的结构。"""
@@ -167,6 +169,7 @@ class SessionInfo:
             "updated_at": self.updated_at,
             "pending_approvals": self.pending_approvals,
             "message_count": self.message_count,
+            "host_id": self.host_id or None,
         }
 
 
@@ -255,7 +258,8 @@ class SessionStore(ABC):
     # -- 会话生命周期 -------------------------------------------------------
     @abstractmethod
     def create(
-        self, *, user: str | None = "", title: str = "", name: str = ""
+        self, *, user: str | None = "", title: str = "", name: str = "",
+        host_id: str = ""
     ) -> SessionInfo:
         """新建一个会话并返回其元信息。
 
@@ -391,6 +395,10 @@ class SessionStore(ABC):
         session_id: str | None,
         action: str,
         decided_by: str = "",
+        host_id: str = "",
+        target_summary: str = "",
+        actions_json: str = "[]",
+        config_fingerprint: str = "",
     ) -> None:
         """落一条审批决策记录（`approval_decisions` 表）。
 
@@ -447,6 +455,10 @@ class ApprovalLedger(Protocol):
         session_id: str | None,
         action: str,
         decided_by: str = "",
+        host_id: str = "",
+        target_summary: str = "",
+        actions_json: str = "[]",
+        config_fingerprint: str = "",
     ) -> None:
         ...
 

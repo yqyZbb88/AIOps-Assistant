@@ -139,6 +139,9 @@ def _audit_decision(
         "decided_by": identity or "",
         "reason": reason,
         "commands": [a.get("name") for a in pending.actions],
+        "host_id": pending.host_id,
+        "target_summary": pending.target_summary,
+        "config_fingerprint": pending.config_fingerprint,
         "decided_at": now_iso(),
     })
 

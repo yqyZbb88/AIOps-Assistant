@@ -315,7 +315,7 @@ def test_create_app_health_endpoint_responds():
     body = resp.json()
     assert body["status"] == "ok"
     assert body["storage"] == "ok"
-    assert body["version"] == "0.4.0"
+    assert body["version"] == "0.5.0"
     assert body["components"]["prometheus"]["status"] == "unknown"
     assert body["components"]["storage"]["status"] == "disabled"
 

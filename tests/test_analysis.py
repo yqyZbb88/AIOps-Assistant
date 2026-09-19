@@ -9,6 +9,7 @@ from __future__ import annotations
 from src.core.analysis import AlertAnalyzer, build_alert_context
 from src.interfaces.metric import MetricRuntimeConfig, MetricSurfaceConfig, MetricsConfig
 from src.interfaces.monitor import MonitorError
+from src.utils.hosts_config import parse_hosts
 
 from tests.conftest import FakeLLM, FakeMonitor, make_alert
 
@@ -163,3 +164,63 @@ def test_analyze_custom_system_overrides_default(fakemonitor, fakellm):
     """显式传入 system 时优先于默认（构造参数生效）。"""
     AlertAnalyzer(fakemonitor, llm=fakellm, system="自定义 system").analyze(make_alert("A"))
     assert fakellm.calls[0][1] == "自定义 system"
+
+
+def test_registered_host_is_used_as_exact_ai_trend_target(fakellm):
+    class TargetMonitor(FakeMonitor):
+        def __init__(self):
+            super().__init__()
+            self.targets = []
+
+        def query_metric_trend(
+            self, metric_id, instance=None, *, minutes=60, step="5m",
+            selector=None, target=None,
+        ):
+            self.targets.append(target)
+            return {"latest": 1.0, "min": 1.0, "max": 1.0, "points": 1}
+
+    hosts = parse_hosts("""
+version: 1
+hosts:
+  - id: host-a
+    name: Host A
+    enabled: true
+    prometheus: {job: node-a, instance: "a:9100"}
+    allow: {}
+  - id: host-b
+    name: Host B
+    enabled: true
+    prometheus: {job: node-b, instance: "b:9100"}
+    allow: {}
+""")
+    monitor = TargetMonitor()
+    result = AlertAnalyzer(monitor, llm=fakellm, hosts=hosts).analyze(
+        make_alert("A", instance="a:9100")
+    )
+
+    assert result["host_id"] == "host-a"
+    assert monitor.targets
+    assert all(t.job == "node-a" and t.instance == "a:9100" for t in monitor.targets)
+
+
+def test_unknown_alert_never_queries_ai_trend_by_raw_instance(fakellm):
+    class NoQueryMonitor(FakeMonitor):
+        def query_metric_trend(self, *args, **kwargs):
+            raise AssertionError("unknown 告警不得回退到原始 instance 查询")
+
+    hosts = parse_hosts("""
+version: 1
+hosts:
+  - id: host-a
+    name: Host A
+    enabled: true
+    prometheus: {job: node, instance: "a:9100"}
+    allow: {}
+""")
+    result = AlertAnalyzer(NoQueryMonitor(), llm=fakellm, hosts=hosts).analyze(
+        make_alert("A", instance="outside:9100")
+    )
+
+    assert result["host_id"] is None
+    assert result["host_resolution"] == "unknown"
+    assert "禁止按原始 instance 查询" in fakellm.calls[0][0]

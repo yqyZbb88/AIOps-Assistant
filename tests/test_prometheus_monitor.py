@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from src.interfaces.monitor import MonitorError
@@ -259,6 +261,63 @@ def test_query_metric_renders_global_instance_and_escapes_labels(monitor):
     definition = monitor._definition("cpu.usage")
     expr = monitor._render_expr(definition, instance='h"1')
     assert 'instance="h\\\"1"' in expr
+
+
+def test_registered_target_overrides_global_and_metric_instance(monitor):
+    from src.interfaces.host import MonitorTarget
+
+    definition = monitor._definition("cpu.usage")
+    monitor.metrics_config = replace(monitor.metrics_config, instance="global:9100")
+    runtime = monitor.metrics_config.runtime("cpu.usage")
+    monitor.metrics_config = replace(
+        monitor.metrics_config,
+        metrics={
+            **monitor.metrics_config.metrics,
+            "cpu.usage": replace(
+                runtime,
+                selector={**runtime.selector, "instance": "metric:9100"},
+            ),
+        },
+    )
+
+    expr = monitor._render_expr(
+        definition,
+        target=MonitorTarget(job="node-a", instance="a:9100"),
+    )
+
+    assert 'job="node-a"' in expr
+    assert 'instance="a:9100"' in expr
+    assert "global:9100" not in expr and "metric:9100" not in expr
+
+
+def test_target_status_distinguishes_reachable_down_no_data_and_ambiguous(monitor, monkeypatch):
+    from src.interfaces.host import MonitorTarget
+
+    target = MonitorTarget(job="node", instance="a:9100")
+    monkeypatch.setattr(
+        monitor,
+        "_query",
+        lambda _expr: [{"metric": {}, "value": [1, "1"]}],
+    )
+    assert monitor.target_status(target)["state"] == "reachable"
+
+    monkeypatch.setattr(
+        monitor,
+        "_query",
+        lambda _expr: [{"metric": {}, "value": [1, "0"]}],
+    )
+    assert monitor.target_status(target)["state"] == "unreachable"
+    monkeypatch.setattr(monitor, "_query", lambda _expr: [])
+    assert monitor.target_status(target)["state"] == "no_data"
+    monkeypatch.setattr(
+        monitor,
+        "_query",
+        lambda _expr: [
+            {"metric": {}, "value": [1, "1"]},
+            {"metric": {}, "value": [1, "1"]},
+        ],
+    )
+    assert monitor.target_status(target)["state"] == "ambiguous"
 
 
 def test_rendered_promql_has_no_empty_matcher_comma(monitor):

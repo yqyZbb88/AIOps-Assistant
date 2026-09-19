@@ -51,26 +51,26 @@ _TABLES: dict[str, str] = {
 
 _INSERT_ALERT = (
     "INSERT OR IGNORE INTO alerts "
-    "(alert_key, alertname, severity, instance, summary, status, starts_at, ends_at, received_at) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "(alert_key, alertname, severity, instance, summary, status, starts_at, ends_at, "
+    "received_at, host_id, host_resolution) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 _INSERT_REMEDIATION = (
     "INSERT INTO remediations "
-    "(alert_key, alertname, severity, instance, matched_rule, action, status, detail, executed_at) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "(alert_key, alertname, severity, instance, matched_rule, action, status, detail, "
+    "executed_at, host_id, execution_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 _INSERT_ADVICE = (
     "INSERT INTO ai_advice "
-    "(alert_key, alertname, severity, instance, advice, analyzed_at) "
-    "VALUES (?, ?, ?, ?, ?, ?)"
+    "(alert_key, alertname, severity, instance, advice, analyzed_at, host_id) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?)"
 )
 
 _SELECT_COLUMNS: dict[str, str] = {
     "alerts": "alert_key, alertname, severity, instance, summary, status, "
-              "starts_at, ends_at, received_at",
+              "starts_at, ends_at, received_at, host_id, host_resolution",
     "remediations": "alert_key, alertname, severity, instance, matched_rule, action, "
-                    "status, detail, executed_at",
-    "ai_advice": "alert_key, alertname, severity, instance, advice, analyzed_at",
+                    "status, detail, executed_at, host_id, execution_id",
+    "ai_advice": "alert_key, alertname, severity, instance, advice, analyzed_at, host_id",
 }
 
 _BUILDERS = {
@@ -152,17 +152,19 @@ class SqliteHistoryStore(HistoryStore):
                         rec.alert_key, rec.alertname, rec.severity, rec.instance,
                         _clip(rec.summary, MAX_SUMMARY_CHARS), rec.status,
                         rec.starts_at, rec.ends_at, rec.received_at,
+                        rec.host_id, rec.host_resolution,
                     ))
                 for rec in remediations:
                     conn.execute(_INSERT_REMEDIATION, (
                         rec.alert_key, rec.alertname, rec.severity, rec.instance,
                         rec.matched_rule, rec.action, rec.status,
                         _clip(rec.detail, MAX_DETAIL_CHARS), rec.executed_at,
+                        rec.host_id, rec.execution_id,
                     ))
                 for rec in advice:
                     conn.execute(_INSERT_ADVICE, (
                         rec.alert_key, rec.alertname, rec.severity, rec.instance,
-                        _clip(rec.advice, MAX_ADVICE_CHARS), rec.analyzed_at,
+                        _clip(rec.advice, MAX_ADVICE_CHARS), rec.analyzed_at, rec.host_id,
                     ))
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
@@ -171,23 +173,32 @@ class SqliteHistoryStore(HistoryStore):
         self._maybe_purge()
 
     # -- 读取 ---------------------------------------------------------------
-    def recent_alerts(self, *, limit: int = 50) -> list[AlertRecord]:
-        return self._recent("alerts", limit)
+    def recent_alerts(
+        self, *, limit: int = 50, host_id: str | None = None
+    ) -> list[AlertRecord]:
+        return self._recent("alerts", limit, host_id)
 
-    def recent_remediations(self, *, limit: int = 50) -> list[RemediationRecord]:
-        return self._recent("remediations", limit)
+    def recent_remediations(
+        self, *, limit: int = 50, host_id: str | None = None
+    ) -> list[RemediationRecord]:
+        return self._recent("remediations", limit, host_id)
 
-    def recent_advice(self, *, limit: int = 50) -> list[AdviceRecord]:
-        return self._recent("ai_advice", limit)
+    def recent_advice(
+        self, *, limit: int = 50, host_id: str | None = None
+    ) -> list[AdviceRecord]:
+        return self._recent("ai_advice", limit, host_id)
 
-    def _recent(self, table: str, limit: int) -> list[Any]:
+    def _recent(self, table: str, limit: int, host_id: str | None) -> list[Any]:
         time_col = _TABLES[table]
+        where = "WHERE host_id = ? " if host_id is not None else ""
         sql = (
             f"SELECT {_SELECT_COLUMNS[table]} FROM {table} "
+            f"{where}"
             f"ORDER BY {time_col} DESC, id DESC LIMIT ?"  # id 次键：同秒写入的顺序才稳定
         )
+        params = (host_id, max(1, int(limit))) if host_id is not None else (max(1, int(limit)),)
         try:
-            rows = self.db.query(sql, (max(1, int(limit)),))
+            rows = self.db.query(sql, params)
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
         self._ok()
@@ -250,6 +261,15 @@ class SqliteHistoryStore(HistoryStore):
                     "DELETE FROM approval_decisions WHERE rowid NOT IN "
                     "(SELECT rowid FROM approval_decisions "
                     "ORDER BY decided_at DESC, rowid DESC LIMIT ?)",
+                    (self.max_rows,),
+                ).rowcount
+                removed += conn.execute(
+                    "DELETE FROM action_executions WHERE created_at < ?", (cutoff,)
+                ).rowcount
+                removed += conn.execute(
+                    "DELETE FROM action_executions WHERE rowid NOT IN "
+                    "(SELECT rowid FROM action_executions "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT ?)",
                     (self.max_rows,),
                 ).rowcount
         except sqlite3.Error as exc:

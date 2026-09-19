@@ -13,6 +13,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Mapping
 
+from src.interfaces.host import MonitorTarget
 from src.interfaces.metric import MetricSample
 
 # 单个指标的近端趋势汇总结构（见 module docstring）
@@ -35,6 +36,7 @@ class MonitorSource(ABC):
         metric_id: str,
         *,
         selector: Mapping[str, str] | None = None,
+        target: MonitorTarget | None = None,
     ) -> list[MetricSample]:
         """通用即时指标查询；默认实现表示当前监控源未支持。
 
@@ -47,14 +49,19 @@ class MonitorSource(ABC):
     def query_metric_trend(
         self,
         metric_id: str,
-        instance: str,
+        instance: str | None = None,
         *,
         minutes: int = 60,
         step: str = "5m",
         selector: Mapping[str, str] | None = None,
+        target: MonitorTarget | None = None,
     ) -> TrendSummary:
         """通用指标趋势查询；默认实现表示当前监控源未支持。"""
         raise MonitorError(f"监控源不支持通用趋势查询: {metric_id}")
+
+    def target_status(self, target: MonitorTarget) -> dict[str, Any]:
+        """查询登记目标的 Exporter 采集状态。"""
+        raise MonitorError("监控源不支持按主机查询 Exporter 状态")
 
     @abstractmethod
     def cpu_usage(self) -> float | None:
@@ -70,7 +77,9 @@ class MonitorSource(ABC):
         按使用率降序；无数据返回空列表。"""
 
     @abstractmethod
-    def active_alerts(self) -> list[dict[str, Any]]:
+    def active_alerts(
+        self, *, target: MonitorTarget | None = None
+    ) -> list[dict[str, Any]]:
         """当前 pending / firing 告警记录（firing 在前），格式与历史一致：
         [{"alertname","severity","instance","state","activeAt","value",
           "summary","description"}, ...]；无活动告警返回空列表。"""

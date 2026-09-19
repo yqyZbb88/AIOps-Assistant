@@ -17,6 +17,7 @@ _EXPECTED_TABLES = {
     "approval_decisions",
     "remediation_claims",
     "inspection_runs",
+    "action_executions",
 }
 
 
@@ -69,7 +70,8 @@ def test_sessions_columns_are_exact(tmp_path):
     db = open_database(tmp_path / "ops.db")
     cols = {r["name"] for r in db.query("PRAGMA table_info(sessions)")}
     assert cols == {
-        "session_id", "user", "name", "title", "status", "created_at", "updated_at"
+        "session_id", "user", "name", "title", "status", "created_at", "updated_at",
+        "host_id",
     }
 
 
@@ -77,13 +79,18 @@ def test_approval_decisions_columns_are_exact(tmp_path):
     """这张表的列由迁移测试锁定，改列必须同步迁移和测试。"""
     db = open_database(tmp_path / "ops.db")
     cols = {r["name"] for r in db.query("PRAGMA table_info(approval_decisions)")}
-    assert cols == {"approval_id", "session_id", "action", "decided_at", "decided_by"}
+    assert cols == {
+        "approval_id", "session_id", "action", "decided_at", "decided_by",
+        "host_id", "target_summary", "actions_json", "config_fingerprint",
+    }
 
 
 def test_remediation_claims_columns_are_exact(tmp_path):
     db = open_database(tmp_path / "ops.db")
     cols = {r["name"] for r in db.query("PRAGMA table_info(remediation_claims)")}
-    assert cols == {"alert_key", "action", "alert_status", "starts_at", "claimed_at"}
+    assert cols == {
+        "alert_key", "action", "alert_status", "starts_at", "claimed_at", "host_id"
+    }
 
 
 def test_v4_db_gains_remediation_claims(tmp_path):
@@ -105,7 +112,8 @@ def test_inspection_runs_columns_are_exact(tmp_path):
     db = open_database(tmp_path / "ops.db")
     cols = {r["name"] for r in db.query("PRAGMA table_info(inspection_runs)")}
     assert cols == {
-        "id", "checked_at", "level", "snapshot_json", "findings_json", "error_text"
+        "id", "checked_at", "level", "snapshot_json", "findings_json", "error_text",
+        "host_id",
     }
 
 
@@ -160,6 +168,19 @@ def _downgrade_to_v1(path) -> None:
     （v2 加 sessions.name、v4 加 approval_decisions.decided_by。）
     """
     with sqlite3.connect(str(path)) as conn:
+        conn.execute("DROP TABLE IF EXISTS action_executions")
+        conn.execute("ALTER TABLE sessions DROP COLUMN host_id")
+        conn.execute("ALTER TABLE alerts DROP COLUMN host_resolution")
+        conn.execute("ALTER TABLE alerts DROP COLUMN host_id")
+        conn.execute("ALTER TABLE remediations DROP COLUMN execution_id")
+        conn.execute("ALTER TABLE remediations DROP COLUMN host_id")
+        conn.execute("ALTER TABLE ai_advice DROP COLUMN host_id")
+        conn.execute("ALTER TABLE approval_decisions DROP COLUMN config_fingerprint")
+        conn.execute("ALTER TABLE approval_decisions DROP COLUMN actions_json")
+        conn.execute("ALTER TABLE approval_decisions DROP COLUMN target_summary")
+        conn.execute("ALTER TABLE approval_decisions DROP COLUMN host_id")
+        conn.execute("ALTER TABLE remediation_claims DROP COLUMN host_id")
+        conn.execute("ALTER TABLE inspection_runs DROP COLUMN host_id")
         conn.execute("DROP INDEX IF EXISTS idx_sessions_user_name")
         conn.execute("ALTER TABLE sessions DROP COLUMN name")
         conn.execute("ALTER TABLE approval_decisions DROP COLUMN decided_by")

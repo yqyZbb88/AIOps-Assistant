@@ -12,11 +12,16 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from src.interfaces.action import ActionError, ActionExecutor, RuleExecutionGuard
+from src.interfaces.host import HostRegistry
+from src.interfaces.execution import ActionExecutionStore
+from src.plugins.common.endpoint import CONNECTION_FIELDS
 from src.storage.models import ActionRule, Alert, AlertmanagerPayload, RulesFile
 from src.utils.config_loader import ROOT_DIR, interpolate
 from src.utils.security import redact_sensitive
@@ -27,6 +32,8 @@ logger = logging.getLogger("aiops_assistant.rule_engine")
 SKIP_MARK = "matched_but_auto_execute_disabled"
 DUPLICATE_MARK = "duplicate_ignored"
 INSTANCE_MISMATCH_MARK = "instance_mismatch"
+HOST_UNRESOLVED_MARK = "host_unresolved"
+HOST_UNAUTHORIZED_MARK = "host_action_unauthorized"
 
 # 默认规则文件：<仓库根>/config/rules.yaml
 DEFAULT_RULES_FILE: Path = ROOT_DIR / "config" / "rules.yaml"
@@ -75,10 +82,14 @@ class RuleEngine:
         executors: Mapping[str, ActionExecutor] | None = None,
         rules_file: str | Path | None = None,
         execution_guard: RuleExecutionGuard | None = None,
+        hosts: HostRegistry | None = None,
+        execution_store: ActionExecutionStore | None = None,
     ) -> None:
         self.executors: dict[str, ActionExecutor] = dict(executors or {})
         self.rules_file: Path = _resolve_rules_path(rules_file)
         self.execution_guard: RuleExecutionGuard = execution_guard or _ProcessExecutionGuard()
+        self.hosts = hosts
+        self.execution_store = execution_store
         self._rules: list[ActionRule] = []
         self.reload_rules()
 
@@ -172,7 +183,13 @@ class RuleEngine:
             "status": None,
             "detail": "",
             "executed_at": _now(),
+            "host_id": None,
+            "host_resolution": "legacy",
         }
+        resolution = self.hosts.resolve_labels(alert.labels) if self.hosts is not None else None
+        if resolution is not None:
+            record["host_id"] = resolution.host_id
+            record["host_resolution"] = resolution.status
 
         if not rule.auto_execute:
             record["status"] = SKIP_MARK
@@ -184,10 +201,34 @@ class RuleEngine:
         record["action"] = rule.action
         record["params"] = redact_sensitive(params)  # 记录打码副本，日志不含敏感值
 
-        if alert.instance != rule.target_instance:
+        if resolution is not None and resolution.host is None:
+            record["status"] = HOST_UNRESOLVED_MARK
+            record["detail"] = (
+                f"告警无法唯一归属登记主机（{resolution.status}），拒绝自动执行"
+            )
+            logger.error("自动处置主机解析失败 %s -> %s: %s", alert.alertname, rule.action, record["detail"])
+            return record
+
+        host = resolution.host if resolution is not None else None
+        if host is not None and not host.legacy and rule.action not in host.capabilities.rule_actions:
+            record["status"] = HOST_UNAUTHORIZED_MARK
+            record["detail"] = f"主机 {host.host_id} 未授权规则动作 {rule.action}，拒绝自动执行"
+            logger.error("自动处置未授权 %s -> %s: %s", alert.alertname, rule.action, record["detail"])
+            return record
+
+        if host is not None and host.ssh is None:
+            record["status"] = HOST_UNAUTHORIZED_MARK
+            record["detail"] = f"主机 {host.host_id} 未配置 SSH，拒绝自动执行"
+            return record
+
+        expected_instance = host.monitor.instance if host is not None else rule.target_instance
+        if alert.instance != expected_instance or (
+            rule.target_instance and rule.target_instance != expected_instance
+        ):
             record["status"] = INSTANCE_MISMATCH_MARK
             record["detail"] = (
-                f"告警实例 {alert.instance!r} 与规则目标 {rule.target_instance!r} 不一致，"
+                f"告警实例 {alert.instance!r}、登记目标 {expected_instance!r} "
+                f"与规则目标 {rule.target_instance!r} 不一致，"
                 "拒绝自动执行"
             )
             logger.error("自动处置实例不匹配 %s -> %s: %s", alert.alertname, rule.action, record["detail"])
@@ -204,23 +245,86 @@ class RuleEngine:
             logger.warning("自动处置重复事件已跳过 %s -> %s", alert.alertname, rule.action)
             return record
 
+        execution = None
+        if self.execution_store is not None and host is not None:
+            rule_fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "host_id": host.host_id,
+                        "action": rule.action,
+                        "params": params,
+                        "target_instance": rule.target_instance,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            try:
+                execution = self.execution_store.create(
+                    channel="rule",
+                    idempotency_key=(
+                        f"rule:{host.host_id}:{alert.alert_key}:{rule.action}:"
+                        f"{alert.status}:{alert.startsAt}"
+                    ),
+                    host_id=host.host_id,
+                    action_name=rule.action,
+                    params={
+                        k: v for k, v in params.items() if k not in CONNECTION_FIELDS
+                    },
+                    target_summary=f"{host.host_id} ({host.name})",
+                    config_fingerprint=rule_fingerprint,
+                    alert_key=alert.alert_key,
+                    status="running",
+                )
+            except Exception as exc:
+                record["status"] = "failed"
+                record["detail"] = f"无法创建执行审计记录，已拒绝自动执行: {exc}"
+                return record
+            if execution is None:
+                record["status"] = DUPLICATE_MARK
+                record["detail"] = "统一执行状态中已存在相同幂等键，跳过重复自动处置"
+                return record
+            record["execution_id"] = execution.execution_id
+
         try:
-            result = self.executors[rule.action].execute(params)
+            if host is None:
+                result = self.executors[rule.action].execute(params)
+            else:
+                semantic = {k: v for k, v in params.items() if k not in CONNECTION_FIELDS}
+                result = self.executors[rule.action].execute_on(host.ssh, semantic)
             result_text = str(result)
             if len(result_text) > 1000:
                 result_text = result_text[:1000] + "…（结果过长已截断）"
             record["status"] = "ok"
             record["detail"] = f"动作执行成功: {result_text}"
+            if execution is not None:
+                self._finish_execution(execution.execution_id, "succeeded", result_text)
             logger.info("自动处置成功 %s -> %s: %s", alert.alertname, rule.action, result_text)
         except ActionError as exc:
             record["status"] = "failed"
             record["detail"] = f"动作执行失败: {exc}"
+            if execution is not None:
+                self._finish_execution(execution.execution_id, "failed", str(exc))
             logger.error("自动处置失败 %s -> %s: %s", alert.alertname, rule.action, exc)
         except Exception as exc:  # noqa: BLE001 - 单条规则异常不能拖垮整批告警
             record["status"] = "failed"
             record["detail"] = f"动作执行异常: {exc}"
+            if execution is not None:
+                self._finish_execution(execution.execution_id, "failed", str(exc))
             logger.error("自动处置异常 %s -> %s: %s", alert.alertname, rule.action, exc, exc_info=True)
         return record
+
+    def _finish_execution(self, execution_id: str, status: str, detail: str) -> None:
+        try:
+            self.execution_store.finish(execution_id, status=status, detail=detail)
+        except Exception as exc:
+            # SSH 结果已经产生；审计收尾失败不能触发重试，更不能拖垮整批告警。
+            logger.error(
+                "执行状态收尾失败 execution_id=%s（保留 running，按结果未知处理）: %s",
+                execution_id,
+                exc,
+            )
 
     # -- 无规则告警（LLM 分析对象） ----------------------------------------
     def unmatched_alerts(self, payload: AlertmanagerPayload) -> list[Alert]:

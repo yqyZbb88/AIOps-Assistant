@@ -20,7 +20,8 @@ from src.plugins.common import audit as audit_common
 from src.plugins.common import cmddef as _cmddef
 from src.plugins.common import ssh as ssh_common
 from src.plugins.common.cmddef import CmdDef, ParamError
-from src.plugins.common.endpoint import CONNECTION_FIELDS, endpoint_from_params
+from src.interfaces.host import HostSshTarget
+from src.plugins.common.endpoint import CONNECTION_FIELDS, SshEndpoint, endpoint_from_params
 
 logger = logging.getLogger("aiops_assistant.actions.executor")
 
@@ -48,6 +49,36 @@ class CatalogCommandExecutor(ActionExecutor):
             raise ActionError(f"动作 {self.name} 参数不合法: {exc}") from exc
 
         semantic = {k: v for k, v in clean.items() if k not in CONNECTION_FIELDS}
+        return self._execute(endpoint, semantic, audit_params=clean)
+
+    def execute_on(
+        self, target: HostSshTarget, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """使用主机清单给出的唯一 SSH 目标；规则参数不能覆盖连接信息。"""
+        clean = dict(params)
+        leaked = sorted(set(clean) & set(CONNECTION_FIELDS))
+        if leaked:
+            raise ActionError(
+                f"动作 {self.name} 的语义参数不得包含连接字段: {', '.join(leaked)}"
+            )
+        endpoint = SshEndpoint(
+            host=target.host,
+            port=target.port,
+            username=target.username,
+            key_filename=target.key_filename,
+            known_hosts=target.known_hosts,
+            password=target.password,
+            connect_timeout=target.connect_timeout,
+        )
+        return self._execute(endpoint, clean, audit_params=clean)
+
+    def _execute(
+        self,
+        endpoint: SshEndpoint,
+        semantic: dict[str, Any],
+        *,
+        audit_params: dict[str, Any],
+    ) -> dict[str, Any]:
         try:
             command = _cmddef.build_command(self.cmd, semantic)
         except ParamError as exc:
@@ -63,7 +94,7 @@ class CatalogCommandExecutor(ActionExecutor):
         except ssh_common.SshError as exc:
             audit_common.record_execution(
                 action=self.name, command=command, host=host,
-                params=clean, started_at=started_at, error=str(exc),
+                params=audit_params, started_at=started_at, error=str(exc),
             )
             raise ActionError(str(exc)) from exc
 
@@ -73,7 +104,7 @@ class CatalogCommandExecutor(ActionExecutor):
             msg = f"命令执行失败 rc={code} host={host}: {detail or '(无输出)'}"
             audit_common.record_execution(
                 action=self.name, command=command, host=host,
-                params=clean, started_at=started_at,
+                params=audit_params, started_at=started_at,
                 error=(f"rc={code}; truncated={truncated}; chars={len(detail)}; "
                        f"bytes_read={int(getattr(result, 'bytes_read', len(detail)))}"),
             )
@@ -81,7 +112,7 @@ class CatalogCommandExecutor(ActionExecutor):
 
         audit_common.record_execution(
             action=self.name, command=command, host=host,
-            params=clean, started_at=started_at,
+            params=audit_params, started_at=started_at,
             result={"ok": True, "exit_code": code,
                     "truncated": bool(getattr(result, "truncated", False)),
                     "bytes_read": int(getattr(result, "bytes_read", len(out) + len(err)))},

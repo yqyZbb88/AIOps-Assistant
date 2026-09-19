@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from src.api.deps import require_alert_identity
 from src.core.agent import OpsAgent
 from src.interfaces.history import HistoryError
+from src.interfaces.host import HostError
 from src.interfaces.monitor import MonitorError
 from src.storage.models import AlertAck, AlertmanagerPayload
 
@@ -65,20 +66,30 @@ def alert(
 
 
 @router.get("/alerts/recent", response_model=list[dict[str, Any]])
-def alerts_recent(request: Request, limit: int = 20) -> list[dict[str, Any]]:
+def alerts_recent(
+    request: Request,
+    limit: int = 20,
+    host_id: str | None = Query(None, description="按主机 ID 筛选"),
+) -> list[dict[str, Any]]:
     """最近接收的告警记录（**内存热缓冲**，进程重启后清空）。
 
     与 /alerts/history 的区别：这个是「刚发生了什么」的快速视图（有界 deque，
     不落盘、容量小）；history 是落盘归档（可跨重启查、可关联处置与 AI 建议）。
     两者数据源不同，**不是一个东西的两种读法**。
     """
-    return _agent(request).recent(limit)
+    if host_id is not None:
+        try:
+            request.app.state.container.hosts().require(host_id)
+        except HostError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _agent(request).recent(limit, host_id=host_id)
 
 
 @router.get("/alerts/history", response_model=dict[str, Any])
 def alerts_history(
     request: Request,
     limit: int = Query(50, ge=1, le=500, description="每类最多返回条数"),
+    host_id: str | None = Query(None, description="按主机 ID 筛选"),
 ) -> dict[str, Any]:
     """落盘的告警归档：告警 + 处置结果 + AI 建议，各取最近 limit 条。
 
@@ -89,25 +100,40 @@ def alerts_history(
     if store is None:
         return {"alerts": [], "remediations": [], "advice": [], "storage": "off"}
     try:
+        if host_id is not None:
+            request.app.state.container.hosts().require(host_id)
         return {
-            "alerts": [r.to_dict() for r in store.recent_alerts(limit=limit)],
-            "remediations": [r.to_dict() for r in store.recent_remediations(limit=limit)],
-            "advice": [r.to_dict() for r in store.recent_advice(limit=limit)],
+            "alerts": [r.to_dict() for r in store.recent_alerts(limit=limit, host_id=host_id)],
+            "remediations": [
+                r.to_dict() for r in store.recent_remediations(limit=limit, host_id=host_id)
+            ],
+            "advice": [r.to_dict() for r in store.recent_advice(limit=limit, host_id=host_id)],
             "storage": "ok" if store.healthy else "degraded",
         }
+    except HostError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except HistoryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/alerts/active", response_model=list[dict[str, Any]])
-def alerts_active(request: Request) -> list[dict[str, Any]]:
+def alerts_active(
+    request: Request,
+    host_id: str | None = Query(None, description="按主机 ID 查询"),
+) -> list[dict[str, Any]]:
     """主动查询监控源当前 pending/firing 告警（实时，非本地缓冲）。
 
     与 /alerts/recent 的区别：recent 是本服务被动收到的记录；
     active 是实时向监控源 /api/v1/alerts 要当前规则状态。
     """
     try:
-        return _agent(request).active_alerts()
+        return (
+            _agent(request).active_alerts()
+            if host_id is None
+            else _agent(request).active_alerts(host_id=host_id)
+        )
+    except HostError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MonitorError as exc:
         logger.warning("查询监控源告警状态失败: %s", exc)
         raise HTTPException(status_code=502, detail=f"监控源查询失败: {exc}") from exc

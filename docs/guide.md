@@ -62,8 +62,9 @@ python -c "import secrets;print(secrets.token_urlsafe(32))"
 至少确认：
 
 - `config/settings.yaml` 中的 `auth.enabled`
+- `config/hosts.yaml` 中每台主机的 ID、Prometheus `job`/`instance`、SSH 凭据引用和授权
 - `config/metrics.yaml` 中要监控的指标
-- `config/diagnostics.yaml` 中目标主机和 known_hosts
+- `config/diagnostics.yaml` 中允许的只读命令；多主机 SSH 目标来自 `hosts.yaml`
 - `config/rules.yaml` 和 `config/actions.yaml` 的自动处置状态
 
 详细字段见 [configuration.md](configuration.md)。
@@ -92,7 +93,7 @@ curl http://127.0.0.1:8000/health
 curl -X POST http://127.0.0.1:8000/sessions \
   -H "Authorization: Bearer 随机密钥" \
   -H "Content-Type: application/json" \
-  -d '{"name":"第一次使用"}'
+  -d '{"name":"第一次使用","host_id":"local-node"}'
 ```
 
 复制返回的 `session_id`，然后：
@@ -129,7 +130,7 @@ docker compose start node-exporter
 当前版本适合：
 
 ```text
-单主机
+少量 Linux 主机
 单 Prometheus
 单 Alertmanager
 单 worker
@@ -139,7 +140,7 @@ docker compose start node-exporter
 
 当前不支持：
 
-- 多主机选择
+- 动态主机发现和主机级 RBAC
 - 多 worker 下可靠审批
 - 审批跨进程重启恢复
 - 配置热更新
@@ -152,6 +153,7 @@ docker compose start node-exporter
 ## 二、主要能力
 
 - 查询 Prometheus 指标
+- 按稳定主机 ID 查询状态、指标、趋势和活动告警
 - 查询 Alertmanager 活动告警
 - 接收 Alertmanager webhook
 - 对无规则告警生成 AI 分析
@@ -164,6 +166,7 @@ docker compose start node-exporter
 - 健康/就绪探针和只读状态页
 - 可重复启动的五服务开发监控栈
 - 保存会话和历史归档
+- 持久化规则/Agent 动作的主机、幂等状态和执行结果
 - API Bearer Token 鉴权
 - 所有 AI 工具结果显示数据时效
 
@@ -200,6 +203,10 @@ SSH_KNOWN_HOSTS=
 ```
 
 生产环境优先使用 SSH 私钥，不建议长期使用 root 密码。
+
+这些 `SSH_*` 变量供 `config/hosts.yaml` 的凭据占位符使用；当 `hosts.file` 为空时也用于
+构造 `legacy-default` 单主机兼容目标。多主机请求只使用所选 `host_id` 的登记目标，不会
+回退到另一个默认地址。
 
 ### API 鉴权
 
@@ -285,6 +292,7 @@ receivers:
 | 文件 | 作用 |
 |---|---|
 | `settings.yaml` | 应用、服务、存储、日志、鉴权和巡检调度 |
+| `hosts.yaml` | 主机 ID、Prometheus 目标、SSH 凭据引用和逐主机授权 |
 | `metrics.yaml` | 指标启用范围、阈值、实例和 selector |
 | `rules.yaml` | alertname 到自动处置命令的映射 |
 | `actions.yaml` | 规则自动处置的写命令白名单 |
@@ -349,6 +357,10 @@ Prometheus 不可达，或已启用巡检但调度器未运行时返回 503。�
 | `GET /health` | 缓存的组件存活状态 |
 | `GET /ready` | 主动就绪检查 |
 | `GET /status` | 只读状态页空壳 |
+| `GET /hosts` | 已登记主机清单，不包含 SSH 地址和凭据 |
+| `GET /hosts/{id}/status` | 指定主机状态、核心指标和活动告警 |
+| `GET /hosts/{id}/metrics/{metric}` | 指定主机指标；追加 `/trend` 查询趋势 |
+| `GET /executions` | 规则与 Agent 的统一动作执行记录，可按 `host_id` 过滤 |
 | `POST /sessions` | 创建会话 |
 | `POST /chat` | 聊天 |
 | `POST /alert` | Alertmanager webhook |
@@ -367,6 +379,9 @@ Prometheus 不可达，或已启用巡检但调度器未运行时返回 503。�
 `POST /sessions` 不可用，`POST /chat` 不保存历史且响应会话字段为 null。告警实时缓冲与
 Prometheus 查询不依赖会话存储。
 
+多主机配置下，创建会话必须提交明确 `host_id`，且绑定后不可更换。只有一台启用主机或
+使用 `legacy-default` 兼容方式时，省略 `host_id` 才会自动绑定唯一目标。
+
 ### 写命令审批
 
 写命令不会在调用时立即执行。流程是：
@@ -380,6 +395,7 @@ Agent 申请
 
 审批前必须检查：
 
+- 主机 ID 和脱敏目标摘要
 - 命令名
 - 参数
 - 目标影响
@@ -398,6 +414,7 @@ logs/inspection.log
 - `audit.log` 是 JSON Lines 审计记录
 - `inspection.log` 是多行人类可读巡检记录
 - SQLite 保存会话、告警、审批和异常巡检
+- SQLite schema v7 还保存所有记录的主机归属和规则/Agent 统一动作执行状态
 
 旧版本默认数据库为 `data/ops_agent.db`。如果新库不存在但旧库存在，程序会继续使用旧库并记录 WARNING。
 
@@ -470,6 +487,7 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - `OPS_API_TOKENS`
 - `metrics.yaml` 未知指标或非法阈值
 - `settings.yaml` 未知字段
+- `hosts.yaml` 主机 ID、instance 或凭据引用冲突
 - 数据库目录权限
 
 ### 聊天没有调用工具
@@ -498,6 +516,7 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - 用户名和密码/私钥
 - 网络与端口
 - 目标主机是否可达
+- 会话 `host_id` 是否对应已启用主机，命令是否在该主机 `allow.diagnostics` 中
 - 命令是否超过 `connect_timeout`
 
 `output_limit` 同时约束 stdout/stderr 的共享保留预算。底层会交替读取 channel，超出预算后
@@ -511,6 +530,7 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - `inspection.enabled`
 - Prometheus 地址
 - instance selector
+- 所选主机在 `hosts.yaml` 中的 job/instance 是否与 Prometheus 标签完全一致
 - 指标是否真实存在
 
 ### 写命令无法审批
@@ -521,6 +541,7 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - 审批项是否过期
 - 当前身份是否有审批权限
 - 是否启用了 `approvers_only`
+- 审批冻结的主机/动作配置是否已变化；变化后需重新发起
 
 ## 十三、安全建议
 
@@ -535,6 +556,7 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - 可用 `OPS_REDACTION_SECRETS` JSON 数组注册额外需精确遮蔽的旧密钥
 - 历史日志和数据库不会自动改写；怀疑曾泄露时应轮换相应密钥
 - 自动写命令保持关闭直到充分验证
+- 每台主机只授权实际需要的诊断、规则动作和 Agent 动作；默认写授权保持为空
 - 写命令审批前仔细核对命令和参数
 
 ## 十四、字段参考

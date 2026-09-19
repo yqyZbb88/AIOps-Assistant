@@ -138,6 +138,23 @@ def test_limit_is_respected(store):
     assert len(store.recent_alerts(limit=2)) == 2
 
 
+def test_history_can_be_filtered_by_host(store):
+    store.record_batch(
+        alerts=[
+            AlertRecord(
+                **{**_alert("a").__dict__, "host_id": "host-a", "host_resolution": "matched"}
+            ),
+            AlertRecord(
+                **{**_alert("b").__dict__, "host_id": "host-b", "host_resolution": "matched"}
+            ),
+        ]
+    )
+
+    rows = store.recent_alerts(host_id="host-a")
+    assert [row.alert_key for row in rows] == ["a"]
+    assert rows[0].host_resolution == "matched"
+
+
 # -- 关联键 -----------------------------------------------------------------
 def test_records_share_alert_key(store):
     store.record_batch(alerts=[_alert("abc")], remediations=[_remediation("abc")],

@@ -25,6 +25,7 @@ from src.interfaces.assistant import (
 )
 from src.interfaces.metric import MetricDefinition, MetricsConfig
 from src.interfaces.monitor import MonitorSource
+from src.interfaces.host import HostRegistry
 from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
 from src.utils.metrics_config import default_metrics_config
 from src.utils.security import redact_text
@@ -107,12 +108,18 @@ class ChatService:
         message_window: int = DEFAULT_MESSAGE_WINDOW,
         metrics_config: MetricsConfig | None = None,
         catalog: tuple[MetricDefinition, ...] = METRIC_CATALOG,
+        hosts: HostRegistry | None = None,
+        host_assistant_factory: Callable[[str], Assistant] | None = None,
     ) -> None:
         self.monitor = monitor
         # 注入的 Agent 工厂：返回 Assistant 契约对象；失败抛异常即回落
         self._assistant_factory = assistant_factory
+        self._host_assistant_factory = host_assistant_factory
         self._assistant: Assistant | None = None
-        self._agent_broken = assistant_factory is None
+        self._host_assistants: dict[str, Assistant] = {}
+        self._host_agent_broken: set[str] = set()
+        self._agent_broken = assistant_factory is None and host_assistant_factory is None
+        self._hosts = hosts
         # 只护「首次构建」，见 _ensure_assistant 的 docstring
         self._assistant_lock = threading.Lock()
         # 会话存储（可选）：None = 不落库，聊天与兜底全部照常
@@ -120,10 +127,14 @@ class ChatService:
         self._message_window = max(int(message_window), 1)
         self._metrics_config = metrics_config or default_metrics_config()
         definitions = {definition.metric_id: definition for definition in catalog}
+        self._metric_definitions = [
+            definitions[runtime.metric_id]
+            for runtime in self._metrics_config.selected("chat")
+            if runtime.metric_id in definitions
+        ]
         self._rules = []
-        for runtime in self._metrics_config.selected("chat"):
-            definition = definitions.get(runtime.metric_id)
-            if definition is None:
+        for definition in self._metric_definitions:
+            if self._hosts is not None:
                 continue
 
             def _handler(_definition=definition) -> str:
@@ -175,11 +186,11 @@ class ChatService:
         3. **持久化不可用时只是不落库**，聊天照常（`_sessions is None` → 全程跳过）。
         """
         message = redact_text(message)
-        sid, sname = self._resolve_session(session_id, user)
+        sid, sname, host_id = self._resolve_session(session_id, user)
         history = self._load_history(sid)
 
         turn: TurnResult | None = None
-        assistant = self._ensure_assistant()
+        assistant = self._ensure_assistant(host_id)
         if assistant is not None:
             try:
                 turn = self._agent_turn(
@@ -188,7 +199,7 @@ class ChatService:
             except Exception as exc:  # Agent 调用失败（网络等）→ 本轮回落关键词
                 logger.warning("Agent 回复异常，回落关键词引擎: %s", exc)
         if turn is None:
-            turn = self._fallback_turn(message)
+            turn = self._fallback_turn(message, host_id=host_id)
 
         self._record_turn(sid, message, turn)
         return ChatReply(
@@ -230,7 +241,17 @@ class ChatService:
             return assistant.reply_turn(message, history=history)
         return TurnResult(text=assistant.reply(message))
 
-    def _fallback_turn(self, message: str) -> TurnResult:
+    def _fallback_turn(self, message: str, *, host_id: str = "") -> TurnResult:
+        if self._hosts is not None and host_id:
+            host = self._hosts.require(host_id)
+            for definition in self._metric_definitions:
+                keywords = (definition.display_name, *definition.aliases)
+                if any(keyword in message for keyword in keywords):
+                    return TurnResult(
+                        text=capabilities.metric_text(
+                            self.monitor, definition, target=host.monitor
+                        )
+                    )
         for rule in self._rules:
             if rule.match(message):
                 return TurnResult(text=rule.respond())
@@ -238,7 +259,7 @@ class ChatService:
 
     def _resolve_session(
         self, session_id: str | None, user: str | None
-    ) -> tuple[str | None, str]:
+    ) -> tuple[str | None, str, str]:
         """确定本轮用哪个会话，返回 (session_id, session_name)；存储不可用 → (None, "")。
 
         **给了 `session_id`：必须已存在且属于调用者。**
@@ -256,20 +277,27 @@ class ChatService:
         """
         store = self._sessions
         if store is None:
-            return None, ""
+            default_host = (
+                self._hosts.enabled()[0].host_id
+                if self._hosts is not None and len(self._hosts.enabled()) == 1
+                else ""
+            )
+            return None, "", default_host
         try:
             if session_id:
                 info = store.get(session_id)
                 if info is None or not is_owner(info, user):
                     raise SessionNotFoundError(f"会话不存在或已过期: {session_id}")
-                return info.session_id, info.name
-            created = store.create(user=user)
-            return created.session_id, created.name
+                return info.session_id, info.name, info.host_id
+            enabled = self._hosts.enabled() if self._hosts is not None else ()
+            host_id = enabled[0].host_id if len(enabled) == 1 else ""
+            created = store.create(user=user, host_id=host_id)
+            return created.session_id, created.name, created.host_id
         except SessionNotFoundError:
             raise
         except SessionError as exc:
             logger.error("会话存储不可用，本轮不落库: %s", exc)
-            return None, ""
+            return None, "", ""
 
     def _load_history(self, session_id: str | None) -> list[ChatMessage]:
         """取可进模型窗口的历史；读失败降级为空历史（少记性，但不影响本轮回答）。"""
@@ -317,14 +345,15 @@ class ChatService:
         审批查询是旁路操作，不该为它触发 Agent 构建，也不该在构建失败时
         把 _agent_broken 置位（否则一次空查询就会拖垮后续聊天）。
         """
-        assistant = self._assistant
-        if assistant is None or not isinstance(assistant, ApprovalCapable):
-            return []
-        try:
-            return assistant.pending_approvals()
-        except Exception as exc:
-            logger.warning("查询待审批项失败: %s", exc)
-            return []
+        result: list[PendingApproval] = []
+        for assistant in self._all_assistants():
+            if not isinstance(assistant, ApprovalCapable):
+                continue
+            try:
+                result.extend(assistant.pending_approvals())
+            except Exception as exc:
+                logger.warning("查询待审批项失败: %s", exc)
+        return sorted(result, key=lambda item: item.created_at, reverse=True)
 
     def decide(self, approval_id: str, *, action: str, reason: str = "") -> ApprovalOutcome:
         """提交一次审批决策；Agent 不支持审批时抛 ApprovalError（由 api 转 503/404）。
@@ -333,8 +362,24 @@ class ChatService:
         历史里就会永远留一条「待审批」没有下文。三个出口都要处理——
         跑完（final）/ 又触发下一条（链式 pending）/ 抛错（保持 pending 不动）。
         """
-        assistant = self._assistant
-        if assistant is None or not isinstance(assistant, ApprovalCapable):
+        candidates = [
+            candidate
+            for candidate in self._all_assistants()
+            if isinstance(candidate, ApprovalCapable)
+        ]
+        assistant = next(
+            (
+                candidate
+                for candidate in candidates
+                if any(p.approval_id == approval_id for p in candidate.pending_approvals())
+            ),
+            None,
+        )
+        # 队列项可能刚过期/被容量淘汰；仍交给一个已启用审批能力的 Agent
+        # 产生标准 ApprovalError，随后把会话里的 pending 轮收敛为 abandoned。
+        if assistant is None and candidates:
+            assistant = candidates[0]
+        if assistant is None:
             raise ApprovalUnavailableError(
                 "Agent 未启用写命令能力（config/agent_actions.yaml 未启用，或聊天尚未构建 Agent）"
             )
@@ -355,14 +400,15 @@ class ChatService:
         与 pending_approvals/decide 同款：走**已建好的** `self._assistant`，
         不触发 Agent 构建、不置 `_agent_broken`。
         """
-        assistant = self._assistant
-        if assistant is None or not isinstance(assistant, ApprovalCancellable):
-            return False
-        try:
-            return assistant.cancel_pending(approval_id)
-        except Exception as exc:
-            logger.warning("作废待审批项失败 id=%s: %s", approval_id, exc)
-            return False
+        for assistant in self._all_assistants():
+            if not isinstance(assistant, ApprovalCancellable):
+                continue
+            try:
+                if assistant.cancel_pending(approval_id):
+                    return True
+            except Exception as exc:
+                logger.warning("作废待审批项失败 id=%s: %s", approval_id, exc)
+        return False
 
     def _resolve_pending(self, approval_id: str, outcome: ApprovalOutcome) -> None:
         """把审批结果回填到会话表。"""
@@ -390,7 +436,13 @@ class ChatService:
         except SessionError as exc:
             logger.warning("标记待审批轮作废失败 id=%s: %s", approval_id, exc)
 
-    def _ensure_assistant(self) -> Assistant | None:
+    def _all_assistants(self) -> list[Assistant]:
+        result = list(self._host_assistants.values())
+        if self._assistant is not None:
+            result.append(self._assistant)
+        return result
+
+    def _ensure_assistant(self, host_id: str = "") -> Assistant | None:
         """首次聊天时经工厂构建 Agent 并缓存；构建失败标记 broken 后回落。
 
         **必须持锁 + 双检**：ChatService 是单例，而 FastAPI 的同步路由跑在线程池里，
@@ -399,8 +451,32 @@ class ChatService:
         checkpoint 线程会分散到两个实例里**，表现为「刚批准的命令找不到线程」。
         锁只护首次构建，构建完成后走无锁快路径。
         """
+        # 显式注入的单例（测试/兼容扩展点）优先；生产容器不设置它，走下方按主机工厂。
         if self._assistant is not None:
             return self._assistant
+        if self._host_assistant_factory is not None:
+            if not host_id:
+                logger.warning("会话没有主机归属，禁止构建主机 Agent")
+                return None
+            if host_id in self._host_assistants:
+                return self._host_assistants[host_id]
+            if host_id in self._host_agent_broken:
+                return None
+            with self._assistant_lock:
+                if host_id in self._host_assistants:
+                    return self._host_assistants[host_id]
+                try:
+                    assistant = self._host_assistant_factory(host_id)
+                    self._host_assistants[host_id] = assistant
+                    return assistant
+                except Exception as exc:
+                    self._host_agent_broken.add(host_id)
+                    logger.warning(
+                        "主机 %s 的 Agent 构建不可用，回落关键词引擎: %s",
+                        host_id,
+                        exc,
+                    )
+                    return None
         if self._agent_broken or self._assistant_factory is None:
             return None
         with self._assistant_lock:

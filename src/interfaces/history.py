@@ -34,6 +34,8 @@ class AlertRecord:
     starts_at: str = ""
     ends_at: str = ""
     received_at: str = ""
+    host_id: str = ""
+    host_resolution: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +48,8 @@ class AlertRecord:
             "starts_at": self.starts_at,
             "ends_at": self.ends_at,
             "received_at": self.received_at,
+            "host_id": self.host_id or None,
+            "host_resolution": self.host_resolution,
         }
 
 
@@ -62,6 +66,8 @@ class RemediationRecord:
     status: str = ""
     detail: str = ""
     executed_at: str = ""
+    host_id: str = ""
+    execution_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +80,8 @@ class RemediationRecord:
             "status": self.status,
             "detail": self.detail,
             "executed_at": self.executed_at,
+            "host_id": self.host_id or None,
+            "execution_id": self.execution_id or None,
         }
 
 
@@ -87,6 +95,7 @@ class AdviceRecord:
     instance: str = ""
     advice: str = ""
     analyzed_at: str = ""
+    host_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +105,7 @@ class AdviceRecord:
             "instance": self.instance,
             "advice": self.advice,
             "analyzed_at": self.analyzed_at,
+            "host_id": self.host_id or None,
         }
 
 
@@ -130,15 +140,21 @@ class HistoryStore(ABC):
         """
 
     @abstractmethod
-    def recent_alerts(self, *, limit: int = 50) -> list[AlertRecord]:
+    def recent_alerts(
+        self, *, limit: int = 50, host_id: str | None = None
+    ) -> list[AlertRecord]:
         """最近的告警归档，新的在前。"""
 
     @abstractmethod
-    def recent_remediations(self, *, limit: int = 50) -> list[RemediationRecord]:
+    def recent_remediations(
+        self, *, limit: int = 50, host_id: str | None = None
+    ) -> list[RemediationRecord]:
         """最近的处置归档，新的在前。"""
 
     @abstractmethod
-    def recent_advice(self, *, limit: int = 50) -> list[AdviceRecord]:
+    def recent_advice(
+        self, *, limit: int = 50, host_id: str | None = None
+    ) -> list[AdviceRecord]:
         """最近的 AI 建议归档，新的在前。"""
 
     @abstractmethod

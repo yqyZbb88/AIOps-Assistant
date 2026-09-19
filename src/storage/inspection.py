@@ -62,8 +62,8 @@ class SqliteInspectionStore(InspectionStore):
         try:
             self.db.execute(
                 "INSERT INTO inspection_runs "
-                "(checked_at, level, snapshot_json, findings_json, error_text) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "(checked_at, level, snapshot_json, findings_json, error_text, host_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     result.checked_at,
                     result.level,
@@ -74,6 +74,7 @@ class SqliteInspectionStore(InspectionStore):
                         separators=(",", ":"),
                     ),
                     redact_text(result.error),
+                    result.host_id,
                 ),
             )
         except sqlite3.Error as exc:
@@ -84,12 +85,17 @@ class SqliteInspectionStore(InspectionStore):
         except InspectionError as exc:
             logger.warning("巡检归档清理失败（不影响已写入记录）: %s", exc)
 
-    def recent(self, *, limit: int = 50) -> list[InspectionResult]:
+    def recent(
+        self, *, limit: int = 50, host_id: str | None = None
+    ) -> list[InspectionResult]:
+        where = "WHERE host_id = ? " if host_id is not None else ""
+        params = (host_id, max(1, int(limit))) if host_id is not None else (max(1, int(limit)),)
         try:
             rows = self.db.query(
-                "SELECT id, checked_at, level, snapshot_json, findings_json, error_text "
-                "FROM inspection_runs ORDER BY checked_at DESC, id DESC LIMIT ?",
-                (max(1, int(limit)),),
+                "SELECT id, checked_at, level, snapshot_json, findings_json, error_text, host_id "
+                f"FROM inspection_runs {where}"
+                "ORDER BY checked_at DESC, id DESC LIMIT ?",
+                params,
             )
         except sqlite3.Error as exc:
             raise self._fail(exc) from exc
@@ -109,6 +115,7 @@ class SqliteInspectionStore(InspectionStore):
                     record_id=int(row["id"]),
                     checked_at=row["checked_at"],
                     level=row["level"],
+                    host_id=row["host_id"] or "",
                     snapshot=snapshot,
                     findings=findings,
                     error=row["error_text"] or "",

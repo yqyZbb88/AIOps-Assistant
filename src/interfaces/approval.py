@@ -41,6 +41,9 @@ class PendingApproval:
     allowed_decisions: tuple[str, ...] = ("approve", "reject")
     #: 触发这条写命令的**身份**（由密钥推出）；空串 = 鉴权关闭时产生的
     user: str = ""
+    host_id: str = ""
+    target_summary: str = ""
+    config_fingerprint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """转为 api 层直接可序列化的结构。"""
@@ -50,6 +53,9 @@ class PendingApproval:
             "actions": list(self.actions),
             "allowed_decisions": list(self.allowed_decisions),
             "user": self.user,
+            "host_id": self.host_id or None,
+            "target_summary": self.target_summary,
+            "config_fingerprint": self.config_fingerprint,
         }
 
 

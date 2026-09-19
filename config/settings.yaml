@@ -31,6 +31,9 @@ chat:
 metrics:
   file: config/metrics.yaml  # 空字符串表示使用代码内置默认配置
 
+hosts:
+  file: config/hosts.yaml    # 空字符串启用旧单主机兼容方式；修改后需重启
+
 alert:
   recent_limit: 100        # 内存中保留的最近告警数
   trend_minutes: 60        # 告警分析趋势窗口
@@ -42,6 +45,9 @@ inspection:
   run_on_start: true
   ttl_hours: 168           # 异常巡检保留 7 天
   max_rows: 2500           # 异常巡检最大记录数，可覆盖约 7 天
+  max_hosts_per_run: 50    # 单轮最多巡检主机数，超过时轮转
+  max_queries_per_run: 500 # 单轮查询预算，防止主机数×指标数失控
+  round_timeout_seconds: 120 # 到时在主机边界停止，下一轮续接
 
 storage:
   enabled: true             # false 时不持久化；聊天仍可无状态运行

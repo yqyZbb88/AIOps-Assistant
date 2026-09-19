@@ -8,8 +8,10 @@ import time
 from src.core.inspection import (
     InspectionChecker,
     InspectionScheduler,
+    MultiHostInspectionChecker,
     format_inspection_summary,
 )
+from src.interfaces.host import Host, HostRegistry, MonitorTarget
 from src.interfaces.inspection import (
     LEVEL_CRITICAL,
     LEVEL_ERROR,
@@ -282,3 +284,68 @@ def test_scheduler_run_on_start_false_waits_for_interval():
     time.sleep(0.05)
     scheduler.stop()
     assert count["n"] == 0
+
+
+class TargetMonitor(FakeMonitor):
+    def __init__(self, *, down=()):
+        super().__init__(
+            cpu=45.0,
+            memory=60.0,
+            disks=[{"mountpoint": "/", "usage": 20.0}],
+            alerts=[],
+        )
+        self.down = set(down)
+        self.seen = []
+
+    def target_status(self, target):
+        self.seen.append(("up", target.instance))
+        return {
+            "state": "unreachable" if target.instance in self.down else "reachable",
+            "value": 0.0 if target.instance in self.down else 1.0,
+        }
+
+    def query_metric(self, metric_id, *, selector=None, target=None):
+        self.seen.append((metric_id, target.instance))
+        return super().query_metric(metric_id, selector=selector)
+
+    def active_alerts(self, *, target=None):
+        self.seen.append(("alerts", target.instance))
+        return []
+
+
+def _registry():
+    return HostRegistry((
+        Host("host-a", "A", True, MonitorTarget("node", "a:9100")),
+        Host("host-b", "B", True, MonitorTarget("node", "b:9100")),
+    ))
+
+
+def test_multi_host_down_node_does_not_block_other_host():
+    monitor = TargetMonitor(down={"a:9100"})
+    checker = MultiHostInspectionChecker(
+        monitor, _registry(), _settings(), _default_config()
+    )
+
+    results = checker.run_all()
+
+    assert [(item.host_id, item.level) for item in results] == [
+        ("host-a", LEVEL_ERROR),
+        ("host-b", LEVEL_NORMAL),
+    ]
+    assert ("cpu.usage", "a:9100") not in monitor.seen
+    assert ("cpu.usage", "b:9100") in monitor.seen
+
+
+def test_multi_host_budget_rotates_fairly():
+    settings = InspectionSettings(
+        enabled=True,
+        interval_seconds=30,
+        max_hosts_per_run=1,
+        max_queries_per_run=10,
+    )
+    checker = MultiHostInspectionChecker(
+        TargetMonitor(), _registry(), settings, _default_config()
+    )
+
+    assert [item.host_id for item in checker.run_all()] == ["host-a"]
+    assert [item.host_id for item in checker.run_all()] == ["host-b"]

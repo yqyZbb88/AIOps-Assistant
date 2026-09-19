@@ -49,6 +49,7 @@ class InspectionFinding:
 class InspectionResult:
     checked_at: str
     level: str
+    host_id: str = ""
     snapshot: dict[str, Any] = field(default_factory=dict)
     findings: tuple[InspectionFinding, ...] = ()
     error: str = ""
@@ -59,6 +60,7 @@ class InspectionResult:
             "id": self.record_id,
             "checked_at": self.checked_at,
             "level": self.level,
+            "host_id": self.host_id or None,
             "snapshot": self.snapshot,
             "findings": [finding.to_dict() for finding in self.findings],
             "error": self.error,
@@ -81,7 +83,9 @@ class InspectionStore(ABC):
         """写入一条异常巡检记录；写失败抛 InspectionError。"""
 
     @abstractmethod
-    def recent(self, *, limit: int = 50) -> list[InspectionResult]:
+    def recent(
+        self, *, limit: int = 50, host_id: str | None = None
+    ) -> list[InspectionResult]:
         """按时间倒序返回异常巡检记录。"""
 
     @abstractmethod

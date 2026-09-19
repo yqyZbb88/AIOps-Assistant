@@ -54,7 +54,7 @@ _TITLE_MAX_CHARS = 40
 # 存成列就得在 append_turn / update_pending / reconcile_pending 三处同步维护，
 # 批量作废时极易漂移；实时统计则不可能算错。
 _SESSION_COLUMNS = """
-    s.session_id, s.user, s.name, s.title, s.status, s.created_at, s.updated_at,
+    s.session_id, s.user, s.name, s.title, s.status, s.created_at, s.updated_at, s.host_id,
     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.session_id) AS message_count,
     (SELECT COUNT(*) FROM messages m
       WHERE m.session_id = s.session_id AND m.status = 'pending_approval'
@@ -87,6 +87,7 @@ def _row_to_session(row: dict[str, Any]) -> SessionInfo:
         updated_at=row["updated_at"] or "",
         pending_approvals=int(row["pending_approvals"] or 0),
         message_count=int(row["message_count"] or 0),
+        host_id=row.get("host_id") or "",
     )
 
 
@@ -178,7 +179,8 @@ class SqliteSessionStore(SessionStore):
 
     # -- 会话生命周期 -------------------------------------------------------
     def create(
-        self, *, user: str | None = "", title: str = "", name: str = ""
+        self, *, user: str | None = "", title: str = "", name: str = "",
+        host_id: str = ""
     ) -> SessionInfo:
         # 归一 None → ""：鉴权关闭时调用方给的就是 None。不归一的话会 INSERT 成 NULL，
         # 并构造出 SessionInfo(user=None)，而读路径 _row_to_session 有 `or ""` 兜底——
@@ -188,15 +190,15 @@ class SqliteSessionStore(SessionStore):
         stamp = to_iso(self._clock())
         self._execute(
             "INSERT INTO sessions "
-            "(session_id, user, name, title, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 'active', ?, ?)",
-            (session_id, user, name, title, stamp, stamp),
+            "(session_id, user, name, title, status, created_at, updated_at, host_id) "
+            "VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
+            (session_id, user, name, title, stamp, stamp, host_id),
         )
 
         self._maybe_purge()
         return SessionInfo(
             session_id=session_id, user=user, name=name, title=title,
-            status="active", created_at=stamp, updated_at=stamp,
+            status="active", created_at=stamp, updated_at=stamp, host_id=host_id,
         )
 
     def get(self, session_id: str) -> SessionInfo | None:
@@ -406,12 +408,21 @@ class SqliteSessionStore(SessionStore):
         session_id: str | None,
         action: str,
         decided_by: str = "",
+        host_id: str = "",
+        target_summary: str = "",
+        actions_json: str = "[]",
+        config_fingerprint: str = "",
     ) -> None:
         """落一条审批决策记录（含决策人）。调用时机是全部要害，见 ABC 的说明。"""
         self._execute(
             "INSERT INTO approval_decisions "
-            "(approval_id, session_id, action, decided_at, decided_by) VALUES (?, ?, ?, ?, ?)",
-            (approval_id, session_id, action, to_iso(self._clock()), decided_by or ""),
+            "(approval_id, session_id, action, decided_at, decided_by, host_id, "
+            "target_summary, actions_json, config_fingerprint) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                approval_id, session_id, action, to_iso(self._clock()), decided_by or "",
+                host_id, target_summary, actions_json, config_fingerprint,
+            ),
         )
 
     def decided_approval_ids(self) -> set[str]:
@@ -490,7 +501,8 @@ class InMemorySessionStore(SessionStore):
         self._sessions.move_to_end(session_id)
 
     def create(
-        self, *, user: str | None = "", title: str = "", name: str = ""
+        self, *, user: str | None = "", title: str = "", name: str = "",
+        host_id: str = ""
     ) -> SessionInfo:
         user = user or ""  # 归一 None → ""，与 SQLite 版一致（见 ABC 的说明）
         session_id = uuid.uuid4().hex
@@ -498,6 +510,7 @@ class InMemorySessionStore(SessionStore):
         self._sessions[session_id] = {
             "session_id": session_id, "user": user, "name": name, "title": title,
             "status": "active", "created_at": stamp, "updated_at": stamp,
+            "host_id": host_id,
         }
         self._messages[session_id] = []
         self.purge_expired()
@@ -642,6 +655,10 @@ class InMemorySessionStore(SessionStore):
         session_id: str | None,
         action: str,
         decided_by: str = "",
+        host_id: str = "",
+        target_summary: str = "",
+        actions_json: str = "[]",
+        config_fingerprint: str = "",
     ) -> None:
         # 只留判「有没有提交过决策」需要的部分——内存实现是降级用的，不追求与库等价
         self._decisions[approval_id] = session_id

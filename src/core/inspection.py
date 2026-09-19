@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
@@ -12,11 +13,13 @@ from src.interfaces.inspection import (
     LEVEL_ERROR,
     LEVEL_NORMAL,
     LEVEL_WARNING,
+    LEVEL_ORDER,
     InspectionFinding,
     InspectionResult,
     InspectionStore,
     max_level,
 )
+from src.interfaces.host import Host, HostRegistry
 from src.interfaces.metric import MetricDefinition, MetricRuntimeConfig, MetricsConfig
 from src.interfaces.monitor import MonitorSource
 from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
@@ -79,7 +82,10 @@ def _threshold_level(
 
 def format_inspection_summary(result: InspectionResult) -> str:
     """把一轮结果渲染成适合人工阅读的多行日志。"""
-    lines = [f"[巡检] level={result.level} checked_at={result.checked_at}"]
+    host_text = f" host_id={result.host_id}" if result.host_id else ""
+    lines = [
+        f"[巡检]{host_text} level={result.level} checked_at={result.checked_at}"
+    ]
     current_group: str | None = None
 
     for metric_id, item in result.snapshot.items():
@@ -159,12 +165,14 @@ class InspectionChecker:
         *,
         catalog: tuple[MetricDefinition, ...] = METRIC_CATALOG,
         clock: Callable[[], str] | None = None,
+        host: Host | None = None,
     ) -> None:
         self.monitor = monitor
         self.settings = settings
         self.metrics_config = metrics_config
         self.catalog = {definition.metric_id: definition for definition in catalog}
         self._clock = clock or _now_iso
+        self.host = host
 
     def run_once(self) -> InspectionResult:
         checked_at = self._clock()
@@ -172,6 +180,42 @@ class InspectionChecker:
         findings: list[InspectionFinding] = []
         errors: list[str] = []
         levels: list[str] = []
+
+        if self.host is not None:
+            try:
+                exporter = self.monitor.target_status(self.host.monitor)
+            except Exception as exc:
+                exporter = {"state": "query_error", "value": None}
+                errors.append(f"Exporter 状态查询失败: {exc}")
+            state = str(exporter.get("state") or "query_error")
+            snapshot["exporter.up"] = {
+                "enabled": True,
+                "display_name": "Exporter 状态",
+                "group": "System",
+                "unit": "",
+                "level": LEVEL_NORMAL if state == "reachable" else LEVEL_ERROR,
+                "state": state,
+                "value": exporter.get("value"),
+                "samples": [],
+            }
+            if state != "reachable":
+                message = (
+                    f"Exporter 状态为 {state}；这只表示采集目标状态，"
+                    "不能据此断言主机关机"
+                )
+                findings.append(
+                    InspectionFinding("exporter.up", LEVEL_ERROR, message)
+                )
+                if not errors:
+                    errors.append(message)
+                return InspectionResult(
+                    checked_at=checked_at,
+                    level=LEVEL_ERROR,
+                    host_id=self.host.host_id,
+                    snapshot=snapshot,
+                    findings=tuple(findings),
+                    error="; ".join(errors),
+                )
 
         for runtime in self.metrics_config.selected("inspection"):
             definition = self.catalog.get(runtime.metric_id)
@@ -194,6 +238,7 @@ class InspectionChecker:
         return InspectionResult(
             checked_at=checked_at,
             level=overall,
+            host_id=self.host.host_id if self.host is not None else "",
             snapshot=snapshot,
             findings=tuple(findings),
             error="; ".join(errors),
@@ -220,7 +265,12 @@ class InspectionChecker:
             "level": LEVEL_ERROR,
         }
         try:
-            samples = self.monitor.query_metric(definition.metric_id)
+            if self.host is None:
+                samples = self.monitor.query_metric(definition.metric_id)
+            else:
+                samples = self.monitor.query_metric(
+                    definition.metric_id, target=self.host.monitor
+                )
         except Exception as exc:  # noqa: BLE001 - 单项失败继续后续指标
             message = f"{definition.metric_id} 查询失败: {exc}"
             errors.append(message)
@@ -291,7 +341,10 @@ class InspectionChecker:
             "level": LEVEL_ERROR,
         }
         try:
-            alerts = self.monitor.active_alerts()
+            if self.host is None:
+                alerts = self.monitor.active_alerts()
+            else:
+                alerts = self.monitor.active_alerts(target=self.host.monitor)
         except Exception as exc:  # noqa: BLE001
             message = f"{definition.metric_id} 查询失败: {exc}"
             errors.append(message)
@@ -325,6 +378,58 @@ class InspectionChecker:
         return level
 
 
+class MultiHostInspectionChecker:
+    """在主机边界串行巡检；坏节点和轮次预算不影响其它节点。"""
+
+    def __init__(
+        self,
+        monitor: MonitorSource,
+        registry: HostRegistry,
+        settings: InspectionSettings,
+        metrics_config: MetricsConfig,
+        *,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self.monitor = monitor
+        self.registry = registry
+        self.settings = settings
+        self.metrics_config = metrics_config
+        self._clock = clock or time.monotonic
+        self._cursor = 0
+
+    def run_all(self) -> tuple[InspectionResult, ...]:
+        hosts = list(self.registry.enabled())
+        if not hosts:
+            return ()
+        query_cost = max(1, len(self.metrics_config.selected("inspection")) + 1)
+        budget_hosts = max(
+            1,
+            min(
+                self.settings.max_hosts_per_run,
+                self.settings.max_queries_per_run // query_cost,
+            ),
+        )
+        count = min(len(hosts), budget_hosts)
+        selected = [hosts[(self._cursor + offset) % len(hosts)] for offset in range(count)]
+        started = self._clock()
+        results: list[InspectionResult] = []
+        processed = 0
+        for host in selected:
+            if results and self._clock() - started >= self.settings.round_timeout_seconds:
+                break
+            results.append(
+                InspectionChecker(
+                    self.monitor,
+                    self.settings,
+                    self.metrics_config,
+                    host=host,
+                ).run_once()
+            )
+            processed += 1
+        self._cursor = (self._cursor + max(processed, 1)) % len(hosts)
+        return tuple(results)
+
+
 class InspectionScheduler:
     """单进程后台调度器；同进程内串行执行，不与 FastAPI 请求线程混用。"""
 
@@ -347,6 +452,7 @@ class InspectionScheduler:
         self.last_run_at = ""
         self.last_level = ""
         self.last_error = ""
+        self.last_by_host: dict[str, InspectionResult] = {}
 
     @property
     def running(self) -> bool:
@@ -373,25 +479,42 @@ class InspectionScheduler:
     def run_once(self) -> InspectionResult:
         with self._run_lock:
             try:
-                result = self.checker.run_once()
+                if hasattr(self.checker, "run_all"):
+                    results = list(self.checker.run_all())
+                else:
+                    results = [self.checker.run_once()]
             except Exception as exc:  # noqa: BLE001 - 单轮异常仍产出 error 结果
-                result = InspectionResult(
+                results = [InspectionResult(
                     checked_at=_now_iso(),
                     level=LEVEL_ERROR,
                     snapshot={},
                     findings=(InspectionFinding("inspection", LEVEL_ERROR, str(exc)),),
                     error=f"inspection 执行异常: {exc}",
-                )
-            self._log(result)
-            if result.level != LEVEL_NORMAL and self.store is not None:
-                try:
-                    self.store.record(result)
-                except Exception as exc:  # noqa: BLE001 - 归档失败只降级
-                    self.logger.error("巡检异常归档失败，结果仅保留在日志: %s", exc, exc_info=True)
-            self.last_run_at = result.checked_at
-            self.last_level = result.level
-            self.last_error = "present" if result.error else ""
-            return result
+                )]
+            if not results:
+                results = [InspectionResult(
+                    checked_at=_now_iso(),
+                    level=LEVEL_ERROR,
+                    error="没有可巡检的启用主机",
+                )]
+            for result in results:
+                self._log(result)
+                if result.host_id:
+                    self.last_by_host[result.host_id] = result
+                if result.level != LEVEL_NORMAL and self.store is not None:
+                    try:
+                        self.store.record(result)
+                    except Exception as exc:  # noqa: BLE001 - 归档失败只降级
+                        self.logger.error(
+                            "巡检异常归档失败，结果仅保留在日志: %s",
+                            exc,
+                            exc_info=True,
+                        )
+            overall = max(results, key=lambda item: LEVEL_ORDER.get(item.level, 0))
+            self.last_run_at = max(result.checked_at for result in results)
+            self.last_level = overall.level
+            self.last_error = "present" if any(result.error for result in results) else ""
+            return overall
 
     def _loop(self) -> None:
         if self.settings.run_on_start:

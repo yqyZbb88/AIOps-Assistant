@@ -23,6 +23,7 @@ from typing import Callable
 
 from src.interfaces.metric import MetricDefinition
 from src.interfaces.monitor import MonitorError, MonitorSource
+from src.interfaces.host import MonitorTarget
 from src.utils.freshness import epoch_to_iso, freshness_note
 
 logger = logging.getLogger("aiops_assistant.capabilities")
@@ -81,13 +82,22 @@ def disk_usage_text(monitor: MonitorSource) -> str:
     return f"磁盘使用率：{detail}"
 
 
-def active_alerts_text(monitor: MonitorSource, *, with_freshness: bool = False) -> str:
+def active_alerts_text(
+    monitor: MonitorSource,
+    *,
+    with_freshness: bool = False,
+    target: MonitorTarget | None = None,
+) -> str:
     """查询 + 格式化当前 pending / firing 告警，逐条列名称/级别/实例/状态。
 
     无活动告警返回 "当前没有 pending / firing 的告警（所有规则均 inactive）"。
     """
     try:
-        alerts = monitor.active_alerts()
+        alerts = (
+            monitor.active_alerts()
+            if target is None
+            else monitor.active_alerts(target=target)
+        )
     except MonitorError as exc:
         logger.warning("查询 告警状态失败: %s", exc)
         text = f"查询 告警状态失败：{exc}"
@@ -117,12 +127,19 @@ def metric_text(
     definition: MetricDefinition,
     *,
     with_freshness: bool = False,
+    target: MonitorTarget | None = None,
 ) -> str:
     """统一指标目录的查询与格式化入口。"""
     if definition.kind == "alert_count":
-        return active_alerts_text(monitor, with_freshness=with_freshness)
+        return active_alerts_text(
+            monitor, with_freshness=with_freshness, target=target
+        )
     try:
-        samples = monitor.query_metric(definition.metric_id)
+        samples = (
+            monitor.query_metric(definition.metric_id)
+            if target is None
+            else monitor.query_metric(definition.metric_id, target=target)
+        )
     except MonitorError as exc:
         logger.warning("查询 %s 失败: %s", definition.display_name, exc)
         text = f"查询 {definition.display_name}失败：{exc}"

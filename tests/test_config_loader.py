@@ -142,7 +142,7 @@ metrics:
 def test_app_name_and_version_have_single_source():
     settings = Settings()
     assert settings.app.name == __app_name__ == "AIOps-Assistant"
-    assert settings.app.version == __version__ == "0.4.0"
+    assert settings.app.version == __version__ == "0.5.0"
 
 
 def test_settings_dataclass_defaults():

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any, Protocol
+from src.interfaces.host import HostSshTarget
 
 
 class ActionError(Exception):
@@ -25,6 +26,12 @@ class ActionExecutor(ABC):
     @abstractmethod
     def execute(self, params: dict[str, Any]) -> dict[str, Any]:
         """按 params 执行动作，返回结果 dict；任何失败抛 ActionError。"""
+
+    def execute_on(
+        self, target: HostSshTarget, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """在显式主机目标执行；多主机路径必须调用本方法。"""
+        raise ActionError(f"动作 {self.name} 不支持显式主机目标")
 
 
 class RuleExecutionGuard(Protocol):

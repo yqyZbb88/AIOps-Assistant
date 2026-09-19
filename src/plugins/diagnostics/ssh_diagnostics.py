@@ -18,6 +18,7 @@ import logging
 from typing import Any
 
 from src.interfaces.diagnostic import CommandSpec, DiagnosticError, DiagnosticSource
+from src.interfaces.host import HostSshTarget
 from src.plugins.common import audit as audit_common
 from src.plugins.common import ssh as ssh_common
 from src.plugins.common.endpoint import SshEndpoint
@@ -36,17 +37,27 @@ class SshDiagnostics(DiagnosticSource):
     name = "ssh"
     description = "经 SSH 在目标主机执行白名单只读诊断命令（free/df/ps/systemctl/journalctl 等）"
 
-    def __init__(self, config: DiagnosticsConfig) -> None:
+    def __init__(
+        self,
+        config: DiagnosticsConfig,
+        *,
+        target: HostSshTarget | None = None,
+        allowed_commands: frozenset[str] | None = None,
+    ) -> None:
         # 构造不读文件：config 由容器/测试注入，便于离线单测
-        if config is None or not config.target.host:
+        if config is None or (target is None and not config.target.host):
             raise DiagnosticError("诊断配置缺少 target.host，无法构造 SshDiagnostics")
         self.config = config
-        self.target = config.target
+        self.target = target or config.target
+        self.allowed_commands = allowed_commands
         self.output_limit = config.output_limit
 
     # -- DiagnosticSource 接口实现 ------------------------------------------
     def commands(self) -> tuple[CommandSpec, ...]:
-        return command_specs(self.config)
+        specs = command_specs(self.config)
+        if self.allowed_commands is None:
+            return specs
+        return tuple(spec for spec in specs if spec.key in self.allowed_commands)
 
     def run(
         self,
@@ -55,6 +66,8 @@ class SshDiagnostics(DiagnosticSource):
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         diag_cmd = next((c for c in self.config.commands if c.key == command), None)
+        if self.allowed_commands is not None and command not in self.allowed_commands:
+            raise DiagnosticError(f"目标主机未授权诊断命令 {command!r}")
         if diag_cmd is None:
             available = ", ".join(c.key for c in self.config.commands) or "(空)"
             raise DiagnosticError(f"未知诊断命令 {command!r}，可用: {available}")

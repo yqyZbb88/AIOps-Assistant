@@ -9,7 +9,7 @@
 | 数据库 | `data/aiops_assistant.db` |
 | 引擎 | Python 标准库 `sqlite3` |
 | 伴生文件 | `aiops_assistant.db-wal`、`aiops_assistant.db-shm` |
-| schema 版本 | v6，保存在 `PRAGMA user_version` |
+| schema 版本 | v7，保存在 `PRAGMA user_version` |
 | 总开关 | `storage.enabled` |
 | 默认备份方式 | 停服务后复制，或使用 SQLite `.backup` |
 
@@ -17,7 +17,7 @@
 
 ## 二、数据库中保存什么
 
-八张表分为四类：
+九张表分为四类：
 
 ### 1. 会话
 
@@ -34,12 +34,13 @@
 | `remediations` | 告警规则的处置结果 |
 | `ai_advice` | 无规则告警的 AI 分析建议 |
 
-### 3. 审批和幂等
+### 3. 审批、幂等和执行
 
 | 表 | 内容 |
 |---|---|
 | `approval_decisions` | 人工审批决策记录 |
 | `remediation_claims` | 自动处置幂等抢占记录 |
+| `action_executions` | 规则与 Agent 写动作的统一目标、幂等和结果记录 |
 
 ### 4. 巡检
 
@@ -62,6 +63,7 @@ normal 巡检轮次只写日志，不写数据库。
 | `status` | 当前固定为 `active` |
 | `created_at` | 创建时间，UTC |
 | `updated_at` | 最后活动时间，TTL 依据此字段 |
+| `host_id` | 会话绑定的稳定主机 ID；旧记录为空表示未知 |
 
 会话名允许重复，不参与定位会话。
 
@@ -100,9 +102,9 @@ alertname | instance | startsAt
 
 | 表 | 重要字段 | 说明 |
 |---|---|---|
-| `alerts` | `status`、`instance`、`starts_at` | 告警状态和来源 |
-| `remediations` | `matched_rule`、`status`、`detail` | 自动处置结果 |
-| `ai_advice` | `advice`、`analyzed_at` | AI 分析建议 |
+| `alerts` | `host_id`、`host_resolution`、`status`、`instance`、`starts_at` | 主机解析结果、告警状态和来源 |
+| `remediations` | `host_id`、`execution_id`、`matched_rule`、`status`、`detail` | 自动处置结果及统一执行记录关联 |
+| `ai_advice` | `host_id`、`advice`、`analyzed_at` | 指定主机的 AI 分析建议 |
 
 常见处置状态：
 
@@ -127,6 +129,10 @@ duplicate_ignored
 | `action` | `approve` 或 `reject` |
 | `decided_at` | 决策时间 |
 | `decided_by` | 决策身份 |
+| `host_id` | 审批冻结的主机 ID |
+| `target_summary` | 不含凭据的目标摘要 |
+| `actions_json` | 审批时冻结的动作与参数快照 |
+| `config_fingerprint` | 审批时的主机/动作配置指纹 |
 
 这张表用于区分进程异常退出后的“未执行”和“结果未知”。
 
@@ -143,8 +149,30 @@ duplicate_ignored
 | `alert_status` | 告警状态 |
 | `starts_at` | 告警开始时间 |
 | `claimed_at` | 抢占时间 |
+| `host_id` | 被解析并授权的主机 ID |
 
 四列组成联合主键。Alertmanager 重投时只会有一个请求成功抢占。
+
+### `action_executions`
+
+规则自动处置和 Agent 审批写操作共用的持久化执行状态：
+
+| 字段 | 说明 |
+|---|---|
+| `execution_id` | 服务端生成的执行 ID |
+| `channel` | `rule` 或 `agent` |
+| `idempotency_key` | 全局唯一幂等键 |
+| `host_id` | 唯一执行目标 |
+| `action_name` / `params_json` | 白名单动作及已校验参数 |
+| `target_summary` | 脱敏目标摘要 |
+| `config_fingerprint` | 执行/审批使用的配置指纹 |
+| `approval_id` / `alert_key` | 对应审批或告警，可为空 |
+| `status` | `running`、`succeeded`、`failed`、`rejected` 等状态 |
+| `detail` | 脱敏结果或错误摘要 |
+| `created_at` / `started_at` / `finished_at` | UTC 时间 |
+
+创建记录和唯一幂等键先于远程写命令。命令发出后若无法可靠写入最终状态，记录会保留在
+`running`，按“结果未知”人工核对，程序不会自动重试。
 
 ## 六、巡检表
 
@@ -159,11 +187,12 @@ duplicate_ignored
 | `snapshot_json` | 指标快照 |
 | `findings_json` | 异常明细 |
 | `error_text` | 查询错误或数据错误 |
+| `host_id` | 本轮巡检对应的稳定主机 ID |
 
 可通过以下接口查询：
 
 ```text
-GET /inspections/recent?limit=50
+GET /inspections/recent?limit=50&host_id=local-node
 ```
 
 AI 的 `inspection_anomalies` 工具也读取这张表，并明确标记为历史数据。
@@ -182,6 +211,7 @@ GET /sessions/{id}
 GET /alerts/history
 GET /inspections/recent
 GET /approvals
+GET /executions
 ```
 
 直接查询 SQLite 时，命令应执行完后立即退出：
@@ -204,11 +234,11 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 | `max_sessions` | 200 | 最多保留的会话数 |
 | `purge_interval_seconds` | 60 | 清理节流间隔 |
 
-### 告警、幂等和审批决策清理
+### 告警、幂等、审批决策和执行记录清理
 
 | 字段 | 当前默认 | 说明 |
 |---|---:|---|
-| `history_ttl_hours` | 168 | 告警、处置、AI 建议、幂等抢占记录和审批决策 |
+| `history_ttl_hours` | 168 | 告警、处置、AI 建议、幂等抢占、审批决策和动作执行记录 |
 | `max_history_rows` | 5000 | 上述各表的容量上限 |
 
 `approval_decisions` 有**两条**清理路径，缺一不可：
@@ -217,7 +247,8 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 - **兜底**：按 `history_ttl_hours` 过期、按 `max_history_rows` 限容，由归档清理执行。
 
 兜底不能省：快路径只在会话被删时才跑，既扫不到 `session_id` 为空的行，也扫不到会话
-早已消失的孤儿行。`remediation_claims` 同样由归档清理按 TTL 与容量上限回收。
+早已消失的孤儿行。`remediation_claims` 和 `action_executions` 同样由归档清理按 TTL 与
+容量上限回收。
 
 ### 巡检清理
 
@@ -296,6 +327,10 @@ aiops_assistant.db-shm
 - 迁移只追加表和列
 - 新库和迁移后的旧库结构必须一致
 
+v7 在 v6 基础上为会话、告警、处置、建议、审批、幂等和巡检追加 `host_id` 及必要的目标
+元数据，并新增 `action_executions`。迁移可在中断后重试：已存在的列会跳过。旧行不具备
+可靠映射证据，因此 `host_id` 保持空字符串，查询时按未知归属处理。
+
 如果数据库来自更新版本程序，不要用旧版本程序写入。
 
 ## 十三、常用查询
@@ -309,13 +344,13 @@ sqlite3 data/aiops_assistant.db ".tables"
 ### 查看会话身份
 
 ```bash
-sqlite3 data/aiops_assistant.db   "SELECT user, COUNT(*) FROM sessions GROUP BY user;"
+sqlite3 data/aiops_assistant.db   "SELECT user, host_id, COUNT(*) FROM sessions GROUP BY user, host_id;"
 ```
 
 ### 查看最近异常巡检
 
 ```bash
-sqlite3 data/aiops_assistant.db   "SELECT checked_at, level FROM inspection_runs ORDER BY checked_at DESC LIMIT 20;"
+sqlite3 data/aiops_assistant.db   "SELECT host_id, checked_at, level FROM inspection_runs ORDER BY checked_at DESC LIMIT 20;"
 ```
 
 ### 查看失败处置
@@ -337,14 +372,15 @@ UNION ALL SELECT 'remediations', COUNT(*) FROM remediations
 UNION ALL SELECT 'ai_advice', COUNT(*) FROM ai_advice
 UNION ALL SELECT 'approval_decisions', COUNT(*) FROM approval_decisions
 UNION ALL SELECT 'remediation_claims', COUNT(*) FROM remediation_claims
-UNION ALL SELECT 'inspection_runs', COUNT(*) FROM inspection_runs;
+UNION ALL SELECT 'inspection_runs', COUNT(*) FROM inspection_runs
+UNION ALL SELECT 'action_executions', COUNT(*) FROM action_executions;
 "
 ```
 
-## 十四、后续阶段的数据库决策（计划）
+## 十四、后续阶段的数据库决策
 
-0.5.0 多主机监控与异常处置、0.6.0 成品收尾继续使用 SQLite。
-更换数据库引擎不是成品发布的前置条件；本节描述后续验收要求，当前 schema 仍为 v6。
+0.5.0 多主机监控与异常处置已使用 schema v7 完成，0.6.0 成品收尾继续使用 SQLite。
+更换数据库引擎不是成品发布的前置条件。
 
 Prometheus 保存时序指标，SQLite 保存告警、巡检异常、会话、处置和审批等业务数据。
 增加被监控主机不等于这些主机直接并发访问数据库；首版保持单 Assistant 进程、单 worker、
@@ -352,7 +388,7 @@ Prometheus 保存时序指标，SQLite 保存告警、巡检异常、会话、�
 
 | 阶段 | 要做的工作 |
 |---|---|
-| 0.5.0 | 补齐稳定主机归属、执行目标/状态、必要索引和事务约束；结构变化时从 v6 追加迁移，验证新库与升级库一致 |
+| 0.5.0 | 已补齐稳定主机归属、执行目标/状态、必要索引和事务约束；从 v6 追加迁移并验证新库与升级库一致 |
 | 0.6.0 | 模拟多主机同时告警、巡检写入与审批提交；检查延迟、锁争用、记录完整性、重复执行防护，并验证重启及备份恢复 |
 | 按需迁移 | 合理优化后持续写入争用仍不达标，或需要多台 Assistant 实例共享远程数据库时，评估 PostgreSQL；若影响验收，在当阶段处理 |
 

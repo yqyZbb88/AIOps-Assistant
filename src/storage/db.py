@@ -48,7 +48,8 @@ logger = logging.getLogger("aiops_assistant.storage.db")
 #                    （见 storage/history.py 与 storage/session.py 的 purge_expired）。
 #   v5 (2026-09-15)：remediation_claims 自动处置幂等抢占表。
 #   v6 (2026-09-15)：inspection_runs 固定指标巡检异常归档表。
-SCHEMA_VERSION = 6
+#   v7 (2026-09-19)：多主机归属列 + 统一动作执行审计表。
+SCHEMA_VERSION = 7
 
 # 建表语句（幂等）。顺序即执行顺序。
 _DDL: tuple[str, ...] = (
@@ -64,7 +65,8 @@ _DDL: tuple[str, ...] = (
         status     TEXT NOT NULL DEFAULT 'active',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        name       TEXT NOT NULL DEFAULT ''
+        name       TEXT NOT NULL DEFAULT '',
+        host_id    TEXT NOT NULL DEFAULT ''
     )
     """,
     # 注：sessions.name **没有**唯一索引——它是给人看的标签，不参与选中会话
@@ -96,6 +98,8 @@ _DDL: tuple[str, ...] = (
         starts_at   TEXT NOT NULL DEFAULT '',
         ends_at     TEXT NOT NULL DEFAULT '',
         received_at TEXT NOT NULL,
+        host_id     TEXT NOT NULL DEFAULT '',
+        host_resolution TEXT NOT NULL DEFAULT 'unknown',
         UNIQUE (alert_key, starts_at, status)
     )
     """,
@@ -111,7 +115,9 @@ _DDL: tuple[str, ...] = (
         action       TEXT,
         status       TEXT NOT NULL DEFAULT '',
         detail       TEXT NOT NULL DEFAULT '',
-        executed_at  TEXT NOT NULL
+        executed_at  TEXT NOT NULL,
+        host_id      TEXT NOT NULL DEFAULT '',
+        execution_id TEXT NOT NULL DEFAULT ''
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_remediations_key ON remediations (alert_key)",
@@ -123,7 +129,8 @@ _DDL: tuple[str, ...] = (
         severity    TEXT NOT NULL DEFAULT '',
         instance    TEXT NOT NULL DEFAULT '',
         advice      TEXT NOT NULL DEFAULT '',
-        analyzed_at TEXT NOT NULL
+        analyzed_at TEXT NOT NULL,
+        host_id     TEXT NOT NULL DEFAULT ''
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_ai_advice_key ON ai_advice (alert_key)",
@@ -136,7 +143,11 @@ _DDL: tuple[str, ...] = (
         -- `decided_by` 刻意排在**最后**：它由 v4 的 ALTER TABLE 追加，而 ALTER 只能加在
         -- 末尾。这样「全新建库」与「逐级迁移上来」两条路径的**列序也一致**（有结构指纹测试）。
         -- 空串 = 当时鉴权未启用（没有身份可言）——这一条本身就是审计要回答的问题，别用 NULL 含糊它。
-        decided_by  TEXT NOT NULL DEFAULT ''
+        decided_by  TEXT NOT NULL DEFAULT '',
+        host_id     TEXT NOT NULL DEFAULT '',
+        target_summary TEXT NOT NULL DEFAULT '',
+        actions_json TEXT NOT NULL DEFAULT '[]',
+        config_fingerprint TEXT NOT NULL DEFAULT ''
     )
     """,
     """
@@ -146,6 +157,7 @@ _DDL: tuple[str, ...] = (
         alert_status TEXT NOT NULL,
         starts_at    TEXT NOT NULL,
         claimed_at   TEXT NOT NULL,
+        host_id      TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (alert_key, action, alert_status, starts_at)
     )
     """,
@@ -157,10 +169,34 @@ _DDL: tuple[str, ...] = (
         level         TEXT NOT NULL,
         snapshot_json TEXT NOT NULL,
         findings_json TEXT NOT NULL,
-        error_text    TEXT NOT NULL DEFAULT ''
+        error_text    TEXT NOT NULL DEFAULT '',
+        host_id       TEXT NOT NULL DEFAULT ''
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_inspection_runs_checked ON inspection_runs (checked_at)",
+    """
+    CREATE TABLE IF NOT EXISTS action_executions (
+        execution_id       TEXT PRIMARY KEY,
+        channel            TEXT NOT NULL,
+        idempotency_key    TEXT NOT NULL UNIQUE,
+        host_id            TEXT NOT NULL,
+        action_name        TEXT NOT NULL,
+        params_json        TEXT NOT NULL DEFAULT '{}',
+        target_summary     TEXT NOT NULL DEFAULT '',
+        config_fingerprint TEXT NOT NULL DEFAULT '',
+        approval_id        TEXT NOT NULL DEFAULT '',
+        alert_key          TEXT NOT NULL DEFAULT '',
+        status             TEXT NOT NULL,
+        detail             TEXT NOT NULL DEFAULT '',
+        created_at         TEXT NOT NULL,
+        started_at         TEXT NOT NULL DEFAULT '',
+        finished_at        TEXT NOT NULL DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_action_executions_host_time "
+    "ON action_executions (host_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_action_executions_approval "
+    "ON action_executions (approval_id)",
 )
 
 # 建表 / 迁移的进程级锁。正常读写路径不碰它。
@@ -392,6 +428,58 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_inspection_runs_checked "
             "ON inspection_runs (checked_at)"
+        )
+
+    if current < 7:
+        # v6 → v7：所有会影响判断或执行的记录都显式携带主机归属。
+        # 存量行保持空串（unknown），绝不按 instance 猜测回填。
+        def add_column(table: str, definition: str) -> None:
+            """允许从一次被中断的 v7 迁移安全重试。"""
+            name = definition.split(maxsplit=1)[0]
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+
+        add_column("sessions", "host_id TEXT NOT NULL DEFAULT ''")
+        add_column("alerts", "host_id TEXT NOT NULL DEFAULT ''")
+        add_column("alerts", "host_resolution TEXT NOT NULL DEFAULT 'unknown'")
+        add_column("remediations", "host_id TEXT NOT NULL DEFAULT ''")
+        add_column("remediations", "execution_id TEXT NOT NULL DEFAULT ''")
+        add_column("ai_advice", "host_id TEXT NOT NULL DEFAULT ''")
+        add_column("approval_decisions", "host_id TEXT NOT NULL DEFAULT ''")
+        add_column("approval_decisions", "target_summary TEXT NOT NULL DEFAULT ''")
+        add_column("approval_decisions", "actions_json TEXT NOT NULL DEFAULT '[]'")
+        add_column("approval_decisions", "config_fingerprint TEXT NOT NULL DEFAULT ''")
+        add_column("remediation_claims", "host_id TEXT NOT NULL DEFAULT ''")
+        add_column("inspection_runs", "host_id TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS action_executions (
+                execution_id       TEXT PRIMARY KEY,
+                channel            TEXT NOT NULL,
+                idempotency_key    TEXT NOT NULL UNIQUE,
+                host_id            TEXT NOT NULL,
+                action_name        TEXT NOT NULL,
+                params_json        TEXT NOT NULL DEFAULT '{}',
+                target_summary     TEXT NOT NULL DEFAULT '',
+                config_fingerprint TEXT NOT NULL DEFAULT '',
+                approval_id        TEXT NOT NULL DEFAULT '',
+                alert_key          TEXT NOT NULL DEFAULT '',
+                status             TEXT NOT NULL,
+                detail             TEXT NOT NULL DEFAULT '',
+                created_at         TEXT NOT NULL,
+                started_at         TEXT NOT NULL DEFAULT '',
+                finished_at        TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_action_executions_host_time "
+            "ON action_executions (host_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_action_executions_approval "
+            "ON action_executions (approval_id)"
         )
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

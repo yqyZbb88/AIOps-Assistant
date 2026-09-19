@@ -27,6 +27,7 @@ from src.interfaces.history import (
     HistoryStore,
     RemediationRecord,
 )
+from src.interfaces.host import HostRegistry
 from src.interfaces.llm_client import LLMClient
 from src.interfaces.monitor import MonitorSource
 from src.interfaces.session import ChatReply
@@ -53,16 +54,18 @@ class OpsAgent:
         analysis: AlertAnalyzer | None = None,
         llm: LLMClient | None = None,
         history: HistoryStore | None = None,
+        hosts: HostRegistry | None = None,
     ) -> None:
         self.monitor = monitor
         self.store = store or AlertStore(maxlen=DEFAULT_RECENT_LIMIT)
         # 状态日志归档（可选）：None = 不落盘，告警接收与查询全部照常
         self.history = history
+        self.hosts = hosts
         self.chat_service = chat_service or ChatService(monitor)
         self.rule_engine = rule_engine  # 通常由 container 注入（含执行器）
         self.llm = llm
         # 无规则告警的 AI 分析器；未注入时按注入的 llm 兜底构造
-        self.analysis = analysis or AlertAnalyzer(monitor, llm=llm)
+        self.analysis = analysis or AlertAnalyzer(monitor, llm=llm, hosts=hosts)
 
     # -- 聊天 -----------------------------------------------------------
     def chat(self, message: str) -> str:
@@ -110,12 +113,27 @@ class OpsAgent:
         无规则告警交给 AI 分析。任何单点失败不影响告警记录与其它告警。
         """
         summaries = [self.store.record(alert) for alert in payload.alerts]
+        if self.hosts is not None:
+            for alert, summary in zip(payload.alerts, summaries):
+                resolution = self.hosts.resolve_labels(alert.labels)
+                summary["host_id"] = resolution.host_id
+                summary["host_resolution"] = resolution.status
         ack = AlertAck(received=len(payload.alerts), alerts=summaries)
 
         # 1) 规则自动处置（resolved 在引擎内跳过；无规则命中的不产生记录）
         if self.rule_engine is not None:
             remediation = self.rule_engine.execute_for_payload(payload)
             if remediation:
+                if self.hosts is not None:
+                    by_key = {
+                        alert.alert_key: self.hosts.resolve_labels(alert.labels)
+                        for alert in payload.alerts
+                    }
+                    for record in remediation:
+                        resolution = by_key.get(record.get("alert_key", ""))
+                        if resolution is not None:
+                            record["host_id"] = resolution.host_id
+                            record["host_resolution"] = resolution.status
                 ack.remediation = remediation
                 self._print_remediation(remediation)
 
@@ -179,6 +197,14 @@ class OpsAgent:
                         ack.alerts[idx].get("received_at", stamp)
                         if idx < len(ack.alerts) else stamp
                     ),
+                    host_id=(
+                        self.hosts.resolve_labels(alert.labels).host_id or ""
+                        if self.hosts is not None else ""
+                    ),
+                    host_resolution=(
+                        self.hosts.resolve_labels(alert.labels).status
+                        if self.hosts is not None else "unknown"
+                    ),
                 )
                 for idx, alert in enumerate(payload.alerts)
             ]
@@ -205,6 +231,8 @@ class OpsAgent:
             "status": record.get("status") or "",
             "detail": record.get("detail", ""),
             "executed_at": record.get("executed_at", ""),
+            "host_id": record.get("host_id") or "",
+            "execution_id": record.get("execution_id", ""),
         }
 
     @staticmethod
@@ -217,6 +245,7 @@ class OpsAgent:
             "instance": record.get("instance", ""),
             "advice": record.get("advice", ""),
             "analyzed_at": record.get("analyzed_at", ""),
+            "host_id": record.get("host_id") or "",
         }
 
     @staticmethod
@@ -242,10 +271,28 @@ class OpsAgent:
             )
 
     # -- 查询 -----------------------------------------------------------
-    def recent(self, limit: int = 20) -> list[dict[str, Any]]:
+    def recent(
+        self, limit: int = 20, *, host_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """最近接收的告警记录（内存缓冲，进程重启清空；新的在前）。"""
-        return self.store.recent(limit)
+        records = self.store.recent(limit if host_id is None else self.store.maxlen)
+        if host_id is not None:
+            records = [record for record in records if record.get("host_id") == host_id]
+        return records[:limit]
 
-    def active_alerts(self) -> list[dict[str, Any]]:
+    def active_alerts(self, *, host_id: str | None = None) -> list[dict[str, Any]]:
         """实时查询监控源当前 pending/firing 告警；MonitorError 由 api 层转 502。"""
-        return self.monitor.active_alerts()
+        if self.hosts is None:
+            if host_id is not None:
+                raise ValueError("未配置主机清单")
+            return self.monitor.active_alerts()
+        if host_id is not None:
+            host = self.hosts.require(host_id)
+        else:
+            enabled = self.hosts.enabled()
+            if len(enabled) != 1:
+                from src.interfaces.host import HostError
+
+                raise HostError("多主机模式查询活动告警必须明确提供 host_id")
+            host = enabled[0]
+        return self.monitor.active_alerts(target=host.monitor)

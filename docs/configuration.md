@@ -5,6 +5,7 @@
 | 文件 | 作用 |
 |---|---|
 | `settings.yaml` | 应用、服务、存储、日志、鉴权、巡检调度等全局配置 |
+| `hosts.yaml` | 稳定主机 ID、Prometheus 目标、SSH 凭据引用和逐主机能力授权 |
 | `metrics.yaml` | 统一 Prometheus 指标目录的启用范围、阈值、实例和 selector |
 | `rules.yaml` | Alertmanager 告警到写命令的规则映射 |
 | `actions.yaml` | 规则自动处置可执行的写命令白名单 |
@@ -42,9 +43,10 @@ value: ${VAR:-default}
 ```text
 settings.yaml
   └── metrics.file ──> metrics.yaml ──> Prometheus 指标
-  └── rules.yaml  ──> actions.yaml ──> 规则自动处置写命令
-  └── agent_actions.yaml ──> Agent 写命令 + 人工审批
-  └── diagnostics.yaml   ──> Agent SSH 只读诊断
+  └── hosts.file ──> hosts.yaml ──> 监控目标 + SSH 目标 + 逐主机授权
+      ├── rules.yaml ──> actions.yaml ──> 规则自动处置写命令
+      ├── agent_actions.yaml ──> Agent 写命令 + 人工审批
+      └── diagnostics.yaml ──> Agent SSH 只读诊断
 ```
 
 `metrics.yaml` 不控制 `rules.yaml` 或 SSH 诊断。  
@@ -58,14 +60,15 @@ settings.yaml
 | 环境变量 | 默认文件 |
 |---|---|
 | `OPS_SETTINGS_FILE` | `config/settings.yaml` |
+| `OPS_HOSTS_FILE` | `config/hosts.yaml`（仅在 `hosts.file` 为空时读取） |
 | `OPS_RULES_FILE` | `config/rules.yaml` |
 | `OPS_ACTIONS_FILE` | `config/actions.yaml` |
 | `OPS_AGENT_ACTIONS_FILE` | `config/agent_actions.yaml` |
 | `OPS_DIAGNOSTICS_FILE` | `config/diagnostics.yaml` |
 
-`metrics.yaml` 没有单独的路径环境变量；它由 `settings.yaml` 的 `metrics.file` 指定。相对
-路径按仓库根目录解析，空字符串表示使用代码内置的默认运行配置。显式传给加载函数的路径
-优先级高于上述环境变量。
+`metrics.yaml` 没有单独的路径环境变量；它由 `settings.yaml` 的 `metrics.file` 指定。
+`hosts.yaml` 通常由 `hosts.file` 指定；该值为空时才读取 `OPS_HOSTS_FILE`，两者都为空则启用
+`legacy-default` 单主机兼容方式。相对路径按仓库根目录解析。
 
 ## 二、settings.yaml
 
@@ -137,6 +140,12 @@ settings.yaml
 
 当前出厂值为 `config/metrics.yaml`。路径非空但文件不存在、解析失败或含未知指标时会拒绝启动。
 
+### hosts
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---:|---:|---|
+| `hosts.file` | string | `config/hosts.yaml` | 静态主机清单；空字符串启用旧单主机兼容方式 |
+
 ### alert
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -154,6 +163,9 @@ settings.yaml
 | `inspection.run_on_start` | bool | `true` | 服务启动后是否立即巡检一次 |
 | `inspection.ttl_hours` | int | `168` | 异常巡检归档保留小时数 |
 | `inspection.max_rows` | int | `2500` | 异常巡检归档最大行数 |
+| `inspection.max_hosts_per_run` | int | `50` | 单轮最多巡检的主机数，超过时按轮次轮转 |
+| `inspection.max_queries_per_run` | int | `500` | 单轮 Prometheus 查询预算 |
+| `inspection.round_timeout_seconds` | int | `120` | 整轮时限；只在主机边界停止，下一轮续接 |
 
 具体检查项、阈值和 surface 不在本段配置，统一在 `metrics.yaml` 中设置。
 
@@ -218,7 +230,50 @@ auth:
   alert_identity: alertmanager
 ```
 
-## 三、metrics.yaml
+## 三、hosts.yaml
+
+`hosts.yaml` 是多主机模式中所有监控、诊断和执行目标的唯一来源。API 和模型只引用
+`host_id`，不会接收任意地址或凭据。
+
+```yaml
+version: 1
+credentials:
+  ops-a:
+    username: ops
+    key_filename: "${SSH_A_KEY_FILENAME:-}"
+    password: "${SSH_A_PASSWORD:-}"
+    known_hosts: "${SSH_KNOWN_HOSTS:-}"
+hosts:
+  - id: node-a
+    name: 节点 A
+    enabled: true
+    prometheus: {job: node, instance: "node-a:9100"}
+    ssh:
+      host: node-a.internal
+      port: 22
+      credential_ref: ops-a
+      connect_timeout: 8
+    allow:
+      diagnostics: [memory, disk]
+      rule_actions: []
+      agent_actions: []
+```
+
+约束：
+
+- `version` 当前必须为 `1`；`hosts` 必须是非空数组，且至少一台启用。
+- `id` 必须匹配 `^[a-z][a-z0-9-]{0,62}$`，`legacy-default` 是保留值。
+- 启用主机的 Prometheus `instance` 必须唯一；`job` 和 `instance` 都不能为空。
+- `ssh` 可省略；省略时三个 `allow` 列表必须为空，该主机仍可监控但不能 SSH。
+- `credential_ref` 必须引用 `credentials`；凭据经环境变量插值，绝不能返回给 API 或模型。
+- `allow.diagnostics`、`allow.rule_actions`、`allow.agent_actions` 分别引用三个命令目录中的 key。
+- 示例默认不授权任何写动作。启用规则自动处置还必须同时设置规则 `auto_execute: true`。
+- 多主机模式不会使用 `diagnostics.yaml`、`agent_actions.yaml` 或规则参数中的默认地址改向执行。
+
+修改后必须重启。单主机兼容模式会从旧 `SSH_*` 环境变量和全局 Prometheus instance 构造
+`legacy-default`，用于原部署平滑升级，不应作为多主机配置捷径。
+
+## 四、metrics.yaml
 
 ### 顶层字段
 
@@ -323,7 +378,7 @@ error > critical > warning > normal
 - `*_bytes` 都是 rate，不是累计总量。
 - 网络指标默认排除 `lo`。
 
-## 四、rules.yaml
+## 五、rules.yaml
 
 规则只按 Alertmanager 的 `alertname` 匹配，不查询 Prometheus 指标。
 
@@ -333,12 +388,6 @@ rules:
     action: restart_service
     target_instance: "${PROMETHEUS_INSTANCE:-localhost:9100}"
     params:
-      host: "${SSH_HOST:-localhost}"
-      port: "${SSH_PORT:-22}"
-      username: "${SSH_USER:-ops}"
-      password: "${SSH_PASSWORD:-}"
-      key_filename: "${SSH_KEY_FILENAME:-}"
-      known_hosts: "${SSH_KNOWN_HOSTS:-}"
       service: nginx
     auto_execute: false
     description: "CPU 过高时重启 nginx"
@@ -349,33 +398,23 @@ rules:
 | `alertname` | string | 是 | 与 Alertmanager alertname 精确匹配 |
 | `action` | string | 是 | 必须存在于 `actions.yaml.commands` |
 | `target_instance` | string | auto_execute 时是 | 允许处理的告警实例，必须精确匹配 |
-| `params` | map | 否 | 写命令参数与 SSH 连接参数；省略时为空映射 |
+| `params` | map | 否 | `actions.yaml` 声明的业务参数；省略时为空映射 |
 | `auto_execute` | bool | 否 | true 自动执行，false 只命中不执行 |
 | `description` | string | 否 | 给人看的说明 |
 
-连接字段支持：
-
-```text
-host, port, username, password, key_filename, known_hosts, connect_timeout
-```
-
-`connect_timeout` 可以省略，**默认 8 秒**；它同时是「连不上」和「单条命令跑不完」的
-上限，某条规则要跑更久就显式写大一点。写 `0` 也落到默认值上（`0` 在 paramiko 里是
-「永不超时」，不能让一条会挂死的远程命令变成默认行为）。
-
-这个默认值**只有一处定义**（`src/plugins/common/endpoint.py` 的
-`DEFAULT_CONNECT_TIMEOUT`），`diagnostics.yaml` 与 `agent_actions.yaml` 的 `target`
-用的是同一个数——三条 SSH 路径不该各有各的「没写就用多少」。
-
-其余字段按 `actions.yaml` 对应命令的 `params` 校验。
+目标 SSH 地址、凭据和超时来自告警解析出的 `hosts.yaml` 主机。即使旧规则仍含连接字段，
+多主机执行也会剥离这些字段，不能覆盖登记目标。其余字段按 `actions.yaml` 对应命令的
+`params` 校验。
 
 重要行为：
 
 - `auto_execute=false` 仍然是“命中规则”，会阻止该 alertname 进入 AI 建议。
 - `auto_execute=true` 且缺少 `target_instance` 时，规则会在加载阶段被禁用。
+- `target_instance` 必须与告警和已登记主机 instance 同时一致；主机还必须在
+  `allow.rule_actions` 中授权该动作。
 - 同名 alertname 可以写多条规则，按文件顺序处理。
 
-## 五、actions.yaml
+## 六、actions.yaml
 
 这是规则自动处置的写命令白名单。
 
@@ -422,7 +461,7 @@ commands:
 - sudo 由本文件声明，规则不能覆盖。
 - 修改后需重启进程。
 
-## 六、agent_actions.yaml
+## 七、agent_actions.yaml
 
 这是聊天 Agent 的写命令白名单，和 `actions.yaml` 完全隔离。
 
@@ -472,7 +511,11 @@ commands:
 
 审批段只接受 `timeout_seconds` 和 `max_pending`，没有关闭审批的开关。命令 key 不能与聊天指标工具或 SSH 诊断工具重名。
 
-## 七、diagnostics.yaml
+`target` 段为旧单主机/直接构造兼容保留。生产多主机会话按 `host_id` 使用 `hosts.yaml` 的
+SSH 目标，并要求该命令出现在主机的 `allow.agent_actions`；审批冻结目标摘要、动作快照和
+配置指纹，批准时再次复核，配置漂移会拒绝旧申请。
+
+## 八、diagnostics.yaml
 
 这是 Agent 的 SSH 只读诊断白名单，不绑定 `metrics.yaml` 指标。
 
@@ -515,7 +558,10 @@ commands:
 - 非零退出码只作为可读结果，不触发写动作。
 - 修改后需重启服务重建 Agent 工具。
 
-## 八、常见配置流程
+`target` 段为旧单主机/直接构造兼容保留。多主机 Agent 使用会话 `host_id` 对应的
+`hosts.yaml` SSH 目标，并只暴露 `allow.diagnostics` 授权的诊断命令。
+
+## 九、常见配置流程
 
 ### 启用一个新巡检指标
 
@@ -562,22 +608,25 @@ metrics:
       instance: web-01:9100
 ```
 
-## 九、常见错误
+## 十、常见错误
 
 | 错误 | 原因 |
 |---|---|
 | `配置节 xxx 存在未知字段` | 拼写错误或使用了旧字段 |
 | `metrics.yaml 含未知指标` | 指标 ID 不在代码目录 |
+| `非法或保留的 host id` | 主机 ID 格式不合法，或使用了 `legacy-default` |
+| `Prometheus instance 重复` | 两台启用主机配置了相同 instance，无法唯一归属告警 |
 | `warning < critical` / `warning > critical` | 阈值方向不符 |
 | `observe 指标不能启用 severity` | observe 指标只能记录 |
 | Prometheus 400 Bad Request | 通常是 selector/PromQL 拼接错误，应检查配置中的特殊标签 |
 | 修改后不生效 | 当前配置不支持热更新，需要重启服务 |
 
-## 十、字段生效与重启
+## 十一、字段生效与重启
 
 | 配置 | 生效方式 |
 |---|---|
 | `settings.yaml` | 启动时加载；修改后重启 |
+| `hosts.yaml` | 启动时加载；修改后重启并重建所有逐主机组件 |
 | `metrics.yaml` | 启动时加载；修改后重启 |
 | `rules.yaml` | 启动时加载；当前没有 HTTP 热更新入口 |
 | `actions.yaml` | 容器首次构建执行器时加载；修改后重启 |

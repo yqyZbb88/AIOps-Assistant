@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.main import create_app
-from src.utils.config_loader import Settings, StorageSettings
+from src.utils.config_loader import HostsSettings, Settings, StorageSettings
 
 
 def _settings(tmp_path, *, enabled: bool = True) -> Settings:
@@ -166,6 +166,39 @@ def test_create_session_returns_an_id(client):
     assert body["name"] == ""
     assert body["message_count"] == 0
     assert [s["session_id"] for s in client.get("/sessions").json()] == [body["session_id"]]
+    assert body["host_id"] == "legacy-default"
+
+
+def test_multi_host_session_requires_explicit_host_id(tmp_path):
+    hosts_file = tmp_path / "hosts.yaml"
+    hosts_file.write_text(
+        """
+version: 1
+hosts:
+  - id: host-a
+    name: Host A
+    enabled: true
+    prometheus: {job: node, instance: "a:9100"}
+    allow: {}
+  - id: host-b
+    name: Host B
+    enabled: true
+    prometheus: {job: node, instance: "b:9100"}
+    allow: {}
+""",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        storage=StorageSettings(enabled=True, db_path=str(tmp_path / "ops.db")),
+        hosts=HostsSettings(file=str(hosts_file)),
+    )
+    app = create_app(settings=settings)
+    with TestClient(app) as multi:
+        assert multi.post("/sessions", json={}).status_code == 422
+        response = multi.post("/sessions", json={"host_id": "host-b"})
+
+    assert response.status_code == 201
+    assert response.json()["host_id"] == "host-b"
 
 
 def test_create_session_stores_the_name_as_a_label(client):

@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import requests
 
 from src.interfaces.metric import MetricDefinition, MetricSample, MetricsConfig
+from src.interfaces.host import MonitorTarget
 from src.interfaces.monitor import MonitorError, MonitorSource
 from src.metrics.catalog import METRIC_BY_ID, METRIC_CATALOG
 from src.utils.metrics_config import default_metrics_config
@@ -151,6 +152,7 @@ class PrometheusMonitor(MonitorSource):
         definition: MetricDefinition,
         *,
         instance: str | None = None,
+        target: MonitorTarget | None = None,
     ) -> dict[str, str]:
         runtime = self._runtime(definition.metric_id)
         selector: dict[str, str] = dict(definition.base_selector)
@@ -159,7 +161,12 @@ class PrometheusMonitor(MonitorSource):
             selector["instance"] = self.metrics_config.instance
         if runtime is not None:
             selector.update(runtime.selector)
-        if instance:
+        if target is not None:
+            selector = _strip_label(selector, "job")
+            selector = _strip_label(selector, "instance")
+            selector["job"] = target.job
+            selector["instance"] = target.instance
+        elif instance:
             selector = _strip_label(selector, "instance")
             selector["instance"] = instance
         return selector
@@ -169,12 +176,13 @@ class PrometheusMonitor(MonitorSource):
         definition: MetricDefinition,
         *,
         instance: str | None = None,
+        target: MonitorTarget | None = None,
         range_query: bool = False,
     ) -> str:
         template = definition.range_expr_template if range_query else definition.expr_template
         if not template:
             raise MonitorError(f"指标 {definition.metric_id} 不支持该查询")
-        selector = self._effective_selector(definition, instance=instance)
+        selector = self._effective_selector(definition, instance=instance, target=target)
         matchers = ",".join(_matcher_text(key, value) for key, value in selector.items())
         # 纯动态 matcher 直接放进 {}；固定 matcher 后面才需要一个前导逗号。
         expr = template.replace("__SELECTOR_COMMA__", f",{matchers}" if matchers else "")
@@ -185,12 +193,15 @@ class PrometheusMonitor(MonitorSource):
         metric_id: str,
         *,
         selector: Mapping[str, str] | None = None,
+        target: MonitorTarget | None = None,
     ) -> list[MetricSample]:
         definition = self._definition(metric_id)
         instance = _instance_from_selector(selector)
         if definition.kind == "alert_count":
-            alerts = self.active_alerts()
-            effective = self._effective_selector(definition, instance=instance)
+            alerts = self.active_alerts(target=target)
+            effective = self._effective_selector(
+                definition, instance=instance, target=target
+            )
             if effective:
                 alerts = [a for a in alerts if _alert_matches_selector(a, effective)]
             visible = [a for a in alerts if a.get("state") in ("pending", "firing")]
@@ -206,7 +217,11 @@ class PrometheusMonitor(MonitorSource):
             return samples
 
         return self._parse_samples(
-            metric_id, definition, self._query(self._render_expr(definition, instance=instance))
+            metric_id,
+            definition,
+            self._query(
+                self._render_expr(definition, instance=instance, target=target)
+            ),
         )
 
     def _parse_samples(
@@ -246,14 +261,17 @@ class PrometheusMonitor(MonitorSource):
     def query_metric_trend(
         self,
         metric_id: str,
-        instance: str,
+        instance: str | None = None,
         *,
         minutes: int = 60,
         step: str = "5m",
         selector: Mapping[str, str] | None = None,
+        target: MonitorTarget | None = None,
     ) -> dict[str, Any]:
         definition = self._definition(metric_id)
-        expr = self._render_expr(definition, instance=instance, range_query=True)
+        expr = self._render_expr(
+            definition, instance=instance, target=target, range_query=True
+        )
         try:
             series = self._query_range(expr, minutes=minutes, step=step)
         except MonitorError as exc:
@@ -301,7 +319,9 @@ class PrometheusMonitor(MonitorSource):
         return mounts
 
     # -- MonitorSource：活动告警 ------------------------------------------
-    def active_alerts(self) -> list[dict[str, Any]]:
+    def active_alerts(
+        self, *, target: MonitorTarget | None = None
+    ) -> list[dict[str, Any]]:
         data = self._request("alerts", {})
         records: list[dict[str, Any]] = []
         for item in data.get("alerts", []):
@@ -317,6 +337,7 @@ class PrometheusMonitor(MonitorSource):
                     "alertname": labels.get("alertname", "unknown"),
                     "severity": labels.get("severity", "none"),
                     "instance": labels.get("instance", "unknown"),
+                    "job": labels.get("job", ""),
                     "state": item.get("state", "unknown"),
                     "activeAt": item.get("activeAt", ""),
                     "value": value,
@@ -325,9 +346,37 @@ class PrometheusMonitor(MonitorSource):
                 }
             )
 
+        if target is not None:
+            records = [
+                record for record in records
+                if record["instance"] == target.instance
+                and record["job"] == target.job
+            ]
         state_rank = {"firing": 0, "pending": 1}
         records.sort(key=lambda r: (state_rank.get(r["state"], 9), r["alertname"]))
         return records
+
+    def target_status(self, target: MonitorTarget) -> dict[str, Any]:
+        """按登记的 job/instance 查询 up，明确区分四类状态。"""
+        selector = {
+            "job": target.job,
+            "instance": target.instance,
+        }
+        expr = "up{" + ",".join(
+            _matcher_text(key, value) for key, value in selector.items()
+        ) + "}"
+        result = self._query(expr)
+        if not result:
+            return {"state": "no_data", "value": None}
+        if len(result) != 1:
+            return {"state": "ambiguous", "value": None}
+        value = self._first_value(result)
+        if value is None:
+            return {"state": "no_data", "value": None}
+        return {
+            "state": "reachable" if value >= 1.0 else "unreachable",
+            "value": value,
+        }
 
     def instance_trend(
         self,

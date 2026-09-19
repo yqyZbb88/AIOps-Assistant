@@ -1,0 +1,26 @@
+# 静态主机清单。模型和 API 只能引用 id，不能提交任意地址或凭据。
+version: 1
+
+credentials:
+  ops-default:
+    username: "${SSH_USER:-ops}"
+    key_filename: "${SSH_KEY_FILENAME:-}"
+    password: "${SSH_PASSWORD:-}"
+    known_hosts: "${SSH_KNOWN_HOSTS:-}"
+
+hosts:
+  - id: local-node
+    name: 本地演示主机
+    enabled: true
+    prometheus:
+      job: node
+      instance: "${PROMETHEUS_INSTANCE:-localhost:9100}"
+    ssh:
+      host: "${SSH_HOST:-localhost}"
+      port: 22
+      credential_ref: ops-default
+      connect_timeout: 8
+    allow:
+      diagnostics: [memory, disk, top_processes, service_status, service_logs]
+      rule_actions: []
+      agent_actions: []

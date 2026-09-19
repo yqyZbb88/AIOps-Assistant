@@ -47,6 +47,7 @@ from src.interfaces.diagnostic import (
 from src.interfaces.inspection import InspectionError, InspectionStore
 from src.interfaces.metric import MetricDefinition, MetricsConfig
 from src.interfaces.monitor import MonitorSource
+from src.interfaces.host import MonitorTarget
 from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG, tool_name
 from src.utils.freshness import freshness_note
 from src.utils.metrics_config import default_metrics_config
@@ -59,6 +60,7 @@ def build_tools(
     metrics_config: MetricsConfig | None = None,
     *,
     catalog: tuple[MetricDefinition, ...] = METRIC_CATALOG,
+    target: MonitorTarget | None = None,
 ) -> list:
     """按注入监控源和 metrics.yaml 的 chat surface 动态生成只读工具。"""
     if monitor is None:
@@ -73,7 +75,9 @@ def build_tools(
             continue
 
         def _run(_definition=definition) -> str:
-            return capabilities.metric_text(monitor, _definition, with_freshness=True)
+            return capabilities.metric_text(
+                monitor, _definition, with_freshness=True, target=target
+            )
 
         tools.append(
             StructuredTool.from_function(
@@ -128,7 +132,9 @@ def _render_inspection_anomalies(records) -> str:
     return "\n".join(lines)
 
 
-def build_inspection_tools(store: InspectionStore | None) -> list:
+def build_inspection_tools(
+    store: InspectionStore | None, *, host_id: str | None = None
+) -> list:
     """生成异常巡检归档查询工具；存储不可用时返回空列表。"""
     if store is None:
         return []
@@ -139,7 +145,13 @@ def build_inspection_tools(store: InspectionStore | None) -> list:
     ) -> str:
         safe_limit = max(1, min(int(limit), 50))
         try:
-            records = store.recent(limit=min(safe_limit * 5, 250))
+            records = (
+                store.recent(limit=min(safe_limit * 5, 250))
+                if host_id is None
+                else store.recent(
+                    limit=min(safe_limit * 5, 250), host_id=host_id
+                )
+            )
         except InspectionError as exc:
             return (
                 f"查询异常巡检归档失败：{exc}\n"

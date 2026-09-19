@@ -101,6 +101,13 @@ class MetricsSettings:
 
 
 @dataclass(frozen=True)
+class HostsSettings:
+    """静态主机清单；空 file 保留旧单主机兼容方式。"""
+
+    file: str = ""
+
+
+@dataclass(frozen=True)
 class InspectionSettings:
     """固定指标巡检调度与归档配置；具体指标来自 metrics.yaml。"""
 
@@ -109,6 +116,9 @@ class InspectionSettings:
     run_on_start: bool = True
     ttl_hours: int = 168
     max_rows: int = 1000
+    max_hosts_per_run: int = 50
+    max_queries_per_run: int = 500
+    round_timeout_seconds: int = 120
 
 
 @dataclass(frozen=True)
@@ -191,6 +201,7 @@ class Settings:
     alert: AlertSettings = AlertSettings()
     chat: ChatSettings = ChatSettings()
     metrics: MetricsSettings = MetricsSettings()
+    hosts: HostsSettings = HostsSettings()
     inspection: InspectionSettings = InspectionSettings()
     storage: StorageSettings = StorageSettings()
     logging: LoggingSettings = LoggingSettings()
@@ -208,6 +219,7 @@ _SUB_MODELS: dict[str, type] = {
     "alert": AlertSettings,
     "chat": ChatSettings,
     "metrics": MetricsSettings,
+    "hosts": HostsSettings,
     "inspection": InspectionSettings,
     "storage": StorageSettings,
     "logging": LoggingSettings,
@@ -332,6 +344,12 @@ def _validate_settings(settings: Settings) -> None:
         raise ConfigError("inspection.ttl_hours 必须大于等于 1")
     if ins.max_rows < 1:
         raise ConfigError("inspection.max_rows 必须大于等于 1")
+    if not 1 <= ins.max_hosts_per_run <= 1000:
+        raise ConfigError("inspection.max_hosts_per_run 必须在 1~1000 之间")
+    if not 1 <= ins.max_queries_per_run <= 100000:
+        raise ConfigError("inspection.max_queries_per_run 必须在 1~100000 之间")
+    if not 1 <= ins.round_timeout_seconds <= 86400:
+        raise ConfigError("inspection.round_timeout_seconds 必须在 1~86400 秒之间")
 
 
 

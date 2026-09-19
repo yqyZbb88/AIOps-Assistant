@@ -26,10 +26,15 @@ class FakeClock:
         self.now += seconds
 
 
-def _result(level=LEVEL_WARNING, checked_at="2026-01-01T00:00:00+00:00"):
+def _result(
+    level=LEVEL_WARNING,
+    checked_at="2026-01-01T00:00:00+00:00",
+    host_id="",
+):
     return InspectionResult(
         checked_at=checked_at,
         level=level,
+        host_id=host_id,
         snapshot={"cpu": {"value": 85.0}},
         findings=(InspectionFinding("cpu", level, "cpu high", value=85.0, threshold=80),),
     )
@@ -76,6 +81,22 @@ def test_recent_is_newest_first(tmp_path):
         "2026-01-01T00:00:01+00:00",
         "2026-01-01T00:00:00+00:00",
     ]
+
+
+def test_recent_can_be_filtered_by_host(tmp_path):
+    store = _store(tmp_path)
+    store.record(_result(host_id="host-a"))
+    store.record(
+        _result(
+            LEVEL_CRITICAL,
+            checked_at="2026-01-01T00:00:01+00:00",
+            host_id="host-b",
+        )
+    )
+
+    rows = store.recent(host_id="host-a")
+    assert len(rows) == 1
+    assert rows[0].host_id == "host-a"
 
 
 def test_purge_by_ttl(tmp_path):

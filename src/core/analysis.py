@@ -13,6 +13,7 @@ from typing import Any
 
 from src.core.prompts import ALERT_ANALYSIS_SYSTEM
 from src.interfaces.llm_client import LLMClient
+from src.interfaces.host import HostRegistry, MonitorTarget
 from src.interfaces.metric import MetricDefinition, MetricsConfig
 from src.interfaces.monitor import MonitorSource
 from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
@@ -55,6 +56,8 @@ def build_alert_context(
     trend_minutes: int = 60,
     metrics_config: MetricsConfig | None = None,
     catalog: tuple[MetricDefinition, ...] = METRIC_CATALOG,
+    target: MonitorTarget | None = None,
+    strict_target: bool = False,
 ) -> str:
     """组装一条告警的 LLM 分析上下文：告警详情 + 实例近 trend_minutes 分钟趋势。
 
@@ -83,6 +86,9 @@ def build_alert_context(
         lines.append(f"- 描述：{description}")
 
     instance = alert.instance
+    if strict_target and target is None:
+        lines.append("[实例趋势]\\n- 告警无法唯一归属已登记主机，禁止按原始 instance 查询")
+        return "\\n".join(lines)
     if not instance or instance == "unknown":
         lines.append("[实例趋势]\n- 实例信息缺失，无法查询历史趋势")
         return "\n".join(lines)
@@ -97,11 +103,14 @@ def build_alert_context(
             continue
         title = definition.display_name.replace(" ", "")
         try:
-            metric = monitor.query_metric_trend(
-                definition.metric_id,
-                instance,
-                minutes=trend_minutes,
-            )
+            if target is None:
+                metric = monitor.query_metric_trend(
+                    definition.metric_id, instance, minutes=trend_minutes
+                )
+            else:
+                metric = monitor.query_metric_trend(
+                    definition.metric_id, minutes=trend_minutes, target=target
+                )
         except Exception as exc:  # 尽力而为：单项失败不影响整体
             logger.debug("告警趋势取数失败 metric=%s instance=%s: %s", definition.metric_id, instance, exc)
             metric = {}
@@ -141,30 +150,35 @@ class AlertAnalyzer:
         trend_minutes: int = 60,
         system: str | None = None,
         metrics_config: MetricsConfig | None = None,
+        hosts: HostRegistry | None = None,
     ) -> None:
         self.monitor = monitor
         self.llm = llm
         self.trend_minutes = trend_minutes
         self.system = system or ALERT_ANALYSIS_SYSTEM
         self.metrics_config = metrics_config or default_metrics_config()
+        self.hosts = hosts
 
     def analyze(self, alert: Alert) -> dict[str, Any]:
         """对单条告警生成 AI 建议条目；失败（未配置 / 网络 / 空返回）抛 LLMError。"""
         if self.llm is None:
             raise _LLMUnavailable("LLM 未配置（settings.llm.enabled=false 或无 provider）")
 
+        resolution = self.hosts.resolve_labels(alert.labels) if self.hosts else None
         context = build_alert_context(
             alert,
             self.monitor,
             trend_minutes=self.trend_minutes,
             metrics_config=self.metrics_config,
+            target=resolution.host.monitor if resolution and resolution.host else None,
+            strict_target=self.hosts is not None,
         )
         prompt = redact_text(f"{_ANALYSIS_QUESTION}\n\n{context}")
         advice = redact_text(self.llm.complete(prompt, system=self.system))
         if len(advice) > 8000:
             advice = advice[:8000] + "\n…（AI 建议过长已截断）"
 
-        return {
+        result = {
             "alert_key": alert.alert_key,  # 与归档表的关联键（见 storage/models.py）
             "alertname": alert.alertname,
             "severity": alert.severity,
@@ -172,6 +186,10 @@ class AlertAnalyzer:
             "advice": advice,
             "analyzed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+        if resolution is not None:
+            result["host_id"] = resolution.host_id
+            result["host_resolution"] = resolution.status
+        return result
 
     def analyze_many(self, alerts: list[Alert]) -> list[dict[str, Any]]:
         """对多条无规则告警逐个分析；单条失败仅记日志跳过，不阻塞整体。

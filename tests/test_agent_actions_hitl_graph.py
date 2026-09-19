@@ -64,7 +64,8 @@ def _tool_call(name: str, args: dict, call_id: str = "c1") -> AIMessage:
 
 
 def _build_assistant(
-    monkeypatch, responses, *, fake_actions, diag=None, approvals=None, ledger=None
+    monkeypatch, responses, *, fake_actions, diag=None, approvals=None, ledger=None,
+    **assistant_kwargs,
 ):
     """构建挂了审批中间件的 OpsAssistant（模型被替换为脚本化假模型）。"""
     from src.agent import assistant as assistant_mod
@@ -77,6 +78,7 @@ def _build_assistant(
         agent_actions=fake_actions,
         approvals=approvals if approvals is not None else ApprovalStore(),
         ledger=ledger,
+        **assistant_kwargs,
     )
 
 
@@ -171,6 +173,44 @@ def test_pending_context_defaults_to_empty(monkeypatch, fake_actions, approvals)
     rec = approvals.get(turn.approval_id)
     assert rec["session_id"] is None
     assert rec["user"] == ""
+
+
+def test_pending_freezes_host_target_and_config(monkeypatch, fake_actions, approvals):
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"})],
+        fake_actions=fake_actions,
+        approvals=approvals,
+        host_id="host-a",
+        target_summary="host-a (Host A)",
+        config_fingerprint="cfg-a",
+    )
+
+    turn = agent.reply_turn_ctx("重启 nginx", session_id="s-1", user="alice")
+    pending = agent.pending_approvals()[0]
+
+    assert pending.host_id == "host-a"
+    assert pending.target_summary == "host-a (Host A)"
+    assert pending.config_fingerprint == "cfg-a"
+    assert "host-a (Host A)" in turn.text
+
+
+def test_config_drift_rejects_approval_before_execution(monkeypatch, fake_actions, approvals):
+    agent = _build_assistant(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"})],
+        fake_actions=fake_actions,
+        approvals=approvals,
+        host_id="host-a",
+        config_fingerprint="cfg-before",
+    )
+    turn = agent.reply_turn_ctx("重启 nginx")
+    agent.config_fingerprint = "cfg-after"
+
+    with pytest.raises(ApprovalError, match="配置已变化"):
+        agent.decide(turn.approval_id, action="approve")
+
+    assert fake_actions.calls == []
 
 
 def test_reply_turn_is_a_thin_forwarder(monkeypatch, fake_actions, approvals):

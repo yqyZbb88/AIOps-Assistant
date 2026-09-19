@@ -16,6 +16,9 @@
 from __future__ import annotations
 
 import logging
+import json
+import inspect
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -33,6 +36,7 @@ from src.interfaces.diagnostic import DiagnosticSource
 from src.interfaces.inspection import InspectionStore
 from src.interfaces.metric import MetricsConfig
 from src.interfaces.monitor import MonitorSource
+from src.interfaces.host import MonitorTarget
 from src.interfaces.session import ApprovalLedger, ChatMessage, TurnResult
 from src.storage.approval import ApprovalStore
 from src.utils.model_loader import ModelLoadError, content_text, get_model
@@ -129,13 +133,17 @@ def _extract_interrupt(response: Any) -> dict | None:
     return value if isinstance(value, dict) else {}
 
 
-def _render_pending(approval_id: str, interrupt_value: dict) -> str:
+def _render_pending(
+    approval_id: str, interrupt_value: dict, *, target_summary: str = ""
+) -> str:
     """把待审批项渲染成给用户看的文本（同时也是 /chat 的 reply 内容）。
 
     文案要点：说清是什么命令、什么参数、命令**尚未执行**、以及怎么批准。
     """
     actions = interrupt_value.get("action_requests") or []
     lines = [f"⚠️ 待人工审批（审批通过前命令不会执行）｜审批 id：{approval_id}"]
+    if target_summary:
+        lines.append(f"  · 目标主机：{target_summary}")
     for item in actions:
         name = item.get("name", "?")
         args = item.get("args") or {}
@@ -196,6 +204,10 @@ class OpsAssistant:
         response_format=None,
         debug: bool = False,
         recursion_limit: int = 25,
+        host_id: str = "",
+        monitor_target: MonitorTarget | None = None,
+        target_summary: str = "",
+        config_fingerprint: str = "",
     ) -> None:
         # 本构造会触发 langchain / init.py 惰性导入；失败向上抛，由调用方回落
         from src.agent.prompts import (
@@ -219,11 +231,17 @@ class OpsAssistant:
         self.system_prompt = system_prompt or OPS_SYSTEM_PROMPT
         self.debug = debug
         self.recursion_limit = max(int(recursion_limit), 1)
+        self.host_id = host_id
+        self.target_summary = target_summary or host_id
+        self.config_fingerprint = config_fingerprint
         self.checkpointer = None
 
         # 监控工具 + 只读诊断工具（诊断源为 None 时不注册，Agent 看不到该能力）
-        self.tools = build_tools(monitor, metrics_config)
-        self.tools = [*self.tools, *build_inspection_tools(inspection_store)]
+        self.tools = build_tools(monitor, metrics_config, target=monitor_target)
+        self.tools = [
+            *self.tools,
+            *build_inspection_tools(inspection_store, host_id=host_id or None),
+        ]
         if diag is not None:
             self.tools = [*self.tools, *build_diag_tools(diag)]
 
@@ -335,7 +353,9 @@ class OpsAssistant:
                 thread_id, interrupted, session_id=session_id, user=user
             )
             return TurnResult(
-                text=_render_pending(approval_id, interrupted),
+                text=_render_pending(
+                    approval_id, interrupted, target_summary=self.target_summary
+                ),
                 status="pending_approval",
                 approval_id=approval_id,
             )
@@ -375,6 +395,9 @@ class OpsAssistant:
                     rec.get("allowed_decisions") or ALLOWED_APPROVAL_DECISIONS
                 ),
                 user=rec.get("user") or "",
+                host_id=rec.get("host_id") or "",
+                target_summary=rec.get("target_summary") or "",
+                config_fingerprint=rec.get("config_fingerprint") or "",
             )
             for rec in self.approvals.list()
         ]
@@ -401,6 +424,14 @@ class OpsAssistant:
             raise ApprovalError(f"未知、已过期或已被处理的审批 id: {approval_id}")
 
         actions = list(record.get("actions") or ())
+        if (
+            record.get("host_id") != self.host_id
+            or record.get("config_fingerprint", "") != self.config_fingerprint
+        ):
+            self._delete_thread(record.get("thread_id"))
+            raise ApprovalError(
+                "待审批项的主机或配置已变化，已拒绝执行；请在当前配置下重新发起"
+            )
         allowed = tuple(record.get("allowed_decisions") or ALLOWED_APPROVAL_DECISIONS)
         if action not in allowed:
             raise ApprovalError(
@@ -438,13 +469,24 @@ class OpsAssistant:
 
         from langgraph.types import Command  # 惰性导入：仅审批路径需要
 
-        response = self.agent.invoke(
-            Command(resume={"decisions": decisions}),
-            config={
-                "configurable": {"thread_id": thread_id},
-                "recursion_limit": self.recursion_limit,
-            },
+        if action == "reject" and hasattr(self.agent_actions, "record_rejection"):
+            self.agent_actions.record_rejection(approval_id, actions)
+        execution_context = (
+            self.agent_actions.approval_context(approval_id)
+            if action == "approve"
+            and self.agent_actions is not None
+            and hasattr(self.agent_actions, "approval_context")
+            else nullcontext()
         )
+
+        with execution_context:
+            response = self.agent.invoke(
+                Command(resume={"decisions": decisions}),
+                config={
+                    "configurable": {"thread_id": thread_id},
+                    "recursion_limit": self.recursion_limit,
+                },
+            )
 
         # 续跑可能触发**下一条**写命令（同一线程、新的中断），需继续挂起等审批
         interrupted = _extract_interrupt(response)
@@ -461,7 +503,9 @@ class OpsAssistant:
                 approval_id=approval_id,
                 decision=action,
                 status="pending_approval",
-                reply=_render_pending(next_id, interrupted),
+                reply=_render_pending(
+                    next_id, interrupted, target_summary=self.target_summary
+                ),
                 next_approval_id=next_id,
             )
 
@@ -506,6 +550,9 @@ class OpsAssistant:
                 "created_at": _now_iso(),
                 "session_id": session_id,
                 "user": user or "",
+                "host_id": self.host_id,
+                "target_summary": self.target_summary,
+                "config_fingerprint": self.config_fingerprint,
             }
         )
         if evicted is not None:
@@ -536,14 +583,32 @@ class OpsAssistant:
         if self.ledger is None:
             return
         try:
-            self.ledger.record_decision(
-                approval_id,
-                session_id=record.get("session_id"),
-                action=action,
-                # 触发者即决策人：待审批项只对它自己可见（/approvals 按归属隔离），
-                # 所以批准它的必然就是当初触发它的那个身份。空串 = 当时鉴权未启用。
-                decided_by=record.get("user") or "",
+            method = self.ledger.record_decision
+            kwargs = {
+                "session_id": record.get("session_id"),
+                "action": action,
+                "decided_by": record.get("user") or "",
+            }
+            signature = inspect.signature(method)
+            supports_extended = (
+                "host_id" in signature.parameters
+                or any(
+                    p.kind is inspect.Parameter.VAR_KEYWORD
+                    for p in signature.parameters.values()
+                )
             )
+            if supports_extended:
+                kwargs.update(
+                    host_id=record.get("host_id") or "",
+                    target_summary=record.get("target_summary") or "",
+                    actions_json=json.dumps(
+                        record.get("actions") or (),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    config_fingerprint=record.get("config_fingerprint") or "",
+                )
+            method(approval_id, **kwargs)
         except Exception as exc:  # noqa: BLE001 - 一律转成「审批暂不可用」，别炸成 500
             logger.error("审批决策记录落盘失败，已中止本次决策（命令未执行）: %s", exc)
             raise ApprovalUnavailableError(
