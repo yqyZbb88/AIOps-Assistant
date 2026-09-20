@@ -153,7 +153,10 @@ def test_pending_records_session_and_user_from_reply_turn_ctx(monkeypatch, fake_
     assert rec is not None
     assert rec["session_id"] == "s-1"
     assert rec["user"] == "alice"
-    assert agent.pending_approvals()[0].user == "alice", "对外暴露的 PendingApproval 也要带"
+    pending = agent.pending_approvals()[0]
+    assert pending.session_id == "s-1", "对外暴露的 PendingApproval 也要带会话归属"
+    assert pending.user == "alice", "对外暴露的 PendingApproval 也要带身份归属"
+    assert pending.to_dict()["session_id"] == "s-1", "API 序列化不能丢掉会话归属"
 
 
 def test_pending_context_defaults_to_empty(monkeypatch, fake_actions, approvals):

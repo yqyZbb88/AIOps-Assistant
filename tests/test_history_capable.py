@@ -65,6 +65,25 @@ def test_interrupt_is_recorded_as_pending(monkeypatch, store):
     assert store.history(turn.session_id) == [], "pending 轮不进模型窗口"
 
 
+def test_chat_service_passes_session_and_user_to_real_agent(monkeypatch, store):
+    """生产调用链必须优先走 reply_turn_ctx，不能在历史能力处分流并丢上下文。"""
+    svc = _service(
+        monkeypatch,
+        [_tool_call("restart_service", {"service": "nginx"})],
+        store,
+    )
+    info = store.create(user="alice")
+
+    turn = svc.reply_turn(
+        "帮我重启 nginx", session_id=info.session_id, user="alice"
+    )
+
+    assert turn.approval_id
+    pending = svc.pending_approvals()[0]
+    assert pending.session_id == info.session_id
+    assert pending.user == "alice"
+
+
 def test_pending_turn_is_not_in_next_turn_history(monkeypatch, store):
     """中断那轮若只标 assistant 行，下一轮窗口里会出现「没回答的提问」——这里锁死整轮。"""
     svc = _service(

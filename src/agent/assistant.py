@@ -394,6 +394,7 @@ class OpsAssistant:
                 allowed_decisions=tuple(
                     rec.get("allowed_decisions") or ALLOWED_APPROVAL_DECISIONS
                 ),
+                session_id=rec.get("session_id"),
                 user=rec.get("user") or "",
                 host_id=rec.get("host_id") or "",
                 target_summary=rec.get("target_summary") or "",

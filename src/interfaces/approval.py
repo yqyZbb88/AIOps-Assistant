@@ -39,6 +39,8 @@ class PendingApproval:
     created_at: str
     actions: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     allowed_decisions: tuple[str, ...] = ("approve", "reject")
+    #: 触发这条写命令的会话；None = 旧入口或无会话存储
+    session_id: str | None = None
     #: 触发这条写命令的**身份**（由密钥推出）；空串 = 鉴权关闭时产生的
     user: str = ""
     host_id: str = ""
@@ -52,6 +54,7 @@ class PendingApproval:
             "created_at": self.created_at,
             "actions": list(self.actions),
             "allowed_decisions": list(self.allowed_decisions),
+            "session_id": self.session_id,
             "user": self.user,
             "host_id": self.host_id or None,
             "target_summary": self.target_summary,
