@@ -21,6 +21,7 @@ from src.interfaces.assistant import (
     ApprovalCancellable,
     ApprovalCapable,
     ApprovalContextCapable,
+    ApprovalDecisionContextCapable,
     Assistant,
 )
 from src.interfaces.metric import MetricDefinition, MetricsConfig
@@ -355,7 +356,14 @@ class ChatService:
                 logger.warning("查询待审批项失败: %s", exc)
         return sorted(result, key=lambda item: item.created_at, reverse=True)
 
-    def decide(self, approval_id: str, *, action: str, reason: str = "") -> ApprovalOutcome:
+    def decide(
+        self,
+        approval_id: str,
+        *,
+        action: str,
+        reason: str = "",
+        decided_by: str | None = None,
+    ) -> ApprovalOutcome:
         """提交一次审批决策；Agent 不支持审批时抛 ApprovalError（由 api 转 503/404）。
 
         决策跑完后要**回填会话表**：中断那轮的最终回答是在这里才产生的，不回填的话
@@ -384,7 +392,15 @@ class ChatService:
                 "Agent 未启用写命令能力（config/agent_actions.yaml 未启用，或聊天尚未构建 Agent）"
             )
         try:
-            outcome = assistant.decide(approval_id, action=action, reason=reason)
+            if isinstance(assistant, ApprovalDecisionContextCapable):
+                outcome = assistant.decide_as(
+                    approval_id,
+                    action=action,
+                    reason=reason,
+                    decided_by=decided_by,
+                )
+            else:
+                outcome = assistant.decide(approval_id, action=action, reason=reason)
         except ApprovalUnavailableError:
             raise  # 能力没开 ≠ 这一条失效，不能把它标成 abandoned
         except ApprovalError:

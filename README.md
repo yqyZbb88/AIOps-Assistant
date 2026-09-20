@@ -240,6 +240,6 @@ conda run -n langchain1.2 python -m pytest -q
 python -m compileall -q src tests init.py
 ```
 
-自动化测试必须离线，不访问真实 DeepSeek、Prometheus、SSH 或公共网络。当前 fake
-monitor/SSH 双主机隔离测试已完成；真实双 Linux 主机联调尚未执行，不能把容器或 fake
-结果视为实机验收。
+自动化测试必须离线，不访问真实 DeepSeek、Prometheus、SSH 或公共网络。fake
+monitor/SSH 双主机隔离回归和两台独立 Linux 主机的真实 Prometheus、Alertmanager、
+SSH、规则动作及 Agent 审批闭环均已完成；实机记录见 roadmap 和 PROJECT_HANDOVER。

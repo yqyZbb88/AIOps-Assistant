@@ -196,7 +196,11 @@ class SshAgentActionSource(AgentActionSource):
                 action="agent_action", command=command, host=host,
                 params=supplied, started_at=started_at, error=str(exc),
             )
-            raise AgentActionError(f"写命令 SSH 执行失败（host={host}）: {exc}") from exc
+            public_target = self.target_summary or self.execution_host_id or "服务端绑定目标"
+            safe_error = str(exc).replace(host, public_target)
+            raise AgentActionError(
+                f"写命令 SSH 执行失败（target={public_target}）: {safe_error}"
+            ) from exc
 
         # 写语义：非零退出码就是失败（与只读诊断相反）
         if code != 0:
@@ -210,8 +214,10 @@ class SshAgentActionSource(AgentActionSource):
             )
             if execution is not None:
                 self._finish_execution(execution.execution_id, "failed", detail)
+            public_target = self.target_summary or self.execution_host_id or "服务端绑定目标"
             raise AgentActionError(
-                f"写命令执行失败（host={host}，exit_code={code}）：{detail or '(无输出)'}"
+                f"写命令执行失败（target={public_target}，exit_code={code}）："
+                f"{detail or '(无输出)'}"
             )
 
         raw_output = (out or err).strip() or "(无输出)"
@@ -235,6 +241,8 @@ class SshAgentActionSource(AgentActionSource):
         return {
             "ok": True,
             "host": host,
+            "host_id": self.execution_host_id,
+            "target_summary": self.target_summary,
             "command": command,
             "exit_code": code,
             "output": output,

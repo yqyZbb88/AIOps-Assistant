@@ -10,7 +10,7 @@ import logging
 
 import pytest
 
-from src.interfaces.agent_action import AgentActionError
+from src.interfaces.agent_action import AgentActionError, render_agent_action
 from src.plugins.agent_actions.catalog import parse_agent_actions
 from src.plugins.agent_actions.source import SshAgentActionSource
 
@@ -68,6 +68,24 @@ def test_run_ok_builds_command_and_passes_sudo(source, monkeypatch):
     assert calls[0]["command"] == "systemctl restart nginx"
     assert calls[0]["sudo"] is True, "sudo 必须按目录声明传递"
     assert calls[0]["password"] == "secret-in-test", "凭据来自配置，不进工具参数"
+
+
+def test_model_render_uses_host_identity_not_ssh_address(source, monkeypatch):
+    """工具结果进入模型前只能显示主机 ID/摘要，不能暴露连接地址。"""
+    _stub(monkeypatch, out="ok")
+    source.configure_execution(
+        None,
+        host_id="node-a",
+        target_summary="node-a (验收节点 A)",
+        config_fingerprint="cfg",
+    )
+
+    rendered = render_agent_action(
+        source.run("restart_service", params={"service": "nginx"})
+    )
+
+    assert "node-a (验收节点 A)" in rendered
+    assert "192.168.1.1" not in rendered
 
 
 def test_sudo_false_per_catalog(source, monkeypatch):

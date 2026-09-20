@@ -404,6 +404,38 @@ class OpsAssistant:
         ]
 
     def decide(self, approval_id: str, *, action: str, reason: str = "") -> ApprovalOutcome:
+        """兼容旧调用方：未显式提供决策人时沿用申请人身份。"""
+        return self._decide(
+            approval_id,
+            action=action,
+            reason=reason,
+            decided_by=None,
+        )
+
+    def decide_as(
+        self,
+        approval_id: str,
+        *,
+        action: str,
+        reason: str = "",
+        decided_by: str | None = None,
+    ) -> ApprovalOutcome:
+        """提交审批并把 API 已认证的真实决策人写入持久化审计。"""
+        return self._decide(
+            approval_id,
+            action=action,
+            reason=reason,
+            decided_by=decided_by,
+        )
+
+    def _decide(
+        self,
+        approval_id: str,
+        *,
+        action: str,
+        reason: str = "",
+        decided_by: str | None = None,
+    ) -> ApprovalOutcome:
         """提交一次审批决策并续跑：approve → 真正执行；reject → 放弃。
 
         严格性说明（都对应实测过的坑）：
@@ -449,7 +481,12 @@ class OpsAssistant:
         # 落盘明确失败时命令尚未开始执行，可以安全恢复原审批项供调用方重试。
         # resume() 失败时绝不能恢复：那时远端命令可能已经执行，重试会造成重复写。
         try:
-            self._record_decision(approval_id, record, action)
+            self._record_decision(
+                approval_id,
+                record,
+                action,
+                decided_by=decided_by,
+            )
         except ApprovalUnavailableError:
             evicted = self.approvals.add(record)
             if evicted is not None and evicted.get("approval_id") != approval_id:
@@ -571,7 +608,14 @@ class OpsAssistant:
         )
         return approval_id
 
-    def _record_decision(self, approval_id: str, record: dict, action: str) -> None:
+    def _record_decision(
+        self,
+        approval_id: str,
+        record: dict,
+        action: str,
+        *,
+        decided_by: str | None = None,
+    ) -> None:
         """落一条决策记录（在 `pop()` 与 `resume()` 之间调用）。
 
         **写失败就中止这次决策**（抛 `ApprovalUnavailableError` → api 503）。调用方会在
@@ -588,7 +632,13 @@ class OpsAssistant:
             kwargs = {
                 "session_id": record.get("session_id"),
                 "action": action,
-                "decided_by": record.get("user") or "",
+                # API 调用必须使用已认证的审批人；None 仅用于旧入口/鉴权关闭，
+                # 此时沿用申请人以保持既有直接调用语义。
+                "decided_by": (
+                    decided_by
+                    if decided_by is not None
+                    else record.get("user") or ""
+                ),
             }
             signature = inspect.signature(method)
             supports_extended = (

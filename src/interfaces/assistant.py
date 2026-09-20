@@ -47,6 +47,26 @@ class ApprovalCapable(Protocol):
 
 
 @runtime_checkable
+class ApprovalDecisionContextCapable(Protocol):
+    """提交审批时记录真实决策人的可选能力。
+
+    单独使用 decide_as，不扩展 ApprovalCapable.decide：运行时 Protocol 只检查方法名、
+    不检查签名，直接给旧方法增加关键字参数会把旧实现误判为支持并在调用时抛 TypeError。
+    """
+
+    def decide_as(
+        self,
+        approval_id: str,
+        *,
+        action: str,
+        reason: str = "",
+        decided_by: str | None = None,
+    ) -> ApprovalOutcome:
+        """以 decided_by 身份提交决策；None 表示鉴权关闭或旧调用方。"""
+        ...
+
+
+@runtime_checkable
 class ApprovalCancellable(Protocol):
     """可**作废**待审批项的 Agent（可选能力）。
 

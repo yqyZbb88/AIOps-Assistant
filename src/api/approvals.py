@@ -198,7 +198,12 @@ def decide(
         # 由下面的 decide() 报 404，不该在审计里留下一串「批准」的假记录。
         _audit_decision(approval_id, body.action, body.reason, user, pending)
     try:
-        outcome = agent.decide(approval_id, action=body.action, reason=body.reason)
+        outcome = agent.decide(
+            approval_id,
+            action=body.action,
+            reason=body.reason,
+            decided_by=user,
+        )
     except ApprovalUnavailableError as exc:
         # 功能没开 ≠ 找错了 id：前者是部署问题，后者是调用问题
         raise HTTPException(status_code=503, detail=str(exc)) from exc

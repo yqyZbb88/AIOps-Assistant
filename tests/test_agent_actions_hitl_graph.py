@@ -256,6 +256,26 @@ def test_decide_records_the_decision(monkeypatch, fake_actions, approvals):
     assert ledger.records == [(turn.approval_id, "s-1", "approve", "alice")]
 
 
+def test_decide_as_records_authenticated_approver(monkeypatch, fake_actions, approvals):
+    """申请人和审批人分离时，decided_by 必须是实际提交决策的身份。"""
+    ledger = RecordingLedger()
+    agent = _build_assistant(
+        monkeypatch,
+        [
+            _tool_call("restart_service", {"service": "nginx"}),
+            AIMessage(content="已重启 nginx"),
+        ],
+        fake_actions=fake_actions,
+        approvals=approvals,
+        ledger=ledger,
+    )
+    turn = agent.reply_turn_ctx("重启 nginx", session_id="s-1", user="alice")
+
+    agent.decide_as(turn.approval_id, action="approve", decided_by="admin")
+
+    assert ledger.records == [(turn.approval_id, "s-1", "approve", "admin")]
+
+
 def test_decision_is_recorded_before_the_command_runs(monkeypatch, fake_actions, approvals):
     """**落盘必须发生在 resume 之前**——这是整套机制存在的理由。
 

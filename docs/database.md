@@ -128,7 +128,7 @@ duplicate_ignored
 | `session_id` | 关联会话 |
 | `action` | `approve` 或 `reject` |
 | `decided_at` | 决策时间 |
-| `decided_by` | 决策身份 |
+| `decided_by` | 实际提交 approve/reject 的认证身份；与申请人可以不同 |
 | `host_id` | 审批冻结的主机 ID |
 | `target_summary` | 不含凭据的目标摘要 |
 | `actions_json` | 审批时冻结的动作与参数快照 |

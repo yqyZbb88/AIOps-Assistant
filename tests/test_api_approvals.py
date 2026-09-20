@@ -28,6 +28,7 @@ class FakeApprovalAssistant:
 
     def __init__(self, pending_user: str = "") -> None:
         self.decisions: list[tuple[str, str, str]] = []
+        self.decision_actors: list[str | None] = []
         self._pending: list[PendingApproval] = [
             PendingApproval(
                 approval_id="abc123",
@@ -51,6 +52,17 @@ class FakeApprovalAssistant:
             return ApprovalOutcome(approval_id, action, "completed", "已取消该操作")
         self._pending = []
         return ApprovalOutcome(approval_id, action, "completed", "已重启 nginx")
+
+    def decide_as(
+        self,
+        approval_id: str,
+        *,
+        action: str,
+        reason: str = "",
+        decided_by: str | None = None,
+    ) -> ApprovalOutcome:
+        self.decision_actors.append(decided_by)
+        return self.decide(approval_id, action=action, reason=reason)
 
 
 @pytest.fixture
@@ -82,6 +94,7 @@ def test_approve_resumes(client):
     assert body["status"] == "completed"
     assert body["next_approval_id"] is None
     assert client.fake.decisions == [("abc123", "approve", "")]
+    assert client.fake.decision_actors == [None]
 
 
 def test_reject_passes_through(client):
@@ -238,7 +251,8 @@ def _approvers_only_app(pending_user: str = "alice"):
 
 
 def test_approvers_only_blocks_requester_and_allows_approver():
-    with TestClient(_approvers_only_app()) as c:
+    app = _approvers_only_app()
+    with TestClient(app) as c:
         assert c.get("/approvals", headers=_as("k-alice")).json() == []
         assert c.get("/approvals", headers=_as("k-bob")).json()[0]["approval_id"] == "abc123"
         assert c.post(
@@ -253,6 +267,7 @@ def test_approvers_only_blocks_requester_and_allows_approver():
         )
 
     assert resp.status_code == 200
+    assert app.state.agent.chat_service._assistant.decision_actors == ["bob"]
 
 
 # -- 决策人审计 --------------------------------------------------------------

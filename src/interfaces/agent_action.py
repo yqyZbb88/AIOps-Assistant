@@ -67,7 +67,13 @@ def render_agent_action(result: dict[str, Any]) -> str:
     刻意不复用 render_diag：后者的措辞是只读语义（「诊断结果」/「远端返回非零退出码」）
     且被测试逐字断言，写边界需要不同的文案。
     """
-    host = result.get("host", "")
+    # 这段文本会进入外部模型上下文，只使用服务端主机身份/脱敏摘要，
+    # 不把 SSH 连接地址回传给模型。
+    host = (
+        result.get("target_summary")
+        or result.get("host_id")
+        or "(服务端绑定目标)"
+    )
     command = result.get("command", "")
     output = result.get("output") or "(无输出)"
     text = f"写命令已执行（host={host}，command={command}）：\n```\n{output}\n```"

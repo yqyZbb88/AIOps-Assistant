@@ -101,9 +101,21 @@ class OpsAgent:
         """当前待人工决策的写命令调用（新的在前）；未启用写命令时为空列表。"""
         return self.chat_service.pending_approvals()
 
-    def decide(self, approval_id: str, *, action: str, reason: str = "") -> ApprovalOutcome:
+    def decide(
+        self,
+        approval_id: str,
+        *,
+        action: str,
+        reason: str = "",
+        decided_by: str | None = None,
+    ) -> ApprovalOutcome:
         """提交一次审批决策并续跑；未知/过期/已用过 → ApprovalError（api 层转 404）。"""
-        return self.chat_service.decide(approval_id, action=action, reason=reason)
+        return self.chat_service.decide(
+            approval_id,
+            action=action,
+            reason=reason,
+            decided_by=decided_by,
+        )
 
     # -- 告警接收（记录 + 规则处置 + AI 分析） -----------------------------
     def process_alert(self, payload: AlertmanagerPayload) -> AlertAck:

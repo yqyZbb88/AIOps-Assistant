@@ -20,6 +20,7 @@ from src.interfaces.assistant import (
     ApprovalCancellable,
     ApprovalCapable,
     ApprovalContextCapable,
+    ApprovalDecisionContextCapable,
     Assistant,
 )
 from src.interfaces.command import CommandSpec, ParamSpec
@@ -57,6 +58,7 @@ __all__ = [
     "ApprovalCapable",
     "ApprovalCancellable",
     "ApprovalContextCapable",
+    "ApprovalDecisionContextCapable",
     "ApprovalError",
     "ApprovalOutcome",
     "PendingApproval",
