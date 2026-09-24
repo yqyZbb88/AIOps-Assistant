@@ -84,13 +84,16 @@ class RuleEngine:
         execution_guard: RuleExecutionGuard | None = None,
         hosts: HostRegistry | None = None,
         execution_store: ActionExecutionStore | None = None,
+        rules_text: str | None = None,
     ) -> None:
         self.executors: dict[str, ActionExecutor] = dict(executors or {})
         self.rules_file: Path = _resolve_rules_path(rules_file)
         self.execution_guard: RuleExecutionGuard = execution_guard or _ProcessExecutionGuard()
         self.hosts = hosts
         self.execution_store = execution_store
+        self._rules_text = rules_text
         self._rules: list[ActionRule] = []
+        self._auto_execute_enabled = True
         self.reload_rules()
 
     # -- 加载 -------------------------------------------------------------
@@ -100,8 +103,12 @@ class RuleEngine:
         return list(self._rules)
 
     def reload_rules(self) -> list[ActionRule]:
-        """重新加载规则（改完 rules.yaml 后调用，无需重启服务）。"""
-        self._rules = self._load(self.rules_file)
+        """重新加载本快照的规则；快照使用冻结的 YAML 文本。"""
+        self._rules = (
+            self._load_text(self._rules_text)
+            if self._rules_text is not None
+            else self._load(self.rules_file)
+        )
         return list(self._rules)
 
     def _load(self, path: Path) -> list[ActionRule]:
@@ -115,19 +122,24 @@ class RuleEngine:
             logger.error("缺少可选依赖 pyyaml，自动处置不启用：pip install pyyaml")
             return []
         try:
-            with open(path, encoding="utf-8") as fh:
-                # 先做 ${ENV} 插值（rules.yaml 里密码等以 ${VAR} 占位），再解析
-                data = yaml.safe_load(interpolate(fh.read())) or {}
-            parsed = RulesFile(**data)
+            return self._load_text(path.read_text(encoding="utf-8"))
         except Exception as exc:  # yaml 语法错 / pydantic 校验错统一收敛
             logger.error("规则文件解析失败: %s（%s）", path, exc)
             return []
 
+    def _load_text(self, text: str) -> list[ActionRule]:
+        """从不可变文本构造规则集，避免旧请求在保存后读到新文件。"""
+        import yaml
+
+        parsed = RulesFile(**(yaml.safe_load(interpolate(text)) or {}))
+
         # 过滤未注入执行器的动作，避免运行时才报错
-        unknown = {r.action for r in parsed.rules} - set(self.executors)
+        self._auto_execute_enabled = parsed.auto_execute_enabled
+        active_rules = [rule for rule in parsed.rules if rule.enabled]
+        unknown = {r.action for r in active_rules} - set(self.executors)
         if unknown:
             logger.warning("以下动作未注入执行器，对应规则将被忽略: %s", sorted(unknown))
-        rules = [r for r in parsed.rules if r.action in self.executors]
+        rules = [r for r in active_rules if r.action in self.executors]
 
         # auto_execute 是高危路径：没有明确目标 instance 的规则一律拒绝启用。
         # 否则 Prometheus 里来自任意主机的同名告警都可能触发固定目标上的写命令。
@@ -191,9 +203,10 @@ class RuleEngine:
             record["host_id"] = resolution.host_id
             record["host_resolution"] = resolution.status
 
-        if not rule.auto_execute:
+        if not self._auto_execute_enabled or not rule.auto_execute:
             record["status"] = SKIP_MARK
-            record["detail"] = f"命中规则(动作={rule.action})，但 auto_execute=false，跳过自动执行"
+            reason = "自动处置总开关关闭" if not self._auto_execute_enabled else "auto_execute=false"
+            record["detail"] = f"命中规则(动作={rule.action})，但{reason}，跳过自动执行"
             logger.warning("告警命中规则但未自动执行: %s %s", alert.alertname, record["detail"])
             return record
 

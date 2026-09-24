@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +99,8 @@ class AlertAck(BaseModel):
 class ActionRule(BaseModel):
     """一条「告警 → 动作」规则。"""
 
+    id: str = Field("", description="稳定规则 ID；旧配置可省略")
+    enabled: bool = Field(True, description="false 时规则不参与匹配")
     alertname: str = Field(..., description="告警规则名，需与 Prometheus 的 alert 字段一致")
     action: str = Field(..., description="config/actions.yaml 写命令目录的 key")
     params: dict[str, Any] = Field(default_factory=dict, description="传给动作的参数")
@@ -109,8 +111,17 @@ class ActionRule(BaseModel):
     auto_execute: bool = Field(False, description="true=命中即自动执行；false=仅命中提示")
     description: str = Field("", description="规则用途说明")
 
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        import re
+        if value and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value) is None:
+            raise ValueError("规则 id 须以小写字母开头，仅含 a-z0-9_-")
+        return value
+
 
 class RulesFile(BaseModel):
     """规则文件顶层结构。"""
 
+    auto_execute_enabled: bool = Field(True, description="规则自动执行总开关")
     rules: list[ActionRule] = Field(default_factory=list)

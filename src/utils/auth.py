@@ -70,6 +70,14 @@ def parse_approvers(raw: str | None) -> tuple[str, ...]:
     return tuple(values)
 
 
+def parse_admins(raw: str | None) -> tuple[str, ...]:
+    """解析管理员身份数组；格式与审批人一致，但授权语义完全独立。"""
+    try:
+        return parse_approvers(raw)
+    except AuthConfigError as exc:
+        raise AuthConfigError(str(exc).replace("auth.approver_identities", "auth.admin_identities")) from exc
+
+
 def resolve_identity(
     tokens: tuple[tuple[str, str], ...], provided: str
 ) -> str | None:

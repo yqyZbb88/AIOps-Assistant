@@ -21,12 +21,14 @@
 
 | 变更类型 | 必须检查的说明 |
 |---|---|
-| API 路径、请求、响应或状态码 | README、`docs/guide.md`、路由 docstring、API 测试 |
+| API 路径、请求、响应或状态码 | README、`docs/api.md`、`docs/guide.md`、路由 docstring、API 测试 |
 | 鉴权、身份、审批范围或公开端点 | `docs/auth.md`、README 安全说明、依赖/路由注释 |
+| 控制台视图、状态或管理员操作 | `docs/console.md`、前端注释、DOM 安全与交互测试 |
 | `settings.yaml` 字段 | 配置文件注释、`docs/configuration.md`、配置加载测试 |
 | 指标或 `metrics.yaml` | 配置文件、配置指南、指标目录注释、监控/巡检/工具测试 |
 | SSH 命令目录或参数 schema | 对应 YAML 注释、配置指南、安全测试和命令目录测试 |
 | 数据库表、列、状态或清理策略 | `docs/database.md`、DDL/迁移注释、schema 与 Store 测试 |
+| 值班诊断、故障状态或恢复步骤 | `docs/troubleshooting.md`、`docs/guide.md`、相关测试 |
 | 组件装配、插件或降级路径 | README 架构、模块 docstring、Container 测试 |
 | 版本目标或实施顺序 | 更新维护计划，并同步 README 中的当前能力与限制 |
 
@@ -51,7 +53,8 @@ api → core → interfaces
 ```
 
 - `api/` 只做 HTTP 校验、鉴权、异常映射和转发。
-- `core/` 只依赖接口和注入对象，不导入具体插件或 `src.agent`。
+- `core/` 不创建具体插件或导入 `src.agent`；现存静态目录/字段常量的窄导入见
+  本地 `ARCHITECTURE.md`，新增代码不要把它扩展为运行时插件依赖。
 - `interfaces/` 不依赖第三方实现。
 - `plugins/` 放外部系统适配器和 SSH/LLM 实现。
 - `storage/` 放 SQLite 与内存存储实现。
@@ -91,6 +94,8 @@ api → core → interfaces
 
 ```bash
 conda run -n langchain1.2 python -m pytest -q
+node --check src/web/console.js
+node --test tests/console_ui.test.cjs
 python -m compileall -q src tests init.py
 git diff --check
 ```

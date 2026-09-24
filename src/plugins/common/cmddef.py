@@ -1,7 +1,8 @@
 """白名单命令目录机制：模板 + 参数声明 + 校验 + 安全命令构建（纯函数，可离线单测）。
 
-读（config/diagnostics.yaml，只读诊断）与写（config/actions.yaml，修复命令）两条边界
-共用同一套目录 schema 与构建逻辑。**本模块不 import langchain / paramiko / yaml**，
+读（diagnostics.yaml）、规则写动作（actions.yaml）与 Agent 审批写动作
+（agent_actions.yaml）共用目录 schema 与构建逻辑。**本模块不 import langchain /
+paramiko / yaml**，
 只吃已解析的 dict，异常为中性 CmdDefError（配置期）/ ParamError（运行期参数），
 由各边界映射为自己的异常（诊断 → DiagnosticsConfigError/DiagnosticError，
 动作 → CmdDefError/ActionError）。
@@ -61,6 +62,7 @@ class CmdDef:
     template: str = ""
     params: tuple[CmdParam, ...] = field(default_factory=tuple)
     sudo: bool = False          # 是否以 sudo 执行（读目录恒 False，由边界保证）
+    enabled: bool = True        # false 时保留配置但不注册为可调用命令
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +132,10 @@ def parse_command_def(key: str, spec: Any, *, allow_sudo: bool = True) -> CmdDef
     if _COMMAND_KEY.match(key) is None:
         raise CmdDefError(f"命令名 {key!r} 不合法（须小写字母开头，仅 a-z0-9_）")
 
+    enabled = spec.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise CmdDefError(f"命令 {key}.enabled 必须是布尔值")
+
     template = str(spec.get("template", "") or "").strip()
     if not template:
         raise CmdDefError(f"命令 {key}.template 不能为空")
@@ -162,6 +168,7 @@ def parse_command_def(key: str, spec: Any, *, allow_sudo: bool = True) -> CmdDef
         template=template,
         params=tuple(declared[name] for name in template_param_order(template, declared)),
         sudo=sudo,
+        enabled=enabled,
     )
 
 

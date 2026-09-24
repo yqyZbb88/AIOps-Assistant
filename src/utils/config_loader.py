@@ -58,6 +58,8 @@ class ServerSettings:
 class PrometheusSettings:
     base_url: str = "http://localhost:9090"
     timeout: int = 5
+    target_mode: str = "external"
+    file_sd_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -161,6 +163,9 @@ class AuthSettings:
     approval_mode: str = "owner"
     #: JSON 数组字符串，例如 ["alice","audit-bot"]；approvers_only 模式下必填。
     approver_identities: str = "[]"
+
+    #: 可使用系统管理 API 的最高权限身份。与审批人相互独立。
+    admin_identities: str = "[]"
 
     #: `POST /alert`（Alertmanager webhook）**只接受这个身份**的密钥；留空 = 不限制。
     #:
@@ -336,6 +341,11 @@ def _validate_settings(settings: Settings) -> None:
             "app.version 由 src/__init__.py 的 __version__ 统一管理，"
             "请从 settings.yaml 删除该字段"
         )
+
+    if settings.prometheus.target_mode not in {"external", "managed"}:
+        raise ConfigError("prometheus.target_mode 只支持 external / managed")
+    if settings.prometheus.target_mode == "managed" and not settings.prometheus.file_sd_path:
+        raise ConfigError("自管 Prometheus 模式必须配置 prometheus.file_sd_path")
 
     ins = settings.inspection
     if not 30 <= ins.interval_seconds <= 86400:

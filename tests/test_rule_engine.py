@@ -100,6 +100,20 @@ def test_rule_engine_ok_failed_skip_in_file_order(tmp_path):
     assert ok.executions  # 成功执行器的确被调用了
 
 
+def test_rule_and_global_automation_switches_are_enforced(tmp_path):
+    rules_file = tmp_path / "rules.yaml"
+    rules_file.write_text(
+        _RULES_YAML.replace("rules:\n", "auto_execute_enabled: false\nrules:\n")
+        .replace("  - alertname: HighCPUUsage\n", "  - id: disabled_rule\n    enabled: false\n    alertname: HighCPUUsage\n", 1),
+        encoding="utf-8",
+    )
+    engine = RuleEngine(executors={"ok_action": OkExecutor(), "fail_action": FailExecutor()}, rules_file=rules_file)
+    records = engine.execute_for_payload(make_payload(make_alert("HighCPUUsage", instance="h1:9100")))
+    assert len(engine.rules) == 3
+    assert records and all(record["status"] == SKIP_MARK for record in records)
+    assert all("总开关" in record["detail"] for record in records)
+
+
 def test_rule_engine_resolved_skipped(tmp_path):
     engine = _engine(tmp_path)
     payload = make_payload(make_alert("HighCPUUsage", status="resolved"))

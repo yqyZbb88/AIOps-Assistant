@@ -1,8 +1,9 @@
 """SSH 端点（Endpoint）统一抽象：连接参数与规约。
 
-共享给两条边界：
-- actions（写动作）：端点来自 config/rules.yaml 每条规则的 params（host/port/username/…）；
-- diagnostics（只读诊断）：端点来自 config/diagnostics.yaml 的 target。
+共享给三类命令边界：规则动作、Agent 写动作与只读诊断。多主机运行时连接目标统一
+来自 `hosts.yaml` 登记的主机，命令目录只声明模板和业务参数。下方
+`endpoint_from_params` 只保留旧单主机配置兼容路径，不应被新多主机 API 调用来接受
+用户/模型提交的连接参数。
 
 认证约定：key_filename（私钥）优先 → password；显式给了 key_filename 时不再试
 agent / 默认密钥（由 ssh.py 的 exec_command 落实）。本模块顶层不 import paramiko。
@@ -57,8 +58,8 @@ def endpoint_from_params(
 ) -> SshEndpoint:
     """从「规则 params」规约 SshEndpoint：host 必填，其余带默认；非法值抛 ValueError。
 
-    用于写动作：连接字段由管理员在 rules.yaml 声明（密码以 .env 占位插值），
-    与语义参数混在同一条 params 里，这里只取连接字段。
+    仅用于旧单主机写动作兼容配置：连接字段在 rules.yaml 的 params 中声明，
+    与语义参数混在一起；多主机路径必须改由登记主机的 SSH 目标提供。
 
     `connect_timeout` 未声明时用 `default_timeout`（= `DEFAULT_CONNECT_TIMEOUT`）。
     显式写 0 也落到默认值上——0 在 paramiko 里是「永不超时」，而一个不设上限的

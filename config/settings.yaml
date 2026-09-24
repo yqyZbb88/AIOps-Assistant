@@ -1,5 +1,5 @@
 # AIOps-Assistant 全局配置。
-# 所有字段在启动时读取；修改后需要重启。密钥只放 .env/环境变量，不写入本文件。
+# 管理页可编辑字段保存后热生效；监听/存储/日志路径与环境密钥仍需重启。
 
 app:
   name: AIOps-Assistant          # 应用名称，用于 API 文档和日志
@@ -11,6 +11,8 @@ server:
 prometheus:
   base_url: ${PROMETHEUS_URL:-http://localhost:9090}
   timeout: 5               # 查询超时秒数
+  target_mode: ${OPS_PROMETHEUS_TARGET_MODE:-external} # external 只登记已发现目标；managed 使用文件发现
+  file_sd_path: '${OPS_PROMETHEUS_TARGET_FILE:-}' # 自管模式下 Assistant 可写的目标文件
 
 monitor:
   provider: prometheus     # 当前注册的监控源插件
@@ -32,7 +34,7 @@ metrics:
   file: config/metrics.yaml  # 空字符串表示使用代码内置默认配置
 
 hosts:
-  file: config/hosts.yaml    # 空字符串启用旧单主机兼容方式；修改后需重启
+  file: config/hosts.yaml    # 空字符串启用旧单主机兼容方式；清单手改后由管理员显式应用
 
 alert:
   recent_limit: 100        # 内存中保留的最近告警数
@@ -78,6 +80,8 @@ auth:
   # owner：仅触发人可审批；approvers_only：列出的审批人可审批所有人的申请。
   approval_mode: approvers_only
   approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
+
+  admin_identities: '${OPS_ADMIN_IDENTITIES:-["admin"]}'
 
   # 只有该身份可以调用 POST /alert；留空会放宽为任何有效身份并产生 WARNING。
   alert_identity: alertmanager

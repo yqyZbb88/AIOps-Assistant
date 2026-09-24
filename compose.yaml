@@ -9,11 +9,15 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       PROMETHEUS_URL: http://prometheus:9090
       PROMETHEUS_INSTANCE: node-exporter:9100
+      OPS_PROMETHEUS_TARGET_MODE: managed
+      OPS_PROMETHEUS_TARGET_FILE: /app/prometheus-targets/assistant.yml
     ports: ["127.0.0.1:8000:8000"]
     volumes:
-      - ./config:/app/config:ro
+      # 管理员配置页在 /app/config 原目录原子替换 YAML；备份写入 /app/data。
+      - ./config:/app/config:rw
       - ./.runtime/assistant-data:/app/data
       - ./.runtime/assistant-logs:/app/logs
+      - ./.runtime/prometheus-targets:/app/prometheus-targets:rw
     depends_on:
       prometheus:
         condition: service_healthy
@@ -25,6 +29,7 @@ services:
     ports: ["127.0.0.1:9090:9090"]
     volumes:
       - ./deploy/prometheus:/etc/prometheus:ro
+      - ./.runtime/prometheus-targets:/etc/prometheus/assistant-targets:ro
       - prometheus-data:/prometheus
     healthcheck:
       test: ["CMD", "promtool", "check", "healthy"]

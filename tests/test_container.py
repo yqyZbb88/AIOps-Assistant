@@ -370,6 +370,9 @@ def test_lifespan_starts_and_stops_inspection_scheduler():
             self.started = False
             self.stopped = False
 
+        def configure_runtime(self, provider):
+            self.provider = provider
+
         def start(self):
             self.started = True
 
@@ -378,7 +381,7 @@ def test_lifespan_starts_and_stops_inspection_scheduler():
 
     app = create_app(settings=Settings(inspection=InspectionSettings(enabled=True)))
     fake = FakeScheduler()
-    app.state.container.inspection_scheduler = lambda: fake  # type: ignore[method-assign]
+    app.state.runtime.current.container.inspection_scheduler = lambda: fake  # type: ignore[method-assign]
 
     with TestClient(app):
         assert fake.started is True

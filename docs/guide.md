@@ -1,5 +1,8 @@
 # AIOps-Assistant 使用指南
 
+本页按部署与日常维护组织。页面逐项操作见 [console.md](console.md)，精确 HTTP 请求/响应
+见 [api.md](api.md)，证据优先的故障定位见 [troubleshooting.md](troubleshooting.md)。
+
 本文面向部署和日常使用 AIOps-Assistant 的普通用户与运维人员。
 
 ## 快速开始
@@ -13,8 +16,9 @@ python scripts/dev_stack.py up
 ```
 
 脚本首次运行会创建 `.runtime/`、生成用户 Token、Alertmanager 专用 Token 和 Grafana
-管理员密码，然后构建并启动全部五个服务。打开 `http://127.0.0.1:8000/status`，把终端显示的
-用户 Token 保存到页面会话即可。Token 只进入浏览器 `sessionStorage`，关闭该标签页会话后清除。
+管理员密码，然后构建并启动全部五个服务。打开 `http://127.0.0.1:8000/console`，把终端显示的
+用户 Token 填入连接窗口即可。Token 只进入浏览器 `sessionStorage`，关闭该标签页会话后清除。
+旧 `/status` 页面已移除，状态、记录和管理操作统一从 `/console` 进入。
 
 Grafana 默认地址是 `http://127.0.0.1:3000`。若宿主机端口已被占用，先设置
 `GRAFANA_HOST_PORT`（例如 `3001`）再执行 `up`；这不会改变容器内端口。
@@ -27,8 +31,15 @@ python scripts/dev_stack.py down
 ```
 
 `down` 默认保留 Prometheus、Alertmanager 和 Grafana 命名卷。
+这里的 `show-token` 只显示 `.runtime/compose.env` 中的 Compose Token。
+如果使用下面的本地 Python 启动方式，请改用
+`python scripts/dev_stack.py show-token --source local`；它读取根目录 `.env`
+和当前环境变量中的管理员身份映射。两种启动方式的 Token 不会自动互认。
 
 ### 本地 Python 启动
+
+本地 Python 服务使用根目录 `.env` 和启动进程的环境变量。
+`.runtime/compose.env` 不参与它的鉴权；修改 Token 后需重启本地进程。
 
 #### 1. 安装依赖
 
@@ -49,6 +60,7 @@ DEEPSEEK_API_KEY=你的模型密钥
 PROMETHEUS_URL=http://localhost:9090
 OPS_API_TOKENS={"随机密钥":"admin","alertmanager-随机密钥":"alertmanager"}
 OPS_APPROVER_IDENTITIES=["admin"]
+OPS_ADMIN_IDENTITIES=["admin"]
 ```
 
 生成随机 API 密钥：
@@ -113,7 +125,7 @@ Compose 启动后，用 textfile 指标模拟高 CPU，不会制造真实负载�
 python scripts/demo_fault.py cpu on
 ```
 
-规则包含 `for: 30s`，等待 Prometheus 评估和 Alertmanager 推送后，在状态页查看活动告警、
+规则包含 `for: 30s`，等待 Prometheus 评估和 Alertmanager 推送后，在控制台查看活动告警、
 告警归档和处置记录。`HighCPUUsage` 命中项目规则，但默认只生成“不自动执行”的记录。
 
 ```bash
@@ -143,7 +155,7 @@ docker compose start node-exporter
 - 动态主机发现和主机级 RBAC
 - 多 worker 下可靠审批
 - 审批跨进程重启恢复
-- 配置热更新
+- 多 worker 下可靠热更新
 - 任意 PromQL 执行
 - AI 任意读取日志文件
 - 生产级容器加固、TLS、高可用和灾备
@@ -163,7 +175,7 @@ docker compose start node-exporter
 - 申请执行 SSH 白名单写命令
 - 写命令人工审批
 - 统一敏感信息脱敏和有界 SSH 输出读取
-- 健康/就绪探针和只读状态页
+- 健康/就绪探针和图形化控制台
 - 可重复启动的五服务开发监控栈
 - 保存会话和历史归档
 - 持久化规则/Agent 动作的主机、幂等状态和执行结果
@@ -213,6 +225,7 @@ SSH_KNOWN_HOSTS=
 ```env
 OPS_API_TOKENS={"k-admin-随机值":"admin","k-am-随机值":"alertmanager"}
 OPS_APPROVER_IDENTITIES=["admin"]
+OPS_ADMIN_IDENTITIES=["admin"]
 ```
 
 要求：
@@ -233,8 +246,9 @@ OPS_APPROVER_IDENTITIES=["admin"]
 Authorization: Bearer <密钥>
 ```
 
-`/health`、`/ready`、`/status` 及状态页静态资源公开，但不返回凭据、地址或详细异常。
-状态页的所有实际运维数据仍通过受保护 API 获取。FastAPI 自带的 `/docs`、`/redoc` 和
+`/health`、`/ready`、`/console` 及控制台静态资源公开，但空壳不返回运维数据、凭据、
+地址或详细异常。实际数据与控制台操作仍通过受保护 API 完成。
+FastAPI 自带的 `/docs`、`/redoc` 和
 `/openapi.json` 也公开；在不可信网络部署时应由反向代理限制这些路由。
 
 ### Alertmanager
@@ -259,6 +273,34 @@ auth:
   approval_mode: approvers_only
   approver_identities: '["admin"]'
 ```
+
+### 系统管理员
+
+`admin_identities` 与审批人相互独立。只有管理员身份能调用 `/admin/config` 并看到控制台的
+“系统管理”导航。管理 API 不受 `auth.enabled=false` 影响，始终校验 Token。
+
+```yaml
+auth:
+  admin_identities: '${OPS_ADMIN_IDENTITIES:-["admin"]}'
+```
+
+管理页可维护安全/功能开关、自动处置总开关、告警规则、规则动作、Agent 动作、只读诊断
+命令和逐主机授权。普通配置编辑区不显示或修改 Token、SSH 地址、密码、密钥文件、
+known-hosts 或 Prometheus 连接地址。页面分为“安全与开关”“告警规则”“命令目录”
+“主机授权”“监控主机”五个分区，命令目录内可再切换三类命令；前四区共用一份
+未保存草稿，顶部统一保存或重载。保存成功即切换运行快照；页面外修改 YAML 后点击
+“应用磁盘配置”。监听地址、SQLite/日志路径及环境变量密钥仍需重启。
+
+“监控主机”向导先选 Prometheus 已发现目标；只有项目自管 Compose 模式能输入新的
+Exporter `主机:端口`。管理员只看到目标的必要标签与凭据 ID，不看到 SSH 密码或
+密钥路径。可选 SSH 的主机名从真实抓取目标推导，代理抓取目标不开放 SSH 选项。
+“测试 SSH”仅检查主机密钥和认证，不执行远程命令；通过后才可授予只读诊断。
+新增默认无规则动作和 Agent 写授权。`up=0` 仍可登记，但页面会明确提示 Exporter
+不可达。向导不会安装、启动或重启远程服务。
+
+主机详情的图形展示的是所选时间范围内的最小、平均、当前和最大值区间摘要，不是逐点
+时间序列；数值相同时会合并标记。运维记录默认只显示指标快照的简短预览，完整快照和
+原始 JSON 可分别展开查看。
 
 ### 轮换密钥
 
@@ -299,8 +341,9 @@ receivers:
 | `agent_actions.yaml` | Agent 写命令白名单，强制人工审批 |
 | `diagnostics.yaml` | SSH 只读诊断命令白名单 |
 
-所有配置修改后都需要重启服务；`RuleEngine` 虽有内部重载方法，但当前没有提供给用户的
-热更新 API。字段说明见 [configuration.md](configuration.md)。
+管理页可编辑字段保存后热生效；页面外手动修改 YAML 后通过管理员接口显式应用。
+监听、SQLite/日志路径和环境密钥仍需重启。字段说明见
+[configuration.md](configuration.md)。
 
 ## 七、指标和巡检
 
@@ -356,7 +399,9 @@ Prometheus 不可达，或已启用巡检但调度器未运行时返回 503。�
 |---|---|
 | `GET /health` | 缓存的组件存活状态 |
 | `GET /ready` | 主动就绪检查 |
-| `GET /status` | 只读状态页空壳 |
+| `GET /console` | 图形化操作控制台空壳 |
+| `GET /admin/config` | 管理员读取脱敏结构化配置 |
+| `PUT /admin/config` | 管理员保存配置并生成配置备份 |
 | `GET /hosts` | 已登记主机清单，不包含 SSH 地址和凭据 |
 | `GET /hosts/{id}/status` | 指定主机状态、核心指标和活动告警 |
 | `GET /hosts/{id}/metrics/{metric}` | 指定主机指标；追加 `/trend` 查询趋势 |
@@ -482,6 +527,8 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 
 ### 服务无法启动
 
+下面是快速检查项；不要通过关闭鉴权、清空主机授权或删除数据库来“试着启动”。
+
 检查：
 
 - `OPS_API_TOKENS`
@@ -533,6 +580,11 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - 所选主机在 `hosts.yaml` 中的 job/instance 是否与 Prometheus 标签完全一致
 - 指标是否真实存在
 
+若当前 `/ready` 正常但两台主机均显示 Exporter 不可达，应先分别核对 Prometheus 的
+`up{job,instance}`、Targets 的最近抓取错误和 Prometheus 到 Exporter 的网络路径。
+`up=0` 是观测状态，不授权启动/重启远端服务。逐层只读步骤见
+[troubleshooting.md](troubleshooting.md)。
+
 ### 写命令无法审批
 
 检查：
@@ -566,3 +618,6 @@ sqlite3 data/aiops_assistant.db ".backup backup.db"
 - [configuration.md](configuration.md)
 - [auth.md](auth.md)
 - [database.md](database.md)
+- [console.md](console.md)：图形化页面与管理员配置操作
+- [api.md](api.md)：请求响应与状态码
+- [troubleshooting.md](troubleshooting.md)：只读排障流程

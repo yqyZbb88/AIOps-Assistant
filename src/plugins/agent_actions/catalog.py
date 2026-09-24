@@ -179,7 +179,10 @@ def build_config(data: Mapping[str, Any]) -> AgentActionsConfig:
     raw_cmds = data.get("commands") or {}
     if enabled and not isinstance(raw_cmds, Mapping):
         raise AgentActionsConfigError("commands 必须是映射")
-    commands = tuple(_parse_command(key, spec) for key, spec in raw_cmds.items())
+    commands = tuple(
+        command for command in (_parse_command(key, spec) for key, spec in raw_cmds.items())
+        if command.enabled
+    )
     if enabled and not commands:
         logger.warning("agent_actions.yaml 未声明任何 commands，Agent 写命令目录为空")
     return AgentActionsConfig(

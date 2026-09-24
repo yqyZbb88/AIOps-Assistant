@@ -18,8 +18,8 @@ _TOKENS = '{"k-alice": "alice", "k-bob": "bob", "k-am": "alertmanager"}'
 
 # FastAPI 自己建的 app 级路由，不属于任何一个 router，本就不该被拦
 _EXEMPT_PATHS = {
-    "/health", "/ready", "/status", "/status-assets/status.css",
-    "/status-assets/status.js", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc",
+    "/health", "/ready", "/console", "/console-assets/console.css",
+    "/console-assets/console.js", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc",
 }
 
 _PARAM = re.compile(r"\{[^}]+\}")

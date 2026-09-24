@@ -127,7 +127,10 @@ def build_config(data: Mapping[str, Any]) -> DiagnosticsConfig:
     raw_cmds = data.get("commands") or {}
     if enabled and not isinstance(raw_cmds, Mapping):
         raise DiagnosticsConfigError("commands 必须是映射")
-    commands = tuple(_parse_command(key, spec) for key, spec in raw_cmds.items())
+    commands = tuple(
+        command for command in (_parse_command(key, spec) for key, spec in raw_cmds.items())
+        if command.enabled
+    )
     if enabled and not commands:
         logger.warning("diagnostics.yaml 未声明任何 commands，只读诊断命令为空")
     return DiagnosticsConfig(

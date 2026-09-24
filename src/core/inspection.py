@@ -448,6 +448,8 @@ class InspectionScheduler:
         self._stop = stop_event or threading.Event()
         self._thread: threading.Thread | None = None
         self._run_lock = threading.Lock()
+        self._runtime_provider: Callable[[], tuple[Any, InspectionSettings]] | None = None
+        self._wake = threading.Event()
         self.logger = logger_ or get_inspection_logger()
         self.last_run_at = ""
         self.last_level = ""
@@ -459,7 +461,7 @@ class InspectionScheduler:
         return self._thread is not None and self._thread.is_alive()
 
     def start(self) -> None:
-        if not self.settings.enabled or self.running:
+        if (not self.settings.enabled and self._runtime_provider is None) or self.running:
             return
         self._stop.clear()
         self._thread = threading.Thread(
@@ -471,18 +473,33 @@ class InspectionScheduler:
 
     def stop(self, *, timeout: float = 5.0) -> None:
         self._stop.set()
+        self._wake.set()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(float(timeout), 0.0))
-        self._thread = None
+        if thread is None or not thread.is_alive():
+            self._thread = None
+
+    def configure_runtime(
+        self, provider: Callable[[], tuple[Any, InspectionSettings]]
+    ) -> None:
+        """绑定单一调度线程每轮读取的运行快照，而非重启线程。"""
+        self._runtime_provider = provider
+        self.wake()
+
+    def wake(self) -> None:
+        self._wake.set()
 
     def run_once(self) -> InspectionResult:
         with self._run_lock:
+            checker = self.checker
+            if self._runtime_provider is not None:
+                checker, _settings = self._runtime_provider()
             try:
-                if hasattr(self.checker, "run_all"):
-                    results = list(self.checker.run_all())
+                if hasattr(checker, "run_all"):
+                    results = list(checker.run_all())
                 else:
-                    results = [self.checker.run_once()]
+                    results = [checker.run_once()]
             except Exception as exc:  # noqa: BLE001 - 单轮异常仍产出 error 结果
                 results = [InspectionResult(
                     checked_at=_now_iso(),
@@ -517,11 +534,18 @@ class InspectionScheduler:
             return overall
 
     def _loop(self) -> None:
-        if self.settings.run_on_start:
+        settings = self._runtime_provider()[1] if self._runtime_provider else self.settings
+        if settings.enabled and settings.run_on_start:
             self._safe_run_once()
-        interval = max(int(self.settings.interval_seconds), 1)
-        while not self._stop.wait(interval):
-            self._safe_run_once()
+        while not self._stop.is_set():
+            settings = self._runtime_provider()[1] if self._runtime_provider else self.settings
+            interval = max(int(settings.interval_seconds), 1)
+            woke = self._wake.wait(interval)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
+            if not woke and settings.enabled:
+                self._safe_run_once()
 
     def _safe_run_once(self) -> None:
         try:

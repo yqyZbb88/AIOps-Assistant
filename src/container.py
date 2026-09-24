@@ -46,8 +46,15 @@ logger = logging.getLogger("aiops_assistant.container")
 class Container:
     """装配容器：按需构造插件 / 组件并缓存（monitor / llm / executors / agent）。"""
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        config_texts: dict[str, str] | None = None,
+        shared_from: "Container | None" = None,
+    ) -> None:
         self.settings: Settings = settings or load_settings()
+        self._config_texts = config_texts or {}
         self._aiops_assistant: OpsAgent | None = None
         self._monitor: MonitorSource | None = None
         self._metrics_config: MetricsConfig | None = None
@@ -67,28 +74,54 @@ class Container:
         self._execution_store: ActionExecutionStore | None = None
         self._execution_store_ready = False
         self._inspection_scheduler = None
+        self._inspection_checker = None
         self._health_service = None
         self._host_status_service = None
         self._db: Database | None = None
         self._db_ready = False
+        self._alert_store: AlertStore | None = None
+        if shared_from is not None:
+            # 这些对象属于进程生命周期。重建它们会丢掉内存会话/告警/幂等状态，
+            # SqliteSessionStore 的构造还会把活跃审批误判成重启后的孤儿。
+            self._db = shared_from._database()
+            self._db_ready = True
+            self._sessions = shared_from.sessions()
+            self._sessions_ready = True
+            self._history = shared_from.history()
+            self._history_ready = True
+            self._inspection_store = shared_from.inspection_store()
+            self._inspection_store_ready = True
+            self._execution_store = shared_from.execution_store()
+            self._execution_store_ready = True
+            self._execution_guard = shared_from.execution_guard()
+            self._inspection_scheduler = shared_from._inspection_scheduler
+            self._alert_store = shared_from.aiops_assistant().store
 
     # -- 组件（惰性 + 缓存） ----------------------------------------------
     def metrics_config(self) -> MetricsConfig:
         """加载统一指标运行配置；file 为空时使用代码目录默认值。"""
         if self._metrics_config is None:
-            from src.utils.metrics_config import load_metrics_config
+            from src.utils.metrics_config import load_metrics_config, parse_metrics_config
 
-            self._metrics_config = load_metrics_config(self.settings.metrics.file or None)
+            self._metrics_config = (
+                parse_metrics_config(self._config_texts["metrics"])
+                if "metrics" in self._config_texts
+                else load_metrics_config(self.settings.metrics.file or None)
+            )
         return self._metrics_config
 
     def hosts(self) -> HostRegistry:
         """加载并缓存唯一主机目标来源；无新配置时合成 legacy-default。"""
         if self._hosts is None:
-            from src.utils.hosts_config import load_host_registry
+            from src.utils.hosts_config import load_host_registry, parse_hosts
 
-            self._hosts = load_host_registry(
-                self.settings.hosts.file or None,
-                legacy_instance=self.metrics_config().instance,
+            self._hosts = (
+                parse_hosts(self._config_texts["hosts"])
+                if "hosts" in self._config_texts
+                else load_host_registry(
+                    self.settings.hosts.file or None,
+                    legacy_instance=self.metrics_config().instance,
+                )
             )
         return self._hosts
 
@@ -135,10 +168,16 @@ class Container:
         不再从 registry 按动作类实例化；目录缺失/关闭/校验失败 → 空（自动处置失效，服务照常）。
         """
         if self._executors is None:
-            from src.plugins.actions.catalog import load_actions_catalog
+            from src.plugins.actions.catalog import load_actions_catalog, parse_actions
             from src.plugins.actions.executor import build_catalog_executors
 
-            cfg = load_actions_catalog()
+            cfg = (
+                parse_actions(self._config_texts["actions"])
+                if "actions" in self._config_texts
+                else load_actions_catalog()
+            )
+            if cfg is not None and not cfg.enabled:
+                cfg = None
             self._executors = build_catalog_executors(cfg) if cfg is not None else {}
             if not self._executors:
                 logger.warning("当前没有任何可用动作执行器，规则自动处置将全部失效")
@@ -172,16 +211,22 @@ class Container:
         return self._execution_guard
 
     def diagnostics(self) -> DiagnosticSource | None:
-        """只读诊断源；config/diagnostics.yaml 缺失/关闭/未装 paramiko → None（Agent 不加诊断工具）。
+        """旧单主机兼容诊断源；多主机会话改由 `_host_assistant_factory` 绑定目标。
 
-        凭据来自 config/diagnostics.yaml 的 target（密码 .env 占位插值），实例化后留在本对象内，
-        模型上下文与工具参数里永无 host/密码/私钥。
+        目录缺失/关闭/未装 paramiko → None。兼容路径的连接参数留在服务端配置，
+        多主机路径则使用 hosts.yaml 的已登记 SSH 目标；两者都不向模型传连接凭据。
         """
         if self._diagnostics is not None:
             return self._diagnostics
-        from src.plugins.diagnostics.commands import load_diagnostics_config
+        from src.plugins.diagnostics.commands import load_diagnostics_config, parse_diagnostics
 
-        config = load_diagnostics_config()
+        config = (
+            parse_diagnostics(self._config_texts["diagnostics"])
+            if "diagnostics" in self._config_texts
+            else load_diagnostics_config()
+        )
+        if config is not None and not config.enabled:
+            config = None
         if config is None:
             return None
         # paramiko 未装 → 能力降级（不注册诊断工具，Agent 看不到），而非启动失败
@@ -204,10 +249,10 @@ class Container:
         return self._diagnostics
 
     def agent_actions(self) -> AgentActionSource | None:
-        """Agent 写命令源；未启用 / 校验失败 / 缺 paramiko / 工具名冲突 → None。
+        """旧单主机兼容写命令源；多主机会话由 `_host_assistant_factory` 单独绑定。
 
-        凭据来自 config/agent_actions.yaml 的 target（密码 .env 占位插值），实例化后留在本
-        对象内，模型上下文与工具参数里永无 host/密码/私钥。
+        未启用 / 校验失败 / 缺 paramiko / 工具名冲突 → None。兼容路径的连接参数只在
+        服务端，模型上下文与工具参数里永无 host/密码/私钥。
 
         **工具名冲突检测**：写命令 key 会变成 Agent 工具名，而 create_agent 对重名工具
         不报错（静默遮蔽），所以必须在这里拦住。冲突时只关闭本能力——聊天与只读诊断不受影响。
@@ -218,9 +263,16 @@ class Container:
             RESERVED_AGENT_TOOL_NAMES,
             colliding_keys,
             load_agent_actions_config,
+            parse_agent_actions,
         )
 
-        config = load_agent_actions_config()
+        config = (
+            parse_agent_actions(self._config_texts["agent_actions"])
+            if "agent_actions" in self._config_texts
+            else load_agent_actions_config()
+        )
+        if config is not None and not config.enabled:
+            config = None
         if config is None:
             return None
         # paramiko 未装 → 能力降级（不注册写工具，Agent 看不到），而非启动失败
@@ -364,19 +416,24 @@ class Container:
     def inspection_scheduler(self):
         """构造并缓存单进程巡检调度器。"""
         if self._inspection_scheduler is None:
-            from src.core.inspection import MultiHostInspectionChecker, InspectionScheduler
+            from src.core.inspection import InspectionScheduler
 
             self._inspection_scheduler = InspectionScheduler(
-                MultiHostInspectionChecker(
-                    self.monitor(),
-                    self.hosts(),
-                    self.settings.inspection,
-                    self.metrics_config(),
-                ),
+                self.inspection_checker(),
                 self.settings.inspection,
                 store=self.inspection_store(),
             )
         return self._inspection_scheduler
+
+    def inspection_checker(self):
+        """每个运行快照独立的巡检器，保留该版本自己的轮询游标。"""
+        if self._inspection_checker is None:
+            from src.core.inspection import MultiHostInspectionChecker
+
+            self._inspection_checker = MultiHostInspectionChecker(
+                self.monitor(), self.hosts(), self.settings.inspection, self.metrics_config()
+            )
+        return self._inspection_checker
 
     def health_service(self):
         """构造并缓存非网络健康快照服务；仅 /ready 主动探测 Prometheus。"""
@@ -475,9 +532,9 @@ class Container:
     def _host_assistant_factory(self, host_id: str):
         """为会话固定主机构造 Agent；所有外部 IO 都从同一 Host 派生。"""
         from src.agent.assistant import OpsAssistant
-        from src.plugins.diagnostics.commands import load_diagnostics_config
+        from src.plugins.diagnostics.commands import load_diagnostics_config, parse_diagnostics
         from src.plugins.diagnostics.ssh_diagnostics import SshDiagnostics
-        from src.plugins.agent_actions.catalog import load_agent_actions_config
+        from src.plugins.agent_actions.catalog import load_agent_actions_config, parse_agent_actions
         from src.plugins.agent_actions.source import SshAgentActionSource
 
         host = self.hosts().require(host_id)
@@ -486,7 +543,13 @@ class Container:
         approvals = None
 
         if host.ssh is not None:
-            diag_config = load_diagnostics_config()
+            diag_config = (
+                parse_diagnostics(self._config_texts["diagnostics"])
+                if "diagnostics" in self._config_texts
+                else load_diagnostics_config()
+            )
+            if diag_config is not None and not diag_config.enabled:
+                diag_config = None
             if diag_config is not None:
                 allowed = None if host.legacy else host.capabilities.diagnostics
                 if host.legacy or allowed:
@@ -496,7 +559,13 @@ class Container:
                         allowed_commands=allowed,
                     )
 
-            action_config = load_agent_actions_config()
+            action_config = (
+                parse_agent_actions(self._config_texts["agent_actions"])
+                if "agent_actions" in self._config_texts
+                else load_agent_actions_config()
+            )
+            if action_config is not None and not action_config.enabled:
+                action_config = None
             if action_config is not None:
                 allowed_actions = None if host.legacy else host.capabilities.agent_actions
                 if host.legacy or allowed_actions:
@@ -564,6 +633,7 @@ class Container:
             execution_guard=self.execution_guard(),
             hosts=self.hosts(),
             execution_store=self.execution_store(),
+            rules_text=self._config_texts.get("rules"),
         )
         host_assistant_factory = (
             self._host_assistant_factory if settings.agent.enabled else None
@@ -588,7 +658,7 @@ class Container:
         )
         self._aiops_assistant = OpsAgent(
             monitor=monitor,
-            store=AlertStore(maxlen=settings.alert.recent_limit),
+            store=self._alert_store or AlertStore(maxlen=settings.alert.recent_limit),
             chat_service=chat_service,
             rule_engine=rule_engine,
             analysis=analyzer,

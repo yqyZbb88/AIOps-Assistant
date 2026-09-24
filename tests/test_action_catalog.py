@@ -71,6 +71,10 @@ class TestCatalogParse:
         with pytest.raises(ActionsConfigError, match="命令名"):
             parse_actions(text)
 
+    def test_disabled_command_is_valid_but_not_registered(self):
+        cfg = parse_actions(SAMPLE.replace("  restart_service:\n", "  restart_service:\n    enabled: false\n"))
+        assert [command.key for command in cfg.commands] == ["cleanup_disk"]
+
     def test_repo_default_catalog_loads_recommended_commands(self):
         cfg = load_actions_catalog()  # config/actions.yaml
         assert cfg is not None

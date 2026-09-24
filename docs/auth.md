@@ -14,6 +14,7 @@ OPS_API_TOKENS={"k-admin-随机值":"admin","k-am-随机值":"alertmanager"}
 
 ```env
 OPS_APPROVER_IDENTITIES=["admin"]
+OPS_ADMIN_IDENTITIES=["admin"]
 ```
 
 `config/settings.yaml` 对应配置：
@@ -24,6 +25,7 @@ auth:
   tokens: '${OPS_API_TOKENS:-}'
   approval_mode: approvers_only
   approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
+  admin_identities: '${OPS_ADMIN_IDENTITIES:-["admin"]}'
   alert_identity: alertmanager
 ```
 
@@ -35,6 +37,7 @@ auth:
 |---|---|---|---|
 | `OPS_API_TOKENS` | API Key 到身份的映射 | `.env` | 人、脚本、Alertmanager |
 | `OPS_APPROVER_IDENTITIES` | 审批人身份列表 | `.env` | 服务端 |
+| `OPS_ADMIN_IDENTITIES` | 最高权限管理员身份列表 | `.env` | 服务端 |
 | `SSH_KEY_FILENAME` / `SSH_PASSWORD` | SSH 私钥路径或登录密码 | `.env` | 服务连接目标主机 |
 | `DEEPSEEK_API_KEY` | 模型调用 | `.env` | 服务端 |
 | `OPS_REDACTION_SECRETS` | 额外精确脱敏值的 JSON 数组 | `.env` | 服务端 |
@@ -98,6 +101,9 @@ OPS_APPROVER_IDENTITIES=["admin","audit"]
 
 如果 `approvers_only` 模式没有配置审批人，服务会拒绝启动。
 
+审批人与系统管理员是两份独立名单：能批准写命令不自动获得配置管理权，管理员也不会
+自动成为审批人。是否可批准仍由当前审批模式决定。
+
 ### 3. 配置 Alertmanager 身份
 
 ```yaml
@@ -113,9 +119,23 @@ auth:
 - 启动时会产生 WARNING
 - 不建议在生产环境使用
 
-### 4. 重启服务
+### 4. 配置系统管理员
 
-鉴权配置不会热更新。修改 `.env` 或 `settings.yaml` 后必须重启。
+`OPS_ADMIN_IDENTITIES` 是身份名 JSON 数组，不是 Token 数组。列表不能为空，每个身份都
+必须存在于 `OPS_API_TOKENS` 的值中，否则启动会拒绝。默认出厂身份为 `admin`。
+
+`GET/PUT /admin/config` 始终要求有效 Bearer Token 和管理员身份；即便普通业务接口设置
+`auth.enabled=false`，管理接口也不会匿名开放。GET 只返回可编辑的脱敏投影与可用身份名，
+不会返回 Token 明文、SSH 凭据或连接目标。PUT 必须携带读取时的 revision；409 表示磁盘
+配置已变化，应重新加载后人工合并修改，不要盲目覆盖。保存成功后可编辑鉴权字段
+立即生效；页面外修改 YAML 后须由管理员显式应用。页面的“待应用”比较磁盘与当前运行
+revision。环境变量 Token 的增删仍需重启 Assistant。详见
+[控制台说明](console.md) 与 [API 参考](api.md)。
+
+### 5. 密钥轮换与重启
+
+管理页面的普通接口鉴权开关、身份和审批模式可热更新；修改 `.env` 中的 Token
+映射仍必须重启。手动修改 `settings.yaml` 后须通过管理员接口显式应用。
 
 ## 五、如何使用 API
 
@@ -159,6 +179,7 @@ http://127.0.0.1:8000/docs
 | `GET /approvals` | 只看得到可见范围内的：`owner` = 自己触发的；`approvers_only` = 审批人看到全部 |
 | `POST /approvals/{id}` | 同上；范围外返回 404（与「未知 id」同形） |
 | `POST /alert` | 身份必须匹配 `auth.alert_identity` |
+| `GET/PUT /admin/config` | 必须是 `admin_identities` 中且有 Token 映射的身份；与审批人名单独立 |
 
 身份名只用于归属和授权，不用于选择模型、主机或命令。
 
@@ -169,13 +190,18 @@ http://127.0.0.1:8000/docs
 | 缺少 Bearer Token | 401 |
 | Token 无效 | 401 |
 | Token 有效但无权调用 `/alert` | 403 |
+| 未带 Token 或 Token 无效访问 `/admin/config` | 401，即使普通鉴权关闭 |
+| Token 有效但身份不在管理员名单 | 403 |
+| 管理配置 revision 已变化 | 409，必须重载并检查差异 |
 | Token 有效但访问别人的会话 | 404 |
 | Token 有效但审批范围外的申请 | 404（`owner` 下批别人的，或 `approvers_only` 下不在 `approver_identities` 里） |
 | 鉴权配置启用但没有有效 Token | 服务拒绝启动 |
 
-`GET /health`、`GET /ready`、`GET /status`、状态页同源静态资源，以及 `/docs`、
-`/redoc`、`/openapi.json` 不需要 Bearer Token。前三类只返回无敏感信息的探针或 HTML/CSS/JS
-空壳；状态页调用 `/alerts/*`、`/inspections/recent`、`/approvals` 时仍必须携带 Token。
+`GET /health`、`GET /ready`、`GET /console`、`GET /console-assets/console.css`、
+`GET /console-assets/console.js`，以及 `/docs`、`/redoc`、`/openapi.json` 不需要 Bearer
+Token。前两项只返回无敏感信息的探针；控制台公开的 HTML/CSS/JS 不嵌入业务数据，调用
+`/hosts`、`/alerts/*`、`/inspections/recent`、`/approvals` 等 API 时仍必须携带 Token。
+旧 `/status` 与 `/status-assets/*` 已删除，直接返回 404。
 
 这里的“应用路由”特指 FastAPI 自动生成的文档/OpenAPI 路由；它们不属于项目挂载的
 业务 router，因此不会经过 `require_auth`。如需隐藏接口结构，应在反向代理层限制
@@ -282,6 +308,7 @@ sqlite3 data/aiops_assistant.db   "SELECT DISTINCT user, COUNT(*) FROM sessions 
 | Alertmanager 没有任何告警入库 | webhook URL、凭据文件、Alertmanager 日志 |
 | 开启鉴权后会话看不到 | 当前身份与历史 `sessions.user` 不一致 |
 | 修改 `.env` 不生效 | 没有重启服务 |
+| 系统管理入口不显示 | 当前 Token 未映射到 `admin_identities`；检查管理 API 的 401/403 |
 
 ## 十二、安全检查清单
 
@@ -289,6 +316,7 @@ sqlite3 data/aiops_assistant.db   "SELECT DISTINCT user, COUNT(*) FROM sessions 
 - 每个调用方使用独立 Token
 - Alertmanager 使用专用 Token
 - 多人环境使用 `approvers_only`
+- 至少保留一个可映射到有效 Token 的管理员身份，轮换管理员 Token 前先验证新身份
 - 不把密钥写入 URL、日志、截图或工单
 - `.env` 和凭据文件不进入 Git
 - 定期轮换和吊销密钥
@@ -299,3 +327,5 @@ sqlite3 data/aiops_assistant.db   "SELECT DISTINCT user, COUNT(*) FROM sessions 
 - [guide.md](guide.md)：快速开始和日常使用
 - [configuration.md](configuration.md)：配置字段
 - [database.md](database.md)：会话身份和数据库维护
+- [console.md](console.md)：控制台与管理员操作
+- [api.md](api.md)：接口权限及错误语义

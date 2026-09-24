@@ -1,12 +1,14 @@
 """FastAPI 应用入口：装配依赖容器、生命周期与 HTTP 路由。
 
 启动方式（仓库根执行）：
-    uvicorn src.main:app --reload --host 127.0.0.1 --port 8000     （推荐，热重载）
-    python src/main.py                                              （直跑分支）
+    uvicorn src.main:app --host 127.0.0.1 --port 8000              （普通运行）
+    uvicorn src.main:app --reload --host 127.0.0.1 --port 8000     （仅本地开发）
+    python src/main.py                                             （读取 settings.server）
 
 鉴权（config/settings.yaml 的 auth 段）：
     启用后所有含运维数据或写操作的 API 都要求 `Authorization: Bearer <密钥>`；
-    /health、/ready 和无数据的 /status 静态壳公开。
+    /health、/ready，以及无数据的 /console 静态壳公开；/admin/config 即使普通
+    鉴权关闭也始终要求映射到管理员身份的 Token。
     FastAPI 自带的 /docs、/redoc、/openapi.json 是应用级文档路由，当前公开。
     身份由密钥推断（服务端事实），请求体不能自报用户身份。
     `auth.enabled: true` 却没有任何可用密钥时会**拒绝启动**，绝不静默地无鉴权运行。
@@ -20,12 +22,17 @@
     GET  /alerts/active     实时活动告警（监控源查询失败转 502）
     GET  /alerts/history    告警、处置和 AI 建议归档
     GET  /inspections/recent 最近异常固定指标巡检归档
+    GET  /hosts、/hosts/{id}、/hosts/{id}/status 与 /metrics/... 指定主机监控
+    GET  /executions        规则与 Agent 动作的统一执行记录
+    GET/PUT /admin/config   脱敏配置草稿与受控热更新
+    POST /admin/config/apply 显式应用磁盘上的手动修改
 
 人工审批（Agent 写命令，config/agent_actions.yaml 启用后才有内容）：
     GET  /approvals             待审批的写命令调用
     POST /approvals/{id}        提交 approve/reject 并续跑
 
 对话历史（config/settings.yaml 的 storage 段启用后才有内容）：
+    POST   /sessions            创建绑定主机的会话
     GET    /sessions            会话列表（最近更新的在前）
     GET    /sessions/{id}       会话详情（含全部消息）
     PATCH  /sessions/{id}       修改会话标签
@@ -46,6 +53,7 @@ from fastapi.exceptions import RequestValidationError
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.api import admin as admin_api
 from src.api import alert as alert_api
 from src.api import approvals as approvals_api
 from src.api import chat as chat_api
@@ -57,10 +65,12 @@ from src.api import status as status_api
 from src.api.deps import require_auth
 from src.api.response import RedactingJSONResponse
 from src.container import Container
-from src.utils.auth import AuthConfigError, ensure_usable
-from src.utils.config_loader import Settings
+from src.utils.auth import AuthConfigError, ensure_usable, parse_admins, parse_tokens
+from src.utils.admin_config import AdminConfigManager
+from src.utils.config_loader import Settings, load_settings
 from src.utils.logger import configure_logging
 from src.utils.security import configure_secrets
+from src.utils.runtime import RuntimeManager, RuntimeProxy, RuntimeSnapshot
 
 logger = logging.getLogger("aiops_assistant.main")
 
@@ -72,22 +82,43 @@ _DESCRIPTION = (
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """管理巡检后台线程；仅在 inspection.enabled=true 时启动。"""
-    scheduler = None
-    if app.state.settings.inspection.enabled:
-        scheduler = app.state.container.inspection_scheduler()
-        scheduler.start()
+    """管理唯一巡检线程；启停开关由每轮的运行快照决定。"""
+    runtime = app.state.runtime
+    scheduler = runtime.current.container.inspection_scheduler()
+    scheduler.configure_runtime(
+        lambda: (
+            runtime.current.container.inspection_checker(),
+            runtime.current.settings.inspection,
+        )
+    )
+    runtime.scheduler = scheduler
+    scheduler.start()
     try:
         yield
     finally:
-        if scheduler is not None:
-            scheduler.stop()
+        scheduler.stop()
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    admin_config_manager: AdminConfigManager | None = None,
+) -> FastAPI:
     """装配依赖容器并构建 FastAPI 应用（app.state.agent 供路由依赖注入取用）。"""
-    container = Container(settings=settings)
-    settings_ = container.settings
+    settings_ = settings or load_settings()
+    manager = admin_config_manager or AdminConfigManager(settings_)
+    # 真实启动及显式注入的管理配置在创建第一份快照时也冻结 YAML。
+    # 否则 Agent 等惰性组件可能在管理员应用前读到页面外的磁盘改动。
+    config_texts = None
+    if settings is None or admin_config_manager is not None:
+        initial_revision = manager.active_revision
+        config_texts = {
+            name: path.read_bytes().decode("utf-8")
+            for name, path in manager.paths.items()
+        }
+        if manager.revision() != initial_revision:
+            raise RuntimeError("启动期间配置文件发生变化，请重新启动")
+    container = Container(settings=settings_, config_texts=config_texts)
     configure_secrets(auth_tokens=settings_.auth.tokens)
     configure_logging(
         level=settings_.logging.level,
@@ -124,9 +155,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status_code=422,
             content={"detail": jsonable_encoder(exc.errors())},
         )
-    app.state.container = container
-    app.state.settings = settings_
-    app.state.agent = agent
+    runtime = RuntimeManager(RuntimeSnapshot(manager.active_revision, settings_, container, agent))
+    manager.attach_runtime(runtime)
+    app.state.runtime = runtime
+    app.state.container = RuntimeProxy(runtime, "container")
+    app.state.settings = RuntimeProxy(runtime, "settings")
+    app.state.agent = RuntimeProxy(runtime, "agent")
+    app.state.admin_config = manager
+
+    @app.middleware("http")
+    async def _runtime_request(request: Request, call_next):
+        operation = (
+            request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and not request.url.path.startswith("/admin/")
+        )
+        token = runtime.bind_request(operation=operation)
+        if token is None:
+            return RedactingJSONResponse(
+                status_code=409,
+                content={"detail": "配置正在应用，请稍后重试"},
+            )
+        try:
+            return await call_next(request)
+        finally:
+            runtime.reset_request(token)
+            if operation:
+                runtime.end_operation()
 
     # 鉴权在这里挂：include_router 是本仓库唯一的挂载点，一屏看完，
     # 且形状是 **fail-closed** —— 新增业务 router 时必须在这里显式决定是否挂鉴权。
@@ -137,7 +191,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     #
     # /docs、/redoc、/openapi.json 是 app 级路由，不在任何 router 里，不会被拦。
     app.include_router(health_api.router)  # 探针豁免：健康检查不该要密钥
-    app.include_router(status_api.router)  # 无数据静态壳；真实数据 API 仍要求 Bearer
+    app.include_router(status_api.router)  # 控制台空壳；真实数据 API 仍要求 Bearer
+    app.include_router(admin_api.router)  # 端点内部强制 require_admin，不受普通鉴权开关影响
     app.include_router(chat_api.router, dependencies=[Depends(require_auth)])
     app.include_router(alert_api.router, dependencies=[Depends(require_auth)])
     app.include_router(approvals_api.router, dependencies=[Depends(require_auth)])
@@ -164,6 +219,17 @@ def _check_auth(settings: Settings) -> None:
         )
     except AuthConfigError as exc:
         raise RuntimeError(f"鉴权配置有误，拒绝启动：{exc}") from exc
+
+    try:
+        admins = set(parse_admins(settings.auth.admin_identities))
+        identities = {identity for _, identity in parse_tokens(settings.auth.tokens)}
+    except AuthConfigError as exc:
+        raise RuntimeError(f"管理员鉴权配置有误，拒绝启动：{exc}") from exc
+    unknown_admins = admins - identities
+    if unknown_admins:
+        raise RuntimeError(
+            "管理员身份没有对应 Token，拒绝启动：" + ", ".join(sorted(unknown_admins))
+        )
 
     if not settings.auth.enabled and (settings.auth.tokens or "").strip():
         logger.warning(

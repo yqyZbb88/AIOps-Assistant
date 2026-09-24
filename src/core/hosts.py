@@ -8,11 +8,17 @@ from src.interfaces.monitor import MonitorSource
 
 
 class HostStatusService:
+    """以登记主机的精确监控目标聚合状态；单项指标失败不会清空其余指标。"""
     def __init__(self, registry: HostRegistry, monitor: MonitorSource) -> None:
         self.registry = registry
         self.monitor = monitor
 
     def status(self, host: Host) -> dict[str, Any]:
+        """先查 Exporter；只有 reachable 才查询三项核心指标和活动告警。
+
+        `unreachable` 是监控源返回的 up=0，不等同于查询失败；指标级错误单独标为
+        `query_error`，避免一个指标失败让整台主机看起来完全没有数据。
+        """
         exporter = self.monitor.target_status(host.monitor)
         payload: dict[str, Any] = {
             "host": host.to_public_dict(),

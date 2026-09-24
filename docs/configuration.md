@@ -2,6 +2,10 @@
 
 本文覆盖 `config/` 下所有运行时 YAML 文件：
 
+页面允许修改的配置子集及保存流程见 [console.md](console.md)；以下仍是磁盘文件的完整
+字段参考。配置保存产生的 YAML 备份与 SQLite 数据备份不同，后者见
+[database.md](database.md)。
+
 | 文件 | 作用 |
 |---|---|
 | `settings.yaml` | 应用、服务、存储、日志、鉴权、巡检调度等全局配置 |
@@ -36,7 +40,8 @@ value: ${VAR:-default}
   参数声明和审批段字段。可选能力配置失败时会记录错误并关闭对应能力。
 - 布尔值只接受明确的 `true/false`、`yes/no`、`on/off`、`1/0`。
 - 类型不合法、阈值顺序错误、未知指标等会拒绝启动或在启动时关闭对应能力。
-- 修改配置后需要重启服务，当前没有热更新入口。
+- 管理页面可编辑字段保存后热生效；手工修改 YAML 需管理员显式调用
+  `POST /admin/config/apply`。监听、SQLite/日志路径和环境密钥仍需重启。
 
 ### 3. 配置文件关系
 
@@ -217,6 +222,7 @@ settings.yaml
 | `auth.tokens` | JSON string | 空 | 密钥到身份的 JSON 映射，建议用 `${OPS_API_TOKENS}` |
 | `auth.approval_mode` | string | `approvers_only` | `owner` 或 `approvers_only` |
 | `auth.approver_identities` | JSON array string | `["admin"]` | `approvers_only` 模式下允许审批的身份 |
+| `auth.admin_identities` | JSON array string | `["admin"]` | 可访问系统管理 API 的最高权限身份 |
 | `auth.alert_identity` | string | `alertmanager` | 允许调用 `POST /alert` 的身份 |
 
 示例：
@@ -227,8 +233,22 @@ auth:
   tokens: '${OPS_API_TOKENS:-}'
   approval_mode: approvers_only
   approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
+  admin_identities: '${OPS_ADMIN_IDENTITIES:-["admin"]}'
   alert_identity: alertmanager
 ```
+
+管理员身份必须存在于 `auth.tokens` 的身份值中。它与审批人互不继承；管理 API 即使在
+`auth.enabled=false` 时也始终要求管理员 Token。
+
+系统管理页面不是 YAML 编辑器：它只提交 `settings` 的安全/功能字段、规则、命令目录
+和主机 `allow` 白名单。服务端保留 Token、SSH/Prometheus 连接信息等非页面字段，并
+复用现有解析器验证整个候选配置。保存前比较配置文件（含已指定的 `metrics.yaml`，
+自管模式还含目标文件）的磁盘 revision；不一致返回 409，
+字段或跨文件引用错误返回 422。仅有变化的文件会先备份到
+`data/config-backups/<UTC 时间>/`，再逐文件原子替换。写入异常会尝试回滚已替换文件，
+但跨文件批次和断电不是原子事务；需人工检查备份。校验和写盘成功后立即切换
+运行快照；页面的“待应用”表示磁盘 revision 与当前运行 revision 不同。详见
+[console.md](console.md) 与 [api.md](api.md)。
 
 ## 三、hosts.yaml
 
@@ -270,7 +290,7 @@ hosts:
 - 示例默认不授权任何写动作。启用规则自动处置还必须同时设置规则 `auto_execute: true`。
 - 多主机模式不会使用 `diagnostics.yaml`、`agent_actions.yaml` 或规则参数中的默认地址改向执行。
 
-修改后必须重启。单主机兼容模式会从旧 `SSH_*` 环境变量和全局 Prometheus instance 构造
+手工修改后须由管理员显式应用；环境变量中的 SSH 凭据变化仍需重启。单主机兼容模式会从旧 `SSH_*` 环境变量和全局 Prometheus instance 构造
 `legacy-default`，用于原部署平滑升级，不应作为多主机配置捷径。
 
 ## 四、metrics.yaml
@@ -383,8 +403,11 @@ error > critical > warning > normal
 规则只按 Alertmanager 的 `alertname` 匹配，不查询 Prometheus 指标。
 
 ```yaml
+auto_execute_enabled: false
 rules:
-  - alertname: HighCPUUsage
+  - id: high_cpu_restart
+    enabled: true
+    alertname: HighCPUUsage
     action: restart_service
     target_instance: "${PROMETHEUS_INSTANCE:-localhost:9100}"
     params:
@@ -395,6 +418,8 @@ rules:
 
 | 字段 | 类型 | 必填 | 含义 |
 |---|---:|---:|---|
+| `id` | string | 管理页保存后是 | 稳定规则 ID；旧规则首次保存时自动补齐 |
+| `enabled` | bool | 否 | false 时不参与匹配，默认 true |
 | `alertname` | string | 是 | 与 Alertmanager alertname 精确匹配 |
 | `action` | string | 是 | 必须存在于 `actions.yaml.commands` |
 | `target_instance` | string | auto_execute 时是 | 允许处理的告警实例，必须精确匹配 |
@@ -408,6 +433,8 @@ rules:
 
 重要行为：
 
+- 顶层 `auto_execute_enabled=false` 会保留规则匹配和审计，但阻止所有自动执行。
+- `enabled=false` 的规则不参与匹配；旧规则缺省按 true 处理。
 - `auto_execute=false` 仍然是“命中规则”，会阻止该 alertname 进入 AI 建议。
 - `auto_execute=true` 且缺少 `target_instance` 时，规则会在加载阶段被禁用。
 - `target_instance` 必须与告警和已登记主机 instance 同时一致；主机还必须在
@@ -438,6 +465,7 @@ commands:
 | `enabled` | bool | 否 | 文件总开关，默认 true |
 | `output_limit` | int | 否 | stdout/stderr 共享输出上限，默认 4000 字符 |
 | `commands` | map | 是 | 命令 key 到命令定义的映射 |
+| 命令项 `enabled` | bool | 否 | false 时保留定义但不注册为可调用命令，默认 true |
 | `summary` | string | 否 | 命令说明 |
 | `template` | string | 是 | 管理员可信命令模板 |
 | `sudo` | bool | 否 | 是否提权执行 |
@@ -459,7 +487,7 @@ commands:
 - `{name}` 占位符集合必须与 `params` 完全一致。
 - 模板只能来自本文件，规则不能传自由命令。
 - sudo 由本文件声明，规则不能覆盖。
-- 修改后需重启进程。
+- 管理页面保存命令目录后立即生效；手工修改后须显式应用。
 
 ## 七、agent_actions.yaml
 
@@ -556,7 +584,7 @@ commands:
 
 - 永远不 sudo。
 - 非零退出码只作为可读结果，不触发写动作。
-- 修改后需重启服务重建 Agent 工具。
+- 管理页面保存诊断目录后立即重建可用工具；手工修改后须显式应用。
 
 `target` 段为旧单主机/直接构造兼容保留。多主机 Agent 使用会话 `host_id` 对应的
 `hosts.yaml` SSH 目标，并只暴露 `allow.diagnostics` 授权的诊断命令。
@@ -575,7 +603,7 @@ disk.io_util:
   severity_enabled: true
 ```
 
-重启服务后，巡检日志和异常归档会包含该指标。
+管理员应用磁盘配置后，后续巡检轮次会包含该指标。
 
 ### 把指标加入聊天 Agent
 
@@ -586,7 +614,7 @@ cpu.iowait:
   severity_enabled: false
 ```
 
-重启后，Agent 工具和关键词兜底会包含该指标。
+管理员应用磁盘配置后，后续 Agent 会话和关键词兜底会包含该指标。
 
 ### 让指标进入告警 AI 分析
 
@@ -619,16 +647,31 @@ metrics:
 | `warning < critical` / `warning > critical` | 阈值方向不符 |
 | `observe 指标不能启用 severity` | observe 指标只能记录 |
 | Prometheus 400 Bad Request | 通常是 selector/PromQL 拼接错误，应检查配置中的特殊标签 |
-| 修改后不生效 | 当前配置不支持热更新，需要重启服务 |
+| 修改后不生效 | 页面外修改 YAML 后须由管理员点击“应用磁盘配置”；若涉及监听/存储/日志/环境密钥则需重启 |
 
 ## 十一、字段生效与重启
 
 | 配置 | 生效方式 |
 |---|---|
-| `settings.yaml` | 启动时加载；修改后重启 |
-| `hosts.yaml` | 启动时加载；修改后重启并重建所有逐主机组件 |
-| `metrics.yaml` | 启动时加载；修改后重启 |
-| `rules.yaml` | 启动时加载；当前没有 HTTP 热更新入口 |
-| `actions.yaml` | 容器首次构建执行器时加载；修改后重启 |
-| `agent_actions.yaml` | 首次构建 Agent 时加载；修改后重启 |
-| `diagnostics.yaml` | 首次构建 Agent 时加载；修改后重启 |
+| `settings.yaml` | 页面可编辑的鉴权、身份、LLM/Agent/巡检开关热生效；监听、SQLite/日志路径与环境密钥需重启 |
+| `hosts.yaml` | 管理员新增主机或修改授权后立即切换主机注册表；手改后显式应用 |
+| `metrics.yaml` | 纳入 revision；手改后显式应用 |
+| `rules.yaml` | 页面保存或手动应用后热生效 |
+| `actions.yaml` | 页面保存或手动应用后热生效 |
+| `agent_actions.yaml` | 页面保存或手动应用后热生效 |
+| `diagnostics.yaml` | 页面保存或手动应用后热生效 |
+
+热应用前若有未决审批或正在执行的业务请求会返回 409，旧运行快照与 checkpoint
+保持不变；巡检只保留一个进程内调度线程，每轮读取完整运行快照。普通 Token 明文
+仍只能从启动环境获取，不由管理页面显示或修改。
+
+### Prometheus 目标模式
+
+`prometheus.target_mode` 显式选 `external`（默认）或 `managed`；不根据 URL 猜测。
+`external` 只允许选择 Prometheus `/api/v1/targets` 已发现的目标。
+`managed` 必须配置 `prometheus.file_sd_path`，Compose 已将
+`.runtime/prometheus-targets/assistant.yml` 映射到 Assistant 可写目录和 Prometheus
+只读目录，并在 `deploy/prometheus/prometheus.yml` 预置 `aiops-hosts` 的
+`file_sd_configs`。首次部署该能力需更新一次**本地** Prometheus 容器配置；
+此后新增目标只原子更新目标文件，无需修改远程主机。新主机的诊断、规则动作和 Agent
+写授权默认全为空，`up=0` 可以登记但不代表 Exporter 已恢复。

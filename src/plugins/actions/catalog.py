@@ -53,8 +53,9 @@ def build_actions(data: Mapping[str, Any]) -> ActionsConfig:
     commands: tuple[CmdDef, ...]
     try:
         # 写命令目录允许声明 sudo: true（管理员可信配置）
-        commands = tuple(parse_command_def(key, spec, allow_sudo=True)
-                         for key, spec in raw_cmds.items())
+        parsed = tuple(parse_command_def(key, spec, allow_sudo=True)
+                       for key, spec in raw_cmds.items())
+        commands = tuple(command for command in parsed if command.enabled)
     except CmdDefError as exc:
         raise ActionsConfigError(str(exc)) from exc
     if enabled and not commands:

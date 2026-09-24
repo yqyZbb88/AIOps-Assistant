@@ -6,7 +6,7 @@
 设计要点（每一条都对应一个踩过的坑，改动前先读）：
 
 1. **每操作新开连接**，`check_same_thread` 保持默认 True。
-   sqlite 打开成本约 0.1~0.5ms，本项目只有 /chat 与 /alert 两个低频同步路由，可忽略；
+   单 worker 的内网场景中，单次 sqlite 打开成本小于共享连接的并发风险；
    而共享一个连接跨线程用，风险不在性能而在**事务边界**——一个线程未提交的事务会被
    另一个线程的 commit 带走，且必须放弃 `check_same_thread` 这层护栏。
 2. **必须 `with closing(...)` 关连接**：`with sqlite3.connect(p) as c:` 只提交/回滚事务，

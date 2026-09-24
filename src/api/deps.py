@@ -5,7 +5,8 @@
 只是装饰。
 
 挂载方式见 `src/main.py`：`include_router(..., dependencies=[Depends(require_auth)])`。
-这种写法让业务 router 默认显式挂鉴权；目前只有 `/health` 业务路由豁免。
+这种写法让普通业务 router 显式挂鉴权；`/health`、`/ready` 与 `/console`
+公开但不返回业务数据。`/admin/config` 单独使用 `require_admin`，不随普通鉴权开关放行。
 `/docs`、`/redoc`、`/openapi.json` 属于 FastAPI 应用级路由，不经过这些 router 依赖。
 
 两条纪律：
@@ -19,7 +20,7 @@ from __future__ import annotations
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from src.utils.auth import AuthConfigError, parse_tokens, resolve_identity
+from src.utils.auth import AuthConfigError, parse_admins, parse_tokens, resolve_identity
 
 # auto_error=False：缺 Authorization 头时**不由 FastAPI 直接拒绝**。
 # auto_error=True 会返回 403，而「没带凭据」语义上是 401（FastAPI 的已知行为）。
@@ -69,6 +70,35 @@ def require_auth(
             detail="凭据无效",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return identity
+
+
+def require_admin(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> str:
+    """始终要求管理员 Token；不受普通接口 ``auth.enabled`` 开关影响。"""
+    if credentials is None:
+        raise HTTPException(
+            status_code=401,
+            detail="缺少 Bearer 凭据",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    auth = getattr(getattr(request.app.state, "settings", None), "auth", None)
+    try:
+        tokens = parse_tokens(getattr(auth, "tokens", ""))
+        admins = parse_admins(getattr(auth, "admin_identities", "[]"))
+    except AuthConfigError as exc:
+        raise HTTPException(status_code=500, detail=f"管理员鉴权配置无效: {exc}") from exc
+    identity = resolve_identity(tokens, credentials.credentials)
+    if identity is None:
+        raise HTTPException(
+            status_code=401,
+            detail="凭据无效",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if identity not in admins:
+        raise HTTPException(status_code=403, detail="该身份没有系统管理权限")
     return identity
 
 

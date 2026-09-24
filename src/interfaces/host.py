@@ -50,6 +50,11 @@ class Host:
     legacy: bool = False
 
     def to_public_dict(self) -> dict[str, Any]:
+        """只返回页面可用的主机摘要，不泄露 SSH 目标和凭据。
+
+        Prometheus 的 job/instance 是监控匹配标签，可能包含内网地址；API 调用方仍应
+        把整个响应当内部运维数据保管，不能因“公开摘要”一词就公开分享。
+        """
         return {
             "host_id": self.host_id,
             "name": self.name,

@@ -8,6 +8,7 @@ uvicorn>=0.29,<1.0
 pydantic>=2.5,<3.0
 requests>=2.31,<3.0
 pyyaml>=6.0
+ruamel.yaml>=0.18,<0.19
 
 # ---------- 可选 ① 聊天 Agent 与告警 AI 分析（agent/、plugins/llm_clients/） ----------
 #   模型统一复用根目录 init.py 的 init_chat_model（需 python-dotenv 读 .env）。

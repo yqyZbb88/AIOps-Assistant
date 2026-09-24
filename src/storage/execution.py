@@ -1,4 +1,9 @@
-"""统一动作执行审计的 SQLite 实现。"""
+"""统一动作执行审计的 SQLite 实现。
+
+规则自动处置和 Agent 审批写命令都在真正执行前创建记录。`idempotency_key` 的唯一
+约束使重复申请不会变成第二次写入；参数和详情落库前脱敏。状态行用于事后对账，
+不能把 `pending`/`unknown` 自动解释成“命令没有执行”。
+"""
 from __future__ import annotations
 
 import json
@@ -31,6 +36,7 @@ class SqliteActionExecutionStore(ActionExecutionStore):
         status: str = "pending",
         detail: str = "",
     ) -> ActionExecution | None:
+        """原子插入一次执行；唯一幂等键已存在时返回 None。"""
         execution_id = uuid.uuid4().hex
         stamp = now_iso()
         started_at = stamp if status == "running" else ""
@@ -74,6 +80,7 @@ class SqliteActionExecutionStore(ActionExecutionStore):
         )
 
     def finish(self, execution_id: str, *, status: str, detail: str = "") -> None:
+        """写入最终状态；调用方负责判断远端是否确已完成，不在这里重试命令。"""
         self.db.execute(
             "UPDATE action_executions SET status = ?, detail = ?, finished_at = ? "
             "WHERE execution_id = ?",
