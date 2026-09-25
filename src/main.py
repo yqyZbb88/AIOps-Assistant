@@ -165,6 +165,9 @@ def create_app(
 
     @app.middleware("http")
     async def _runtime_request(request: Request, call_next):
+        # 非管理员的写请求计入 active_operations；若仍有请求执行，配置应用返回 409。
+        # 管理接口由 AdminConfigManager 自己持有写锁并调用 begin_apply。
+        # 读请求只绑定版本、不阻止切换，因此一轮读响应可在旧快照上完成。
         operation = (
             request.method in {"POST", "PUT", "PATCH", "DELETE"}
             and not request.url.path.startswith("/admin/")

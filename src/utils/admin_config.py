@@ -167,7 +167,7 @@ class AdminConfigManager:
             raise AdminConfigUnavailable("Prometheus 目标文件不能覆盖应用配置文件")
         self.backup_root = _path(backup_root, ROOT_DIR / "data" / "config-backups")
         self._lock = threading.Lock()
-        # 当前进程运行的组件只在启动/首次惰性构建时读配置，不能把磁盘写入误报为热生效。
+        # attach_runtime 前只知道磁盘版本；运行版本以创建的第一份快照为准。
         self.active_revision = self.revision()
         self.runtime = None
 
@@ -189,6 +189,7 @@ class AdminConfigManager:
         return yaml
 
     def revision(self) -> str:
+        """计算所有受管理文件的磁盘指纹；环境变量值不参与此指纹。"""
         digest = hashlib.sha256()
         for name, path in sorted(self.paths.items()):
             digest.update(name.encode("utf-8") + b"\0")
@@ -547,7 +548,11 @@ class AdminConfigManager:
                 raise AdminConfigError(f"自动执行规则 {rule.id or rule.alertname} 必须选择目标主机")
 
     def _candidate(self, docs: Mapping[str, Any]) -> RuntimeSnapshot | None:
-        """在写盘前完整装配新运行态；失败时旧运行态完全不变。"""
+        """在写盘前装配候选运行态；不支持热切换的 Settings 差异整批拒绝。
+
+        新增 Settings 字段时必须审查下面的 hot_fields：未列入的字段不会被部分应用。
+        冻结的 YAML 文本交给新 Container，避免惰性组件随后读到更新后的磁盘文件。
+        """
         if self.runtime is None:
             return None
         import yaml
@@ -622,7 +627,7 @@ class AdminConfigManager:
 
     @staticmethod
     def _atomic_write(path: Path, text: str) -> None:
-        """在目标目录创建临时文件，刷盘后替换单个文件。"""
+        """在目标目录创建临时文件，刷盘后替换单个文件；不保证跨文件原子性。"""
         fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:

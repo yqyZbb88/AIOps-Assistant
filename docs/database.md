@@ -272,33 +272,41 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 2. 复制整个 `data/` 目录。
 3. 同时备份 `.env` 和 `config/`。
 
-运行中备份可使用：
+运行中优先使用 SQLite 的在线备份接口（CLI 的 `.backup` 使用该接口），生成独立的
+一致性快照；不要在写入期间用普通文件复制代替：
 
 ```bash
 sqlite3 data/aiops_assistant.db ".backup backup.db"
 ```
 
-如果直接复制文件，必须同时复制：
+若服务已停止且确需文件级复制，应复制同一时刻的数据库文件及存在的 WAL 文件，
+最简单的是复制整个 `data/` 目录，不要只取主 `.db`：
 
 ```text
 aiops_assistant.db
 aiops_assistant.db-wal
-aiops_assistant.db-shm
 ```
 
-只复制主文件可能得到不一致快照。
+`-wal` 可能仍含已提交但未并入主文件的事务；`-shm` 是可重建的 WAL 索引，
+不是必须保留的数据文件。不要把不同时间点或不同数据库的主文件与 WAL 混在一起。
+依据：[SQLite 在线备份](https://www.sqlite.org/backup.html)、
+[WAL 文件说明](https://www.sqlite.org/wal.html)、
+[WAL 索引说明](https://www.sqlite.org/walformat.html)。
 
 ## 十、恢复
 
 恢复会覆盖当前数据；先确认备份来源、时间、目标路径和可回退副本。不要在服务运行中
-直接删除 `-wal`/`-shm`，也不要把管理员 YAML 配置备份当成 SQLite 文件使用。
+删除或替换数据库、`-wal`、`-shm`，也不要把管理员 YAML 配置备份当成 SQLite 文件。
 
 1. 停止服务。
-2. 备份当前 `data/`。
-3. 将备份数据库恢复到 `data/aiops_assistant.db`。
-4. 删除或覆盖匹配的 `-wal`、`-shm` 文件。
-5. 启动服务并检查 `/health`。
-6. 查询会话、告警和巡检接口确认数据可读。
+2. 完整保留当前 `data/`，在**独立的空目录**准备恢复副本，避免与旧 WAL/SHM 混用。
+3. 如果来源是 `.backup`，在空目录放入生成的独立数据库文件；如果来源是停机文件
+   副本，保持同一批主文件和 WAL 文件配对。先在副本上执行 `PRAGMA integrity_check`。
+4. 确认目标路径与回退方案后，以准备好的完整副本替换目标数据目录；不要对运行中的
+   数据目录直接做文件级拼接。随后启动服务并检查 `/health` 和 `/ready`。
+5. 查询会话、告警和巡检接口确认数据可读，并核对最近时间戳和记录数。
+
+这些是保守的维护步骤，不代表本项目已经完成恢复时间、并发或故障注入演练。
 
 如果恢复的是旧版 `data/ops_agent.db`，程序在新库不存在时可以继续使用旧文件。
 

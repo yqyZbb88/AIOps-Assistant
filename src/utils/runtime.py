@@ -1,4 +1,10 @@
-"""单进程运行态：请求固定一个配置版本，配置应用时原子替换版本指针。"""
+"""单进程运行态：请求固定一个配置版本，配置应用时替换版本指针。
+
+配置与组件属于 ``RuntimeSnapshot``；数据库连接、会话、执行幂等和最近告警等
+进程级状态由新 Container 复用。这个锁只保护当前进程，不是跨 worker 租约。
+读请求可在切换前绑定旧快照并继续完成；会产生副作用的业务请求先登记为
+active operation，应用配置时必须等它们结束并确认没有未决审批。
+"""
 from __future__ import annotations
 
 import contextvars
@@ -39,6 +45,7 @@ class RuntimeProxy:
 
 
 class RuntimeManager:
+    """协调版本切换与业务请求，不负责磁盘事务或跨进程同步。"""
     def __init__(self, snapshot: RuntimeSnapshot) -> None:
         self.current = snapshot
         self._lock = threading.RLock()
@@ -64,6 +71,7 @@ class RuntimeManager:
             self._active_operations -= 1
 
     def begin_apply(self) -> None:
+        """拒绝与写业务、未决审批并发的应用；成功后由 commit/cancel_apply 收尾。"""
         with self._lock:
             if self._applying or self._active_operations:
                 raise RuntimeBusyError("业务请求正在执行，请稍后重试配置应用")
@@ -72,6 +80,7 @@ class RuntimeManager:
             self._applying = True
 
     def commit(self, snapshot: RuntimeSnapshot) -> None:
+        """只切换当前进程的快照；唤醒唯一调度器读取下一轮配置。"""
         with self._lock:
             self.current = snapshot
             self._applying = False

@@ -1,4 +1,9 @@
-"""管理员新增监控主机：目标发现、脱敏预览、SSH 认证测试与双文件事务。"""
+"""管理员新增监控主机：目标发现、脱敏预览、SSH 认证测试与写盘。
+
+只负责新增，不提供删除/停用。managed 模式可能同时写 hosts.yaml 和
+Prometheus file_sd 目标文件；单文件原子替换加异常回滚并非断电原子事务。
+登记主机不安装或启动远程 Exporter，Prometheus 后续发现目标也不代表 up=1。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -33,7 +38,11 @@ def _address_host(address: str) -> str:
 
 
 class HostOnboarding:
-    """复用 AdminConfigManager 的写锁、revision、备份与运行快照。"""
+    """复用管理器的进程内写锁、revision、备份与运行快照。
+
+    SSH 检查票据仅保存在此对象内 5 分钟，重启或换进程后失效；它证明一次
+    主机密钥/认证握手通过，不证明远程诊断命令或 Exporter 工作正常。
+    """
 
     def __init__(self, manager: Any) -> None:
         self.manager = manager
@@ -43,6 +52,7 @@ class HostOnboarding:
         return self.manager.runtime.current.settings.prometheus.target_mode
 
     def _targets(self) -> list[dict[str, Any]]:
+        """读取 Prometheus 已发现目标；仅返回登记所需标签，不返回原始响应。"""
         import requests
 
         settings = self.manager.runtime.current.settings.prometheus

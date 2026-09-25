@@ -20,7 +20,8 @@
 - 顶层 import langchain 无碍：本模块只会在构建 Agent（assistant 工厂）时被导入。
 
 扩展方式：监控工具 = build_tools 里写 @tool 追加；只读诊断 = config/diagnostics.yaml 加命令；
-Agent 写命令 = config/agent_actions.yaml 加命令（改完需重启进程）。
+Agent 写命令 = config/agent_actions.yaml 加命令。管理页保存可热应用；页面外手改 YAML
+须由管理员显式应用。未决审批会阻止配置切换，环境变量密钥变更仍需重启进程。
 """
 from __future__ import annotations
 

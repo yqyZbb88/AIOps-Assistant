@@ -1,7 +1,8 @@
 """人工审批路由：GET /approvals 待审批列表、POST /approvals/{id} 提交决策。
 
 Agent 的写命令（config/agent_actions.yaml）在执行前会中断，等人工在这里决策。
-这是**唯一**能让写命令真正执行的入口。
+这是 Agent 写命令恢复执行的唯一 HTTP 决策入口；规则自动处置走独立的 `/alert` 链路，
+不经过本路由的人工审批。
 
 鉴权（config/settings.yaml 的 auth 段）：
 启用后本组路由要求 `Authorization: Bearer <密钥>`（见 src/api/deps.py），并按密钥推出的
@@ -17,7 +18,7 @@ Agent 的写命令（config/agent_actions.yaml）在执行前会中断，等人�
 缓解措施：审批 id 为随机不可枚举值、server.host 默认仅 127.0.0.1、白名单固定，
 以及 `config/agent_actions.yaml` 当前是 `enabled: false`（Agent 写命令整体关闭，
 连可供决策的对象都没有）。
-**但最后一条别当成安全边界**：它是个随时能改回 `true` 的配置开关（改后需重启进程），
+**但最后一条别当成安全边界**：它是个可由管理员热应用的配置开关，
 不是代码保证；而 `config/actions.yaml` 那条规则路径同样会执行写命令。
 **绑到 0.0.0.0 之前请务必打开 auth**，否则任何能访问端口的人都可能批准写命令。
 详见 README「安全说明」。

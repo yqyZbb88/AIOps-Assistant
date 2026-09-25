@@ -4,16 +4,18 @@ AIOps-Assistant 是面向多台 Linux 主机、单 Prometheus/Alertmanager 和�
 智能运维助手。它把 Prometheus/Alertmanager 的事实数据、白名单 SSH 诊断、人工审批写操作、周期巡检和
 SQLite 历史记录组织成一条可审计的运维链路。
 
-新接手项目建议按 **README → [配置指南](docs/configuration.md)
-→ [API 参考](docs/api.md) → [数据库说明](docs/database.md)** 阅读；本地若有被忽略的
-`ARCHITECTURE.md`、`PROJECT_HANDOVER.md` 和 `roadmap.md`，再结合它们看当前验收背景。日常操作从
+新接手项目建议按 **README → [架构与重构边界](docs/architecture.md)
+→ [配置指南](docs/configuration.md) → [API 参考](docs/api.md)** 阅读；数据层再看
+[数据库说明](docs/database.md)。根目录被忽略的 `ARCHITECTURE.md`、`PROJECT_HANDOVER.md`
+和 `roadmap.md` 是本地工作记录，不作为仓库内的唯一事实来源。日常操作从
 [控制台说明](docs/console.md) 和 [只读排障](docs/troubleshooting.md) 开始。
 
 当前版本：`0.5.0`
 
 `0.5.0` 已完成多主机监控、巡检、诊断及目标明确的异常处置；`0.6.0` 的日常入口、
-交互式图形化控制台和管理员配置页已经实现，用户已反馈浏览器页面无问题。
-基础稳定性和部署恢复验证尚未开始。
+图形化控制台、管理员配置页、配置热更新和新增监控主机入口已有实现，但不能把已有
+离线回归视为无缺陷证明。基础稳定性、并发与部署恢复验证尚未完成；已知边界与建议的
+重构顺序见[架构与重构边界](docs/architecture.md)。
 规则自动处置与 Agent 人工审批执行均为核心能力，前者继续默认关闭。
 项目继续使用 SQLite；多 worker、高可用、审批跨重启续跑和跨主机批量编排暂不纳入。
 最终交付采用 GHCR 版本化 Assistant 镜像加 Compose Release 部署包；同时提供在线包和
@@ -24,7 +26,8 @@ SQLite 历史记录组织成一条可审计的运维链路。
 当前已实现：
 
 - AI 多轮对话：模型按配置调用指标、告警、巡检和诊断工具
-- 静态主机注册表：稳定主机 ID、精确 Prometheus 目标、SSH 凭据引用和逐主机能力授权
+- 显式主机注册表：稳定主机 ID、精确 Prometheus 目标、SSH 凭据引用和逐主机能力授权；
+  管理员可新增，尚无页面删除/停用入口
 - 多主机隔离：会话、指标、告警、巡检、AI 上下文、诊断和执行均绑定明确主机
 - 统一指标目录：内置 CPU、Memory、Disk、Network、System、Alerts 共 17 个指标
 - Alertmanager webhook：接收告警、执行规则匹配，并分析未匹配告警
@@ -45,9 +48,8 @@ SQLite 历史记录组织成一条可审计的运维链路。
 当前不支持：
 
 - 动态资产发现和主机级 RBAC
-- 多 worker 下可靠审批与调度
+- 多 worker 下可靠审批、热更新与巡检调度
 - 待审批 checkpoint 跨进程恢复
-- 多 worker、高可用与审批 checkpoint 跨进程恢复
 - 任意 PromQL、任意 Shell 或任意日志文件读取
 - 生产级容器加固、TLS、高可用和灾备
 
@@ -69,7 +71,9 @@ Plugins / Storage
 - `src/plugins/`：Prometheus、DeepSeek、SSH 诊断和命令执行实现
 - `src/storage/`：SQLite、内存缓冲、审批队列和幂等守卫
 - `src/agent/`：LangChain/LangGraph Agent、工具和人工审批续跑
-- `src/container.py`：按配置惰性装配并缓存组件
+- `src/container.py`：按配置惰性装配并缓存组件；热更新时构建新容器，复用进程级状态
+- `src/utils/runtime.py`：一次请求固定一个运行快照，管理员应用时切换版本指针
+- `src/utils/admin_config.py`、`host_onboarding.py`：受限配置草稿与主机登记事务
 
 核心原则是：Prometheus 提供事实，模型负责解释和选择受控工具；模型不能提交自由
 PromQL 或自由 Shell。写命令只能来自管理员维护的目录。
@@ -273,6 +277,7 @@ logs/inspection.log
 | [控制台说明](docs/console.md) | 页面、指标区间、会话审批与管理员草稿操作 |
 | [API 参考](docs/api.md) | 所有 HTTP 路径、请求响应边界与错误语义 |
 | [只读排障](docs/troubleshooting.md) | Prometheus/Exporter、告警、审批、配置与 SQLite 证据收集 |
+| [架构与重构边界](docs/architecture.md) | 当前调用链、状态所有权、安全不变量和重构切入点 |
 | [贡献约定](CONTRIBUTING.md) | 分层、安全、测试和文档同步要求 |
 
 ## 开发验证
@@ -285,5 +290,6 @@ python -m compileall -q src tests init.py
 自动化测试必须离线，不访问真实 DeepSeek、Prometheus、SSH 或公共网络。fake
 monitor/SSH 双主机隔离回归和两台独立 Linux 主机的真实 Prometheus、Alertmanager、
 SSH、规则动作及 Agent 审批闭环均已完成；实机记录见 roadmap 和 PROJECT_HANDOVER。
-本次热更新与主机向导完成后的完整离线回归为 `697 passed`。0.6.0 前端和管理员阶段已获用户浏览器反馈，
-后续基础稳定性、SQLite 并发、部署恢复与发布包仍待实施。
+本次文档与注释整理后的完整离线回归为 `697 passed`；这不代表真实环境已重新验收，
+也不能证明未覆盖的交互和并发路径没有缺陷。后续基础稳定性、SQLite 并发、部署恢复与
+发布包仍待实施。

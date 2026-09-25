@@ -172,6 +172,9 @@ SSH 凭据或主机 SSH 连接字段。`PUT /admin/config` 必须传入原 revis
 `diagnostics:["memory"]`，先调用 `ssh-check` 并把返回的短期
 `verification_id` 带入新增请求。该检查只校验主机密钥和认证，不执行命令。
 成功新增返回 `host_id`、新 revision 和 Exporter 状态；`up=0` 仍可登记，写授权始终为空。
+目前没有删除、停用或编辑已有主机的管理接口。相同主机内容的重复新增可返回已有结果；
+相同 `host_id` 但内容不同，或目标已归属另一主机，返回 409。SSH 检查会建立远程连接，
+但不会运行诊断命令；未经授权不要在真实目标上调用。
 
 | 状态码 | 典型原因 | 调用方处理 |
 |---|---|---|
@@ -187,3 +190,4 @@ SSH 凭据或主机 SSH 连接字段。`PUT /admin/config` 必须传入原 revis
 应用统一使用脱敏 JSON 响应；但响应可能仍含非凭据的主机名、监控 `instance`、告警
 摘要和运维结果，调用方应按内部运维数据保管。`restart_required=true` 表示磁盘
 版本尚未应用；管理员需检查是否含需重启字段，再调用 `/admin/config/apply`。
+浏览器或 HTTP 客户端超时不能证明服务端已取消写入；重试前先查询 revision 或执行状态。

@@ -298,6 +298,11 @@ Exporter `主机:端口`。管理员只看到目标的必要标签与凭据 ID�
 新增默认无规则动作和 Agent 写授权。`up=0` 仍可登记，但页面会明确提示 Exporter
 不可达。向导不会安装、启动或重启远程服务。
 
+当前界面只能新增监控主机，不能删除、停用或修改现有主机；相关生命周期与历史归属
+尚待设计。需要清退节点时，先记录其规则、会话、执行与巡检引用，不要直接从
+`hosts.yaml` 删除并假设 Prometheus 目标也会被清理。现有实现与重构边界见
+[架构说明](architecture.md)。
+
 主机详情的图形展示的是所选时间范围内的最小、平均、当前和最大值区间摘要，不是逐点
 时间序列；数值相同时会合并标记。运维记录默认只显示指标快照的简短预览，完整快照和
 原始 JSON 可分别展开查看。
@@ -486,7 +491,6 @@ Linux 默认栈同样只保证容器环境采集，不承诺完整宿主机挂�
 ```text
 data/aiops_assistant.db
 data/aiops_assistant.db-wal
-data/aiops_assistant.db-shm
 .env
 config/
 logs/
@@ -496,7 +500,8 @@ logs/
 
 - 优先停服务后复制
 - 或使用 SQLite `.backup`
-- 不要只复制 `.db` 而遗漏 WAL/SHM
+- 停机文件级复制时保持主 `.db` 与存在的 `-wal` 来自同一时刻；`-shm` 可重建，
+  但最省心的是复制整个数据目录。运行中请用 SQLite `.backup`，不要只复制 `.db`
 - Compose 下同时备份 `.runtime/assistant-data`、`.runtime/assistant-logs` 和需要保留的命名卷
 - `.runtime/compose.env` 与 secrets 必须按密钥材料单独加密保管，不要提交版本库
 

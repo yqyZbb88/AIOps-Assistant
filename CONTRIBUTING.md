@@ -30,6 +30,7 @@
 | 数据库表、列、状态或清理策略 | `docs/database.md`、DDL/迁移注释、schema 与 Store 测试 |
 | 值班诊断、故障状态或恢复步骤 | `docs/troubleshooting.md`、`docs/guide.md`、相关测试 |
 | 组件装配、插件或降级路径 | README 架构、模块 docstring、Container 测试 |
+| 运行快照、配置事务或主机登记 | `docs/architecture.md`、`docs/console.md`、并发/回滚/跨主机测试 |
 | 版本目标或实施顺序 | 更新维护计划，并同步 README 中的当前能力与限制 |
 
 测试数量会变化，不应在多个历史文档里长期维护精确数字；README 只记录最近一次完整验证
@@ -54,7 +55,7 @@ api → core → interfaces
 
 - `api/` 只做 HTTP 校验、鉴权、异常映射和转发。
 - `core/` 不创建具体插件或导入 `src.agent`；现存静态目录/字段常量的窄导入见
-  本地 `ARCHITECTURE.md`，新增代码不要把它扩展为运行时插件依赖。
+  [架构说明](docs/architecture.md)，新增代码不要把它扩展为运行时插件依赖。
 - `interfaces/` 不依赖第三方实现。
 - `plugins/` 放外部系统适配器和 SSH/LLM 实现。
 - `storage/` 放 SQLite 与内存存储实现。
@@ -78,7 +79,10 @@ api → core → interfaces
 - 新增字段必须有类型、默认值、范围、失败语义和生效时机。
 - `settings.yaml` 和 `metrics.yaml` 的错误属于启动配置错误，应拒绝不确定启动。
 - 可选命令目录错误可以关闭对应能力，但必须记录明确日志，不能静默放宽。
-- 当前没有用户可用的配置热更新入口，配置修改后统一重启服务。
+- 管理页可编辑字段由 `PUT /admin/config` 校验、备份并热应用；页面外手改 YAML 须调用
+  `POST /admin/config/apply`。监听地址、SQLite/日志位置及环境变量密钥仍需重启。
+- 新增配置字段时明确归类为“可热应用”或“需重启”，并同步运行快照白名单与测试。
+- 管理写锁仅在当前单进程内有效，多实例共享同一配置目录不在支持范围内。
 
 ## 7. 数据库约定
 

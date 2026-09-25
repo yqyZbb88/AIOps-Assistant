@@ -38,6 +38,8 @@ const DEFAULT_PREFS = Object.freeze({
   widgetOrder: ["hosts", "attention", "trends", "recent"], hiddenWidgets: [],
 });
 // 单页视图共享的内存状态：host_id、session_id、审批 id 均来自服务端，不接受自由目标地址。
+// admin 是 GET /admin/config 的完整可编辑草稿；adminDirty 只跟踪本标签页的修改，
+// 真正的冲突仍由服务端 revision 校验。主机向导独立保存，进入前必须处理这份草稿。
 const state = {
   prefs: loadPreferences(), view: "overview", hosts: [], hostStatuses: new Map(),
   selectedHostId: "", sessions: [], selectedSessionId: "", approvals: [],
@@ -63,6 +65,7 @@ function cloneDefaults() {
 
 function normalizePreferences(raw) {
   // localStorage 可被用户手工改坏；只恢复已知枚举、范围和指标 ID，其余回到安全默认值。
+  // 这只是展示偏好校验，不参与服务端鉴权或主机授权。
   const next = cloneDefaults();
   if (!raw || typeof raw !== "object") return next;
   if (["system", "dark", "light"].includes(raw.theme)) next.theme = raw.theme;
@@ -150,6 +153,7 @@ function badge(text, value) { return node("span", "badge " + statusTone(value), 
 
 async function request(path, options) {
   // 统一请求边界：只用相对路径、默认带 Bearer、禁缓存且有超时；401/403 留给调用方展示。
+  // 超时是浏览器放弃等待，不代表服务端写入已取消；调用方不可据此盲目重试审批/保存。
   const opts = options || {};
   const authenticated = opts.authenticated !== false;
   const token = sessionStorage.getItem(TOKEN_KEY);
