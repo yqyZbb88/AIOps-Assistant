@@ -183,7 +183,7 @@
                 <label>主机 ID<input id="admin-host-id" maxlength="63" autocomplete="off" required placeholder="node-c"></label>
                 <label>显示名<input id="admin-host-name" maxlength="128" autocomplete="off" required placeholder="验收节点 C"></label>
                 <label>Prometheus 目标<select id="admin-host-target"></select></label>
-                <label id="admin-host-address-row" hidden>新 Exporter 主机:端口<input id="admin-host-address" autocomplete="off" placeholder="192.168.20.133:9100"></label>
+                <label id="admin-host-address-row" hidden>新 Exporter 主机:端口<input id="admin-host-address" autocomplete="off" placeholder="192.0.2.10:9100"></label>
                 <label>已有 SSH 凭据 ID（可选）<select id="admin-host-credential"></select></label>
                 <label>SSH 端口<input id="admin-host-ssh-port" type="number" min="1" max="65535" value="22"></label>
                 <div class="admin-host-diagnostics"><strong>只读诊断授权</strong><p class="admin-help">先通过“测试 SSH”，才能保存勾选的诊断命令；写授权始终为空。</p><div id="admin-host-diagnostic-checks" class="admin-checks"></div></div>

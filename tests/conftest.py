@@ -1,23 +1,11 @@
 """测试公共：FakeMonitor / FakeLLM / 告警构造工具 + 确保仓库根在 sys.path。"""
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# 在任何 langchain 导入**之前**关掉 LangSmith 链路追踪
-# ---------------------------------------------------------------------------
-# 用户 `.env` 里配了 LANGSMITH_TRACING/API_KEY 时，langchain 会起一个**后台线程**
-# 往 api.smith.langchain.com 发请求（`langsmith/_internal/_background_thread.py`
-# 的 tracing_control_thread_func → client.info，与有没有真的跑模型无关）。
-# 这违反本仓库「测试全部离线」的硬性约束，且失败形态很隐蔽：测试照样全绿，
-# 只有抓 socket 才看得见。
-#
-# 位置很关键：conftest 先于任何测试模块加载，而 config_loader 加载 `.env` 用的是
-# `load_dotenv(override=False)`——所以这里设的值不会被 `.env` 覆盖。
-for _var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING", "LANGCHAIN_TRACING_V2"):
-    os.environ[_var] = "false"
+# LangSmith 追踪由测试进程的环境变量控制。完全离线运行时应将
+# LANGSMITH_TRACING、LANGCHAIN_TRACING 和 LANGCHAIN_TRACING_V2 设为 false。
 
 import pytest  # noqa: E402
 

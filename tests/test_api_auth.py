@@ -359,21 +359,21 @@ def test_delete_by_non_owner_does_not_cancel_pending_approvals(owned):
 def test_legacy_row_is_invisible_until_a_key_maps_to_its_user(owned):
     """**升级须知**：开启鉴权后，存量会话的 `user` 若不在密钥映射里，就访问不到了。
 
-    库里实测有 `user='yqyZ'` 与 `user='string'`（Swagger 示例值留下的垃圾）两类。
+    库里实测有 `user='legacy-user'` 与 `user='string'`（Swagger 示例值留下的垃圾）两类。
     要保住某段对话，把一条密钥映射到它原本的 `user` 值上即可——这条用例把那个
     逃生通道钉死，免得用户以为老数据「被删了」。
     """
-    legacy = owned.store.create(user="yqyZ").session_id
+    legacy = owned.store.create(user="legacy-user").session_id
 
     for token in ("k-alice", "k-bob"):
         assert owned.get(f"/sessions/{legacy}", headers=_as(token)).status_code == 404
 
     app2 = _make_app(
-        tokens='{"k-yqyz": "yqyZ", "k-alice": "alice"}',
+        tokens='{"k-legacy": "legacy-user", "k-alice": "alice"}',
         db_path=owned.app.state.settings.storage.db_path,
     )
     with TestClient(app2) as c2:
-        assert c2.get(f"/sessions/{legacy}", headers=_as("k-yqyz")).status_code == 200
+        assert c2.get(f"/sessions/{legacy}", headers=_as("k-legacy")).status_code == 200
 
 
 def test_unowned_legacy_row_is_invisible_to_every_identity(owned):

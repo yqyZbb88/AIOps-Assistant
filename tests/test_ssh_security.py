@@ -6,7 +6,7 @@ import sys
 from src.plugins.common.endpoint import SshEndpoint, endpoint_from_params
 import pytest
 
-from src.plugins.common.ssh import SshError, _new_client, _read_channel
+from src.plugins.common.ssh import SshOutcomeUnknown, _new_client, _read_channel
 
 
 class FakeRejectPolicy:
@@ -120,6 +120,6 @@ def test_stream_reader_drains_but_retains_bounded_output():
 
 def test_stream_reader_times_out_and_closes_channel():
     channel = FakeChannel(exits=False)
-    with pytest.raises(SshError, match="超时"):
+    with pytest.raises(SshOutcomeUnknown, match="超时"):
         _read_channel(channel, output_limit=20, timeout=0.001)
     assert channel.closed is True

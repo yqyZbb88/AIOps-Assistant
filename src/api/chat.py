@@ -1,8 +1,9 @@
 """聊天路由：`POST /chat`。
 
-请求只包含本轮 `message` 和必填 `session_id`；会话由 `POST /sessions` 创建，调用者
-身份由 Bearer Token 推断。存储可用时会校验会话归属并加载历史；存储关闭或降级为
-无存储时聊天仍可回答，但响应中的 `session_id` / `session_name` 为 null，且不保留历史。
+请求只包含本轮 `message` 和必填 `session_id`；会话由 `POST /sessions` 创建。
+普通鉴权开启且存储可用时，服务端从 Bearer Token 推断身份、校验会话归属并加载历史。
+存储关闭或降级为无存储时仍可回答，但响应中的 `session_id` / `session_name`
+为 null，且不保留历史。
 """
 from __future__ import annotations
 
@@ -26,14 +27,12 @@ class ChatRequest(BaseModel):
     **两段式：先 `POST /sessions` 建会话拿 id，之后每轮都带上它。**
 
     - `message`：本轮用户输入。
-    - `session_id`：**必填**。须已存在且属于调用者；未知 / 不属于你一律 404
+    - `session_id`：**必填**。须已存在；开启鉴权时还须属于调用者。未知或无权访问一律 404
       （两者同形，不泄露「这个 id 存在，只是不是你的」）。
 
-    **调用者身份不在这里**，它由 `Authorization: Bearer <密钥>` 推出
-    （见 config/settings.yaml 的 auth 段）。此前那个 `user` 字段已移除——
-    自报的用户名无从核实，基于它的校验只是装饰。客户端若仍带着 `user` 或
-    `session_name`，pydantic 会**静默忽略**（默认 `extra="ignore"`）：它们不再是
-    可信输入，为它们报 422 只会让既有调用方困惑。
+    **调用者身份不在请求体中**。普通鉴权开启时，服务端从 Bearer Token
+    推断身份；关闭时身份为 `None`，不按身份隔离。额外的 `user` 或
+    `session_name` 字段会被忽略，不作为可信输入。
     """
 
     message: str = Field(..., min_length=1, description="用户输入的消息")

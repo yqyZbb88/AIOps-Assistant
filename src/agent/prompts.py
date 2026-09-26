@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-# Agent 名称：用于日志 / trace 归因，后续多 Agent 编排时可区分来源
+# Agent 名称：用于日志与 trace 归因
 AGENT_NAME = "ops_assistant"
 
 # 聊天主 Agent 的系统提示词：角色 + 工具决策规则 + 行为约束

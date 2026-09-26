@@ -73,7 +73,7 @@ python -c "import secrets;print(secrets.token_urlsafe(32))"
 
 至少确认：
 
-- `config/settings.yaml` 中的 `auth.enabled`
+- `config/settings.yaml` 中的 `auth.enabled`；需要普通 API 使用 Token 校验时设为 `true`
 - `config/hosts.yaml` 中每台主机的 ID、Prometheus `job`/`instance`、SSH 凭据引用和授权
 - `config/metrics.yaml` 中要监控的指标
 - `config/diagnostics.yaml` 中允许的只读命令；多主机 SSH 目标来自 `hosts.yaml`
@@ -139,28 +139,10 @@ docker compose start node-exporter
 
 ## 一、适用范围
 
-当前版本适合：
+## 运行范围
 
-```text
-少量 Linux 主机
-单 Prometheus
-单 Alertmanager
-单 worker
-内网环境
-少量用户
-```
-
-当前不支持：
-
-- 动态主机发现和主机级 RBAC
-- 多 worker 下可靠审批
-- 审批跨进程重启恢复
-- 多 worker 下可靠热更新
-- 任意 PromQL 执行
-- AI 任意读取日志文件
-- 生产级容器加固、TLS、高可用和灾备
-
-后续版本以维护者的本地规划为准；本指南只描述当前已经实现的能力。
+适用于少量 Linux 主机、单 Prometheus、单 Alertmanager、单 Assistant 进程和单 worker
+的内网部署。监控查询与 SSH 命令均受管理员配置目录约束；待审批申请仅在当前进程有效。
 
 ## 二、主要能力
 
@@ -240,14 +222,15 @@ OPS_ADMIN_IDENTITIES=["admin"]
 
 ### 普通用户
 
-需要 Bearer Token：
+`auth.enabled=true` 时，普通业务接口需要 Bearer Token：
 
 ```text
 Authorization: Bearer <密钥>
 ```
 
 `/health`、`/ready`、`/console` 及控制台静态资源公开，但空壳不返回运维数据、凭据、
-地址或详细异常。实际数据与控制台操作仍通过受保护 API 完成。
+地址或详细异常。普通业务接口是否校验 Token 取决于 `auth.enabled`；
+系统管理接口始终校验管理员 Token。
 FastAPI 自带的 `/docs`、`/redoc` 和
 `/openapi.json` 也公开；在不可信网络部署时应由反向代理限制这些路由。
 
@@ -260,7 +243,7 @@ auth:
   alert_identity: alertmanager
 ```
 
-只有这个身份可以调用 `POST /alert`。
+`auth.enabled=true` 且配置了 `alert_identity` 时，只有该身份可以调用 `POST /alert`。
 
 ### 审批人
 
@@ -298,10 +281,8 @@ Exporter `主机:端口`。管理员只看到目标的必要标签与凭据 ID�
 新增默认无规则动作和 Agent 写授权。`up=0` 仍可登记，但页面会明确提示 Exporter
 不可达。向导不会安装、启动或重启远程服务。
 
-当前界面只能新增监控主机，不能删除、停用或修改现有主机；相关生命周期与历史归属
-尚待设计。需要清退节点时，先记录其规则、会话、执行与巡检引用，不要直接从
-`hosts.yaml` 删除并假设 Prometheus 目标也会被清理。现有实现与重构边界见
-[架构说明](architecture.md)。
+控制台支持新增监控主机。清退或修改已有主机时，应核对规则、会话、执行与巡检引用，
+并分别处理 Prometheus 目标配置；直接删除 `hosts.yaml` 中的记录不会自动清理这些数据。
 
 主机详情的图形展示的是所选时间范围内的最小、平均、当前和最大值区间摘要，不是逐点
 时间序列；数值相同时会合并标记。运维记录默认只显示指标快照的简短预览，完整快照和
@@ -480,7 +461,7 @@ Compose 的挂载和网络：
 
 所有发布端口默认只绑定 `127.0.0.1`。容器内 Assistant 使用 `prometheus:9090`，指标实例为
 `node-exporter:9100`。Windows 上 Node Exporter 看到 Docker Linux 环境，不是 Windows 宿主机；
-Linux 默认栈同样只保证容器环境采集，不承诺完整宿主机挂载。
+Linux 默认栈采集容器环境；宿主机指标取决于所部署的 Exporter 和挂载配置。
 
 ## 十、备份
 

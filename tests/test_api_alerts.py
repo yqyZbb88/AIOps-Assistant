@@ -178,8 +178,8 @@ def test_advice_is_archived(tmp_path):
     assert advice[0].alert_key == store.recent_alerts()[0].alert_key, "靠 alert_key 串起来"
 
 
-def test_archive_failure_does_not_break_alert_processing(tmp_path, monkeypatch):
-    """归档写在流程**末尾**，失败面只收敛成「少一条归档」，不能影响告警接收。"""
+def test_archive_failure_is_retryable(tmp_path, monkeypatch):
+    """归档失败必须显式报错，告警发送方才能重试。"""
     from src.storage.db import open_database
     from src.storage.history import SqliteHistoryStore
     from src.storage.models import AlertmanagerPayload
@@ -192,11 +192,12 @@ def test_archive_failure_does_not_break_alert_processing(tmp_path, monkeypatch):
     )
     agent = _agent(tmp_path, history=store, llm=FakeLLM())
 
-    ack = agent.process_alert(AlertmanagerPayload(**_payload(_alert())))
+    from src.interfaces.history import HistoryError
 
-    assert ack.received == 1, "告警接收照常"
-    assert ack.alerts, "内存记录照常"
-    assert agent.recent(10), "查询照常"
+    with pytest.raises(HistoryError):
+        agent.process_alert(AlertmanagerPayload(**_payload(_alert())))
+
+    assert agent.recent(10), "内存记录仍可查看"
 
 
 def test_no_history_store_is_fine(tmp_path):
@@ -218,3 +219,14 @@ def test_recent_endpoint_unchanged(client):
 
     assert [r["alertname"] for r in recent] == ["HighCPUUsage"]
     assert "alert_key" not in recent[0], "内存摘要不含归档关联键（两者数据源不同）"
+
+
+def test_archive_failure_returns_retryable_http_error(client, monkeypatch):
+    history = client.app.state.container.history()
+    monkeypatch.setattr(
+        history, "record_batch",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("disk unavailable")),
+    )
+    response = client.post("/alert", json=_payload(_alert("SomethingElse")))
+    assert response.status_code == 503
+    assert "archive failed" in response.json()["detail"]

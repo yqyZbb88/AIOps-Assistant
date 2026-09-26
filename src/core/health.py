@@ -53,7 +53,7 @@ class HealthService:
         inspection = "disabled" if scheduler is None else (
             "running" if scheduler.running else "stopped"
         )
-        ready = prometheus == "ok" and inspection != "stopped"
+        ready = prometheus == "ok" and inspection != "stopped" and storage_detail != "degraded"
         degraded = storage_detail == "degraded" or prometheus == "unreachable" or inspection == "stopped"
         return {
             "status": "degraded" if degraded else "ok",

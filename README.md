@@ -4,22 +4,16 @@ AIOps-Assistant 是面向多台 Linux 主机、单 Prometheus/Alertmanager 和�
 智能运维助手。它把 Prometheus/Alertmanager 的事实数据、白名单 SSH 诊断、人工审批写操作、周期巡检和
 SQLite 历史记录组织成一条可审计的运维链路。
 
-新接手项目建议按 **README → [架构与重构边界](docs/architecture.md)
-→ [配置指南](docs/configuration.md) → [API 参考](docs/api.md)** 阅读；数据层再看
-[数据库说明](docs/database.md)。根目录被忽略的 `ARCHITECTURE.md`、`PROJECT_HANDOVER.md`
-和 `roadmap.md` 是本地工作记录，不作为仓库内的唯一事实来源。日常操作从
-[控制台说明](docs/console.md) 和 [只读排障](docs/troubleshooting.md) 开始。
+使用与部署说明从 [使用指南](docs/guide.md) 开始；配置字段见
+[配置指南](docs/configuration.md)，接口见 [API 参考](docs/api.md)，
+系统组成见 [架构说明](docs/architecture.md)。
 
-当前版本：`0.5.0`
+当前版本：`0.6.1`
 
-`0.5.0` 已完成多主机监控、巡检、诊断及目标明确的异常处置；`0.6.0` 的日常入口、
-图形化控制台、管理员配置页、配置热更新和新增监控主机入口已有实现，但不能把已有
-离线回归视为无缺陷证明。基础稳定性、并发与部署恢复验证尚未完成；已知边界与建议的
-重构顺序见[架构与重构边界](docs/architecture.md)。
-规则自动处置与 Agent 人工审批执行均为核心能力，前者继续默认关闭。
-项目继续使用 SQLite；多 worker、高可用、审批跨重启续跑和跨主机批量编排暂不纳入。
-最终交付采用 GHCR 版本化 Assistant 镜像加 Compose Release 部署包；同时提供在线包和
-包含全部镜像的 Linux amd64 离线包，目标主机只需 Docker Engine 与 Docker Compose。
+`0.6.1` 提供多主机监控、巡检、诊断、告警处置、图形化控制台、
+管理员配置页、配置热更新和新增监控主机入口。规则自动处置默认关闭，
+Agent 写命令须经人工审批。部署采用单 Assistant 进程、单 worker，
+使用 SQLite 保存业务记录。
 
 ## 能力与边界
 
@@ -27,7 +21,7 @@ SQLite 历史记录组织成一条可审计的运维链路。
 
 - AI 多轮对话：模型按配置调用指标、告警、巡检和诊断工具
 - 显式主机注册表：稳定主机 ID、精确 Prometheus 目标、SSH 凭据引用和逐主机能力授权；
-  管理员可新增，尚无页面删除/停用入口
+  管理员可新增主机；控制台的主机管理入口提供新增操作
 - 多主机隔离：会话、指标、告警、巡检、AI 上下文、诊断和执行均绑定明确主机
 - 统一指标目录：内置 CPU、Memory、Disk、Network、System、Alerts 共 17 个指标
 - Alertmanager webhook：接收告警、执行规则匹配，并分析未匹配告警
@@ -45,13 +39,8 @@ SQLite 历史记录组织成一条可审计的运维链路。
 
 当前适合：少量 Linux 主机、单 Prometheus、单 Alertmanager、单 worker、内网和少量用户。
 
-当前不支持：
-
-- 动态资产发现和主机级 RBAC
-- 多 worker 下可靠审批、热更新与巡检调度
-- 待审批 checkpoint 跨进程恢复
-- 任意 PromQL、任意 Shell 或任意日志文件读取
-- 生产级容器加固、TLS、高可用和灾备
+使用受控指标和命令目录；会话中断时的待审批申请只在当前进程有效。
+部署时保持单 worker，并根据网络环境配置鉴权与 TLS。
 
 ## 架构
 
@@ -108,8 +97,9 @@ Windows 上的 Node Exporter 观察 Docker Linux 虚拟机/容器环境，不代
 
 ### 图形化控制台
 
-打开 `http://127.0.0.1:8000/console` 并输入用户 Token。控制台提供总览、主机详情、
-问答诊断、人工审批、运维记录和个性化设置。主题、显示密度、自动刷新、默认主机、收藏指标
+打开 `http://127.0.0.1:8000/console` 并输入用户 Token。请核对
+`config/settings.yaml` 中的 `auth.enabled`；生成 Token 本身不会开启普通接口鉴权。
+控制台提供总览、主机详情、问答诊断、人工审批、运维记录和个性化设置。主题、显示密度、自动刷新、默认主机、收藏指标
 及总览卡片顺序只保存在浏览器 `localStorage`；Bearer Token 只保存在当前标签页的
 `sessionStorage`。旧 `/status` 已移除，访问会返回 404。
 
@@ -179,12 +169,12 @@ Swagger UI 位于 `http://127.0.0.1:8000/docs`。
 ## 鉴权说明
 
 `auth.enabled=true` 时，数据和写操作 API 都需要 Bearer Token。`GET /health`、`GET /ready`、
-`GET /console` 及其同源静态资源公开；控制台空壳不含运维数据，实际取数和操作仍需用户
-输入 Token。管理员 API 始终强制 Bearer Token，即使普通接口鉴权关闭也不会匿名开放。
+`GET /console` 及其同源静态资源公开；控制台空壳不含运维数据。普通接口是否校验
+Token 取决于 `auth.enabled`；管理接口始终要求管理员 Token。管理员 API 始终强制 Bearer Token，即使普通接口鉴权关闭也不会匿名开放。
 `/docs`、`/redoc` 和 `/openapi.json` 是 FastAPI 应用级文档路由，当前公开；在不可信网络
 部署时应由反向代理限制它们。
 
-`POST /alert` 还要求调用身份等于 `auth.alert_identity`。不要让普通聊天用户与
+`auth.enabled=true` 且配置了 `auth.alert_identity` 时，`POST /alert` 还要求调用身份匹配。不要让普通聊天用户与
 Alertmanager 共用 Token，因为 webhook 可触发 `auto_execute=true` 的规则写操作。
 
 ## API
@@ -196,7 +186,7 @@ Alertmanager 共用 Token，因为 webhook 可触发 `auto_execute=true` 的规�
 |---|---|
 | `GET /health` | 始终 200 的进程存活与缓存组件状态 |
 | `GET /ready` | 主动检查 Prometheus；核心依赖未就绪返回 503 |
-| `GET /console` | 公开的图形化控制台空壳；数据和操作接口仍鉴权 |
+| `GET /console` | 公开的图形化控制台空壳；业务接口按配置鉴权 |
 | `GET /admin/config` | 管理员读取结构化、脱敏的可编辑配置与生效状态 |
 | `PUT /admin/config` | 管理员校验、备份、保存并立即应用运行快照 |
 | `POST /admin/config/apply` | 管理员显式应用手动修改的磁盘 YAML |
@@ -277,19 +267,9 @@ logs/inspection.log
 | [控制台说明](docs/console.md) | 页面、指标区间、会话审批与管理员草稿操作 |
 | [API 参考](docs/api.md) | 所有 HTTP 路径、请求响应边界与错误语义 |
 | [只读排障](docs/troubleshooting.md) | Prometheus/Exporter、告警、审批、配置与 SQLite 证据收集 |
-| [架构与重构边界](docs/architecture.md) | 当前调用链、状态所有权、安全不变量和重构切入点 |
+| [架构说明](docs/architecture.md) | 组件、状态所有权和运行约束 |
 | [贡献约定](CONTRIBUTING.md) | 分层、安全、测试和文档同步要求 |
 
-## 开发验证
+## 开发与贡献
 
-```bash
-conda run -n langchain1.2 python -m pytest -q
-python -m compileall -q src tests init.py
-```
-
-自动化测试必须离线，不访问真实 DeepSeek、Prometheus、SSH 或公共网络。fake
-monitor/SSH 双主机隔离回归和两台独立 Linux 主机的真实 Prometheus、Alertmanager、
-SSH、规则动作及 Agent 审批闭环均已完成；实机记录见 roadmap 和 PROJECT_HANDOVER。
-本次文档与注释整理后的完整离线回归为 `697 passed`；这不代表真实环境已重新验收，
-也不能证明未覆盖的交互和并发路径没有缺陷。后续基础稳定性、SQLite 并发、部署恢复与
-发布包仍待实施。
+开发、离线测试和提交前检查见 [贡献约定](CONTRIBUTING.md)。

@@ -1,8 +1,6 @@
 """AlertAnalyzer / build_alert_context：上下文组装边界 + 批量分析的短路语义（离线）。
 
-背景（阶段 8）：analysis.py 的正常路径已被 test_chat 的告警链路**间接**覆盖，
-缺的是边界——实例信息缺失、趋势缺数据、LLM 未配置时的短路。这些分支写错会静默失效：
-告警照常记录、只是分析结果悄悄变空，没人会发现。
+覆盖实例信息缺失、趋势无数据和 LLM 未配置时的分析结果与短路行为。
 """
 from __future__ import annotations
 
@@ -152,7 +150,7 @@ def test_analyze_many_returns_entry_fields(fakemonitor, fakellm):
 
 
 def test_analyze_passes_system_prompt_from_core_prompts(fakemonitor, fakellm):
-    """system 提示词默认取 src/core/prompts（阶段 4 下沉后 core 不得反向依赖 agent）。"""
+    """system 提示词来自 src/core/prompts，core 不依赖 agent。"""
     from src.core.prompts import ALERT_ANALYSIS_SYSTEM
 
     AlertAnalyzer(fakemonitor, llm=fakellm).analyze(make_alert("A"))

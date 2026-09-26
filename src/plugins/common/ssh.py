@@ -14,6 +14,10 @@ class SshError(Exception):
     """SSH 连接、认证或执行失败。"""
 
 
+class SshOutcomeUnknown(SshError):
+    """The command may have reached the remote host; never retry automatically."""
+
+
 @dataclass(frozen=True)
 class SshCommandResult:
     exit_code: int
@@ -67,7 +71,7 @@ def _read_channel(channel, *, output_limit: int, timeout: float) -> SshCommandRe
             break
         if time.monotonic() >= deadline:
             channel.close()
-            raise SshError(f"SSH 命令执行超时（{timeout:g} 秒）")
+            raise SshOutcomeUnknown(f"SSH 命令执行超时（{timeout:g} 秒）")
         if not progressed:
             time.sleep(0.01)
 
@@ -100,6 +104,7 @@ def exec_command(
         client = _new_client(paramiko, endpoint)
     except Exception as exc:
         raise SshError(f"加载 SSH 主机密钥配置失败: {redact_text(exc)}") from exc
+    dispatch_attempted = False
     try:
         client.connect(
             hostname=endpoint.host,
@@ -111,6 +116,7 @@ def exec_command(
             allow_agent=endpoint.key_filename is None,
             look_for_keys=endpoint.key_filename is None,
         )
+        dispatch_attempted = True
         _, stdout, _ = client.exec_command(full_cmd, timeout=endpoint.connect_timeout)
         return _read_channel(
             stdout.channel,
@@ -120,7 +126,8 @@ def exec_command(
     except SshError:
         raise
     except Exception as exc:
-        raise SshError(
+        error_type = SshOutcomeUnknown if dispatch_attempted else SshError
+        raise error_type(
             f"SSH 执行失败 host={endpoint.host}: {redact_text(exc)}"
         ) from exc
     finally:

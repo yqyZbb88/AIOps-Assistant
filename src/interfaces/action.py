@@ -15,12 +15,16 @@ class ActionError(Exception):
     """动作执行失败（依赖缺失 / 凭据不可用 / 目标不可达 / 远端返回非零）。"""
 
 
+class ActionOutcomeUnknown(ActionError):
+    """The remote write may have completed despite a transport failure."""
+
+
 class ActionExecutor(ABC):
     """动作执行器：execute() 接收参数字典，成功返回结果 dict，失败抛 ActionError。"""
 
     #: 动作名（与 rules.yaml 的 action 字段一致，即 actions.yaml 目录 key）
     name: str = ""
-    #: 一句话说明（给人看 / 未来 Agent 工具描述用）
+    #: 动作说明，供日志和界面展示
     description: str = ""
 
     @abstractmethod

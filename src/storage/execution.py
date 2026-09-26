@@ -35,6 +35,7 @@ class SqliteActionExecutionStore(ActionExecutionStore):
         alert_key: str = "",
         status: str = "pending",
         detail: str = "",
+        _connection: sqlite3.Connection | None = None,
     ) -> ActionExecution | None:
         """原子插入一次执行；唯一幂等键已存在时返回 None。"""
         execution_id = uuid.uuid4().hex
@@ -45,7 +46,10 @@ class SqliteActionExecutionStore(ActionExecutionStore):
             redact_sensitive(params), ensure_ascii=False, separators=(",", ":")
         )
         try:
-            changed = self.db.execute(
+            write = self.db.execute if _connection is None else (
+                lambda sql, args: _connection.execute(sql, args).rowcount
+            )
+            changed = write(
                 "INSERT OR IGNORE INTO action_executions "
                 "(execution_id, channel, idempotency_key, host_id, action_name, "
                 "params_json, target_summary, config_fingerprint, approval_id, alert_key, "
@@ -78,6 +82,27 @@ class SqliteActionExecutionStore(ActionExecutionStore):
             started_at=started_at,
             finished_at=finished_at,
         )
+
+    def claim_rule(self, *, alert_key: str, action: str,
+                   alert_status: str, starts_at: str, **create_kwargs) -> ActionExecution | None:
+        """Claim an alert and create its execution row in one SQLite transaction."""
+        with self.db.transaction() as conn:
+            changed = conn.execute(
+                "INSERT OR IGNORE INTO remediation_claims "
+                "(alert_key, action, alert_status, starts_at, claimed_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (alert_key, action, alert_status, starts_at, now_iso()),
+            ).rowcount
+            if not changed:
+                return None
+            execution = self.create(_connection=conn, **create_kwargs)
+            if execution is None:
+                conn.execute(
+                    "DELETE FROM remediation_claims WHERE alert_key = ? AND action = ? "
+                    "AND alert_status = ? AND starts_at = ?",
+                    (alert_key, action, alert_status, starts_at),
+                )
+            return execution
 
     def finish(self, execution_id: str, *, status: str, detail: str = "") -> None:
         """写入最终状态；调用方负责判断远端是否确已完成，不在这里重试命令。"""

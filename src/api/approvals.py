@@ -36,6 +36,7 @@ from src.core.agent import OpsAgent
 from src.interfaces.approval import (
     ApprovalError,
     ApprovalUnavailableError,
+    ApprovalOutcomeUnknownError,
     PendingApproval,
     may_decide,
 )
@@ -128,9 +129,8 @@ def _audit_decision(
 ) -> None:
     """把「**谁**、什么时候、对哪条待审批做了什么决策」写进审计日志。
 
-    **写在命令执行之前。** 写在之后的话，进程若死在执行中途就永远丢了这一条——
-    而「谁批准了这条命令」恰恰是事后追责时最需要的那一条。命令本身由执行器单独写
-    `record_execution`；两条对照就能还原完整经过（谁批的 → 跑没跑）。
+    只在审批项被成功消费后写入，避免并发请求留下虚假的批准日志。
+    执行前的持久化决策由 Agent 的 approval_decisions 表负责。
     """
     write_audit({
         "action": "approval_decision",
@@ -194,10 +194,6 @@ def decide(
         approvers=approvers,
         approvers_only=approvers_only,
     )
-    if pending is not None:
-        # 只对**真实存在**的待审批项写审计：队列里没有的 id（多半是打错或探测）
-        # 由下面的 decide() 报 404，不该在审计里留下一串「批准」的假记录。
-        _audit_decision(approval_id, body.action, body.reason, user, pending)
     try:
         outcome = agent.decide(
             approval_id,
@@ -205,9 +201,15 @@ def decide(
             reason=body.reason,
             decided_by=user,
         )
+    except ApprovalOutcomeUnknownError as exc:
+        if pending is not None:
+            _audit_decision(approval_id, body.action, body.reason, user, pending)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ApprovalUnavailableError as exc:
         # 功能没开 ≠ 找错了 id：前者是部署问题，后者是调用问题
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ApprovalError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if pending is not None:
+        _audit_decision(approval_id, body.action, body.reason, user, pending)
     return ApprovalResponse(**outcome.to_dict())

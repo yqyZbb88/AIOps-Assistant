@@ -1,14 +1,15 @@
 # HTTP API 参考与错误语义
 
-本文按当前 `0.5.0` 代码描述公开接口及 `/console` 使用的契约。精确字段、枚举和交互式
+本文按当前 `0.6.1` 代码描述公开接口及 `/console` 使用的契约。精确字段、枚举和交互式
 schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档路由当前公开，部署到
 不可信网络时需在反向代理限制。本文示例中的 `node-a`、Token 和告警值是占位符，
 不代表真实环境。不要把实际 Token、SSH 目标、数据库内容或审批理由贴进工单。
 
 ## 通用规则
 
-- 基址默认是 `http://127.0.0.1:8000`。除公开端点外，请带
-  `Authorization: Bearer <Token>`；身份由服务端 Token 映射决定，请求体中的用户名不可信。
+- 基址默认是 `http://127.0.0.1:8000`。`auth.enabled=true` 时，普通业务接口需带
+  `Authorization: Bearer <Token>`；管理接口始终要求管理员 Token。身份由服务端
+  Token 映射决定，请求体中的用户名不可信。
 - JSON 响应经过统一敏感信息脱敏。主机 API 会返回 Prometheus `job`/`instance` 以解释
   监控目标，但不会返回 SSH 地址、用户名、密码或密钥路径。
 - 多主机模式中的操作目标必须是登记的 `host_id`；请求不能提交自由 SSH 地址、PromQL
@@ -43,6 +44,8 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 | POST | `/admin/hosts/preview`、`/admin/hosts/ssh-check`、`/admin/hosts/add` | 新主机预览、只认证 SSH 测试与登记 | 始终管理员 Bearer |
 
 `/status` 与 `/status-assets/*` 已删除，访问返回 404；不设置重定向。
+表中的“普通 Bearer”和身份权限以 `auth.enabled=true` 为前提；关闭时普通接口
+不校验 Token，也不按身份隔离。管理员接口不受该开关影响。
 
 ## 主机、指标和健康状态
 
@@ -94,7 +97,7 @@ Content-Type: application/json
 
 创建成功返回 201 与会话元信息，其中 `session_id` 是后续唯一定位键。多主机时必须显式
 提供 `host_id`；只有一台启用主机时可省略。`GET /sessions?limit=50` 按最后活动时间
-倒序列出当前身份的会话；`GET /sessions/{id}` 返回元信息及全部消息状态。
+倒序列出当前身份的会话；`GET /sessions/{id}` 返回元信息及最近 100 条消息的状态。
 `PATCH /sessions/{id}` 的 `{"name":"新名称"}` 改标签，空白名清除标签；
 `DELETE /sessions/{id}` 删除消息并取消未决审批。删除/越权/未知会话统一 404。
 
@@ -130,7 +133,8 @@ Content-Type: application/json
 `alerts[]`；每条告警常用 `labels.alertname`、`labels.job`、`labels.instance`、
 `startsAt`、`fingerprint`）。返回 `received`、逐条 `alerts`、规则 `remediation`
 和未匹配告警的 `ai_advice`。`/alert` 可能触发不经审批的规则自动处置，因此必须使用
-专用 `alert_identity` Token；自动执行总开关默认关闭。
+`auth.enabled=true` 时应使用专用 `alert_identity` Token；自动执行总开关默认关闭。
+归档写入失败返回 503，告警发送方可据此重试；重复写操作由幂等记录保护。
 
 三个告警查询不要混淆：
 
@@ -172,7 +176,7 @@ SSH 凭据或主机 SSH 连接字段。`PUT /admin/config` 必须传入原 revis
 `diagnostics:["memory"]`，先调用 `ssh-check` 并把返回的短期
 `verification_id` 带入新增请求。该检查只校验主机密钥和认证，不执行命令。
 成功新增返回 `host_id`、新 revision 和 Exporter 状态；`up=0` 仍可登记，写授权始终为空。
-目前没有删除、停用或编辑已有主机的管理接口。相同主机内容的重复新增可返回已有结果；
+主机管理接口提供新增操作。相同主机内容的重复新增可返回已有结果；
 相同 `host_id` 但内容不同，或目标已归属另一主机，返回 409。SSH 检查会建立远程连接，
 但不会运行诊断命令；未经授权不要在真实目标上调用。
 
@@ -185,7 +189,7 @@ SSH 凭据或主机 SSH 连接字段。`PUT /admin/config` 必须传入原 revis
 | 413 | 聊天消息超过配置上限 | 缩短问题 |
 | 422 | 请求字段、命令模板/参数或跨文件引用无效 | 按服务端错误修正草稿 |
 | 502 | 监控源查询失败 | 先检查 Prometheus 链路 |
-| 503 | 存储或管理配置能力不可用、readiness 不通过 | 看响应体和服务日志，勿误判为空数据 |
+| 503 | 存储或管理配置能力不可用、告警归档失败、readiness 不通过 | 看响应体和服务日志；告警投递可按响应重试 |
 
 应用统一使用脱敏 JSON 响应；但响应可能仍含非凭据的主机名、监控 `instance`、告警
 摘要和运维结果，调用方应按内部运维数据保管。`restart_required=true` 表示磁盘

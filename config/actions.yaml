@@ -2,7 +2,7 @@
 # 命令模板只能写在这里；rules.yaml 只引用 key。
 # 本路径没有人工审批；只有 rules.yaml 中 auto_execute=true 的规则才真正执行。
 # 模板是管理员可信配置，字符串参数必须提供全匹配正则，整数参数应提供 min/max。
-# 修改后需要重启服务。
+# 管理页保存后热生效；手动编辑后需由管理员显式应用磁盘配置。
 
 enabled: true
 output_limit: 4000            # SSH channel 最多保留的输出字符数；超出部分排空但不驻留内存

@@ -1,11 +1,11 @@
 """日志工具：按 settings 控制级别，动作审计日志走独立 logger（可选落文件）。
 
 设计：
-- 不做 logging.conf（搁置项）；用 config/settings.yaml 的 logging.* 控制
+- 用 config/settings.yaml 的 logging.* 控制
   （main.create_app() 调用 configure_logging 装配根级别、审计通道与轮转文件）；
 - 动作审计走独立 logger `aiops_assistant.audit`，便于单独收集/过滤（见 plugins/actions）；
-- **审计日志可选落盘**：默认写 `logs/audit.log` 并轮转。在此之前审计只进 console，
-  进程一重启就没了——而审计的用处恰恰是「事后追查」，重启即丢等于没有。
+- **审计日志可选落盘**：出厂配置写入 `logs/audit.log` 并轮转；文件路径为空时
+  仅输出到控制台。
 """
 from __future__ import annotations
 

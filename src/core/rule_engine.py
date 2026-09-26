@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from src.interfaces.action import ActionError, ActionExecutor, RuleExecutionGuard
+from src.interfaces.action import ActionError, ActionExecutor, ActionOutcomeUnknown, RuleExecutionGuard
 from src.interfaces.host import HostRegistry
 from src.interfaces.execution import ActionExecutionStore
 from src.plugins.common.endpoint import CONNECTION_FIELDS
@@ -85,12 +85,14 @@ class RuleEngine:
         hosts: HostRegistry | None = None,
         execution_store: ActionExecutionStore | None = None,
         rules_text: str | None = None,
+        require_execution_store: bool = False,
     ) -> None:
         self.executors: dict[str, ActionExecutor] = dict(executors or {})
         self.rules_file: Path = _resolve_rules_path(rules_file)
         self.execution_guard: RuleExecutionGuard = execution_guard or _ProcessExecutionGuard()
         self.hosts = hosts
         self.execution_store = execution_store
+        self.require_execution_store = require_execution_store
         self._rules_text = rules_text
         self._rules: list[ActionRule] = []
         self._auto_execute_enabled = True
@@ -247,18 +249,22 @@ class RuleEngine:
             logger.error("自动处置实例不匹配 %s -> %s: %s", alert.alertname, rule.action, record["detail"])
             return record
 
-        if not self.execution_guard.claim(
-            alert_key=alert.alert_key,
-            action=rule.action,
-            alert_status=alert.status,
-            starts_at=alert.startsAt,
-        ):
-            record["status"] = DUPLICATE_MARK
-            record["detail"] = "同一告警事件与动作已执行或已被抢占，跳过重复自动处置"
-            logger.warning("自动处置重复事件已跳过 %s -> %s", alert.alertname, rule.action)
+        if self.require_execution_store and self.execution_store is None:
+            record["status"] = "failed"
+            record["detail"] = "Persistent execution audit is unavailable; action refused"
+            logger.error("Rule action refused without persistent execution audit: %s", rule.action)
             return record
 
         execution = None
+        atomic_store = (
+            self.execution_store
+            if host is not None
+            and self.execution_store is not None
+            and getattr(self.execution_guard, "db", None) is not None
+            and getattr(self.execution_guard, "db", None) is getattr(self.execution_store, "db", None)
+            and callable(getattr(self.execution_store, "claim_rule", None))
+            else None
+        )
         if self.execution_store is not None and host is not None:
             rule_fingerprint = hashlib.sha256(
                 json.dumps(
@@ -273,32 +279,56 @@ class RuleEngine:
                     default=str,
                 ).encode("utf-8")
             ).hexdigest()
+            create_args = dict(
+                channel="rule",
+                idempotency_key=(
+                    f"rule:{host.host_id}:{alert.alert_key}:{rule.action}:"
+                    f"{alert.status}:{alert.startsAt}"
+                ),
+                host_id=host.host_id,
+                action_name=rule.action,
+                params={k: v for k, v in params.items() if k not in CONNECTION_FIELDS},
+                target_summary=f"{host.host_id} ({host.name})",
+                config_fingerprint=rule_fingerprint,
+                alert_key=alert.alert_key,
+                status="running",
+            )
             try:
-                execution = self.execution_store.create(
-                    channel="rule",
-                    idempotency_key=(
-                        f"rule:{host.host_id}:{alert.alert_key}:{rule.action}:"
-                        f"{alert.status}:{alert.startsAt}"
-                    ),
-                    host_id=host.host_id,
-                    action_name=rule.action,
-                    params={
-                        k: v for k, v in params.items() if k not in CONNECTION_FIELDS
-                    },
-                    target_summary=f"{host.host_id} ({host.name})",
-                    config_fingerprint=rule_fingerprint,
-                    alert_key=alert.alert_key,
-                    status="running",
-                )
+                if atomic_store is not None:
+                    execution = atomic_store.claim_rule(
+                        alert_key=alert.alert_key,
+                        action=rule.action,
+                        alert_status=alert.status,
+                        starts_at=alert.startsAt,
+                        **create_args,
+                    )
+                else:
+                    if self.execution_guard.claim(
+                        alert_key=alert.alert_key,
+                        action=rule.action,
+                        alert_status=alert.status,
+                        starts_at=alert.startsAt,
+                    ):
+                        execution = self.execution_store.create(**create_args)
             except Exception as exc:
                 record["status"] = "failed"
-                record["detail"] = f"无法创建执行审计记录，已拒绝自动执行: {exc}"
+                record["detail"] = f"Execution claim or audit creation failed; action refused: {exc}"
+                logger.error("Rule execution claim failed: %s", exc, exc_info=True)
                 return record
             if execution is None:
                 record["status"] = DUPLICATE_MARK
-                record["detail"] = "统一执行状态中已存在相同幂等键，跳过重复自动处置"
+                record["detail"] = "Alert action already claimed or recorded; duplicate ignored"
                 return record
             record["execution_id"] = execution.execution_id
+        elif not self.execution_guard.claim(
+            alert_key=alert.alert_key,
+            action=rule.action,
+            alert_status=alert.status,
+            starts_at=alert.startsAt,
+        ):
+            record["status"] = DUPLICATE_MARK
+            record["detail"] = "Alert action already claimed; duplicate ignored"
+            return record
 
         try:
             if host is None:
@@ -314,6 +344,12 @@ class RuleEngine:
             if execution is not None:
                 self._finish_execution(execution.execution_id, "succeeded", result_text)
             logger.info("自动处置成功 %s -> %s: %s", alert.alertname, rule.action, result_text)
+        except ActionOutcomeUnknown as exc:
+            record["status"] = "unknown"
+            record["detail"] = f"Remote action result is unknown: {exc}"
+            if execution is not None:
+                self._finish_execution(execution.execution_id, "unknown", str(exc))
+            logger.error("Rule action outcome unknown %s -> %s: %s", alert.alertname, rule.action, exc)
         except ActionError as exc:
             record["status"] = "failed"
             record["detail"] = f"动作执行失败: {exc}"

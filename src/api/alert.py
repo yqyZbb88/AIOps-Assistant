@@ -62,7 +62,10 @@ def alert(
         "收到 Alertmanager 通知 from=%s: %d 条, 整组状态=%s, receiver=%s",
         identity, len(payload.alerts), payload.status, payload.receiver,
     )
-    return _agent(request).process_alert(payload)
+    try:
+        return _agent(request).process_alert(payload)
+    except HistoryError as exc:
+        raise HTTPException(status_code=503, detail="Alert processing completed but archive failed; retry delivery") from exc
 
 
 @router.get("/alerts/recent", response_model=list[dict[str, Any]])

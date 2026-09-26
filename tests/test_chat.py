@@ -134,8 +134,7 @@ def test_chat_agent_first_then_fallback(fakemonitor):
 def test_chat_falls_back_when_agent_reply_raises(fakemonitor):
     """Agent 构建成功但 reply() 抛异常（网络抖动等）→ 本轮回落关键词。
 
-    阶段 8 补：此前只覆盖了「工厂失败」，这条分支无测试。
-    与工厂失败的区别：**不**标记 broken，下次仍会重试 Agent（见下一个用例）。
+    reply 失败不会标记工厂不可用；下一轮仍可调用已有 Agent。
     """
     class BoomAssistant:
         def reply(self, message: str) -> str:
@@ -151,8 +150,7 @@ def test_chat_falls_back_when_agent_reply_raises(fakemonitor):
 def test_agent_retried_after_reply_exception(fakemonitor):
     """reply() 异常不标记 broken：Agent 恢复后下次调用仍走 Agent。
 
-    这刻意区别于工厂失败（工厂失败=环境不可用，标记 broken 不再重试；
-    reply 失败=单次调用失败，如网络抖动，重试才有意义）。
+    工厂失败进入短暂冷却；reply 失败只影响本轮调用。
     """
     calls = {"n": 0}
 
@@ -169,7 +167,7 @@ def test_agent_retried_after_reply_exception(fakemonitor):
 
 
 def test_factory_failure_marks_broken_and_stops_retrying(fakemonitor):
-    """工厂失败 → 标记 broken，后续不再重试工厂（避免每次聊天都重复昂贵构建）。"""
+    """工厂失败进入冷却期，冷却期内使用关键词兜底。"""
     calls = {"n": 0}
 
     def broken_factory():
@@ -366,7 +364,7 @@ def test_aiops_assistant_logs_remediation(fakemonitor, caplog):
 def test_rule_engine_itself_prints_nothing(fakemonitor, capsys):
     """RuleEngine 不再自行输出：它只产出记录，输出归 OpsAgent。
 
-    这是阶段 9「让 RuleEngine 变回纯决策、输出只剩一个口子」的护栏。
+    输出由 OpsAgent 统一记录。
     """
     class OkExecutor(ActionExecutor):
         name = "ok_action"

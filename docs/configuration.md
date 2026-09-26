@@ -77,9 +77,8 @@ settings.yaml
 
 ## 二、settings.yaml
 
-下列表格的“默认值”指仓库自带 `config/settings.yaml` 的出厂值。代码中的部分 dataclass
-默认值会为离线测试关闭鉴权、存储和巡检；生产启动读取 YAML，不应把直接构造
-`Settings()` 的测试默认值当作部署默认值。
+下列表格的“默认值”指仓库自带 `config/settings.yaml` 的值；环境变量占位符
+按启动进程的环境求值。启动时读取该 YAML，未配置的字段使用程序内置默认值。
 
 ### app
 
@@ -104,6 +103,8 @@ settings.yaml
 |---|---:|---:|---|
 | `prometheus.base_url` | string | `http://localhost:9090` | Prometheus 地址，建议用 `${PROMETHEUS_URL:-http://localhost:9090}` |
 | `prometheus.timeout` | int | `5` | HTTP 查询超时秒数 |
+| `prometheus.target_mode` | string | `external` | `external` 仅登记已发现目标；`managed` 使用文件发现 |
+| `prometheus.file_sd_path` | string | 空 | `managed` 模式下的 Prometheus 目标文件路径 |
 
 所有指标即时查询和范围查询共用该超时。
 
@@ -141,9 +142,9 @@ settings.yaml
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `metrics.file` | string | 空 | 统一指标配置文件路径；空表示使用代码内默认配置 |
+| `metrics.file` | string | `config/metrics.yaml` | 统一指标配置文件路径；空表示使用代码内默认配置 |
 
-当前出厂值为 `config/metrics.yaml`。路径非空但文件不存在、解析失败或含未知指标时会拒绝启动。
+路径非空但文件不存在、解析失败或含未知指标时会拒绝启动。
 
 ### hosts
 

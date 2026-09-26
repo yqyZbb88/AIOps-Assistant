@@ -507,6 +507,9 @@ class Container:
         from src.agent.assistant import OpsAssistant  # 触发 langchain/init.py 惰性导入
 
         write_source = self.agent_actions()
+        if self.settings.storage.enabled and self.execution_store() is None:
+            logger.error("Persistent execution audit unavailable; Agent write tools disabled")
+            write_source = None
         approvals = None
         if write_source is not None:
             # 有写命令才建审批存储：容量/时限来自配置（审批本身无开关，恒为强制）
@@ -565,6 +568,9 @@ class Container:
                 else load_agent_actions_config()
             )
             if action_config is not None and not action_config.enabled:
+                action_config = None
+            if action_config is not None and self.settings.storage.enabled and self.execution_store() is None:
+                logger.error("Persistent execution audit unavailable; Agent write tools disabled for host %s", host_id)
                 action_config = None
             if action_config is not None:
                 allowed_actions = None if host.legacy else host.capabilities.agent_actions
@@ -634,6 +640,7 @@ class Container:
             hosts=self.hosts(),
             execution_store=self.execution_store(),
             rules_text=self._config_texts.get("rules"),
+            require_execution_store=settings.storage.enabled,
         )
         host_assistant_factory = (
             self._host_assistant_factory if settings.agent.enabled else None

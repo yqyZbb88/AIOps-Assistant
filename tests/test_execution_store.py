@@ -39,3 +39,33 @@ def test_execution_store_is_idempotent_and_host_filterable(tmp_path):
     assert rows[0].params["password"] == "***"
     assert store.recent(host_id="host-b")[0].status == "rejected"
     assert store.recent(host_id="host-b")[0].finished_at
+
+
+def test_rule_claim_and_execution_roll_back_together(tmp_path, monkeypatch):
+    import pytest
+
+    db = open_database(tmp_path / "ops.db")
+    store = SqliteActionExecutionStore(db)
+    original_create = store.create
+
+    def fail_create(**kwargs):
+        raise RuntimeError("audit insert failed")
+
+    monkeypatch.setattr(store, "create", fail_create)
+    kwargs = dict(
+        alert_key="alert-1", action="restart_service",
+        alert_status="firing", starts_at="2026-01-01T00:00:00Z",
+        channel="rule", idempotency_key="rule:alert-1:restart_service",
+        host_id="h1", action_name="restart_service", params={},
+    )
+    with pytest.raises(RuntimeError, match="audit insert"):
+        store.claim_rule(**kwargs)
+    assert db.query("SELECT * FROM remediation_claims") == []
+    assert db.query("SELECT * FROM action_executions") == []
+
+    monkeypatch.setattr(store, "create", original_create)
+    created = store.claim_rule(**kwargs)
+    assert created is not None
+    assert store.claim_rule(**kwargs) is None
+    assert len(db.query("SELECT * FROM remediation_claims")) == 1
+    assert len(db.query("SELECT * FROM action_executions")) == 1

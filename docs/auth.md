@@ -17,7 +17,7 @@ OPS_APPROVER_IDENTITIES=["admin"]
 OPS_ADMIN_IDENTITIES=["admin"]
 ```
 
-`config/settings.yaml` 对应配置：
+启用普通业务接口鉴权时，可按下例设置 `config/settings.yaml`：
 
 ```yaml
 auth:
@@ -29,7 +29,7 @@ auth:
   alert_identity: alertmanager
 ```
 
-修改后必须重启服务。
+修改环境变量中的 Token 后重启服务；手动修改 YAML 后，由管理员显式应用磁盘配置。
 
 ## 二、项目中涉及哪些密钥
 
@@ -111,7 +111,8 @@ auth:
   alert_identity: alertmanager
 ```
 
-只有身份名为 `alertmanager` 的 API Token 可以调用 `POST /alert`。
+`auth.enabled=true` 且设置该字段时，只有身份名为 `alertmanager` 的 API Token
+可以调用 `POST /alert`。
 
 如果该字段留空：
 
@@ -170,6 +171,8 @@ http://127.0.0.1:8000/docs
 
 ## 六、身份会影响哪些行为
 
+下表适用于 `auth.enabled=true`；系统管理接口始终要求管理员身份。
+
 | 接口/行为 | 身份规则 |
 |---|---|
 | `POST /sessions` | 新会话记录为当前身份 |
@@ -200,12 +203,13 @@ http://127.0.0.1:8000/docs
 `GET /health`、`GET /ready`、`GET /console`、`GET /console-assets/console.css`、
 `GET /console-assets/console.js`，以及 `/docs`、`/redoc`、`/openapi.json` 不需要 Bearer
 Token。前两项只返回无敏感信息的探针；控制台公开的 HTML/CSS/JS 不嵌入业务数据，调用
-`/hosts`、`/alerts/*`、`/inspections/recent`、`/approvals` 等 API 时仍必须携带 Token。
+`/hosts`、`/alerts/*`、`/inspections/recent`、`/approvals` 等 API 时，
+只有开启普通鉴权才强制校验 Token；系统管理接口始终要求管理员 Token。
 旧 `/status` 与 `/status-assets/*` 已删除，直接返回 404。
 
 这里的“应用路由”特指 FastAPI 自动生成的文档/OpenAPI 路由；它们不属于项目挂载的
 业务 router，因此不会经过 `require_auth`。如需隐藏接口结构，应在反向代理层限制
-`/docs`、`/redoc` 和 `/openapi.json`，或在后续版本中显式关闭这些路由。
+`/docs`、`/redoc` 和 `/openapi.json`。
 
 ## 八、Alertmanager webhook 配置
 

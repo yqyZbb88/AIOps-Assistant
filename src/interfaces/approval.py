@@ -27,6 +27,10 @@ class ApprovalUnavailableError(ApprovalError):
     """
 
 
+class ApprovalOutcomeUnknownError(ApprovalUnavailableError):
+    """A decision was consumed but the remote outcome cannot be confirmed."""
+
+
 @dataclass(frozen=True)
 class PendingApproval:
     """一个待人工决策的写命令调用（中断态）。

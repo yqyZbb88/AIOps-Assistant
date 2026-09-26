@@ -189,6 +189,14 @@ class SshAgentActionSource(AgentActionSource):
                 endpoint, cmd_str, sudo=cmd_def.sudo, output_limit=self.output_limit
             )
             code, out, err = result
+        except ssh_common.SshOutcomeUnknown as exc:
+            if execution is not None:
+                self._finish_execution(execution.execution_id, "unknown", str(exc))
+            audit_common.record_execution(
+                action="agent_action", command=command, host=host,
+                params=supplied, started_at=started_at, error=str(exc),
+            )
+            raise AgentActionError("Remote write result is unknown; verify target state before any new attempt") from exc
         except ssh_common.SshError as exc:  # paramiko 缺失 / 连接 / 认证 / 执行失败
             if execution is not None:
                 self._finish_execution(execution.execution_id, "failed", str(exc))

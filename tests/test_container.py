@@ -1,8 +1,6 @@
 """Container 装配链路 + create_app 冒烟（全程离线）。
 
-背景（阶段 8）：container.aiops_assistant() 与 main.create_app() 此前**从未被任何测试调用**——
-整条装配（executors 构建、RuleEngine 装配、provider 解析、各降级分支）没有任何断言。
-本文件补上这条链路的护栏：降级写错会静默失效，比崩溃更难发现。
+覆盖 executors、RuleEngine、provider 和存储降级的装配行为。
 
 全部用例离线：构造插件不发起网络连接（PrometheusMonitor / DeepseekLLMClient /
 SshDiagnostics 都是「构造即就绪、调用才连网」），不 invoke 任何 LLM。
@@ -251,7 +249,7 @@ def test_sessions_reconciles_orphan_pending_on_open(tmp_path):
 def test_aiops_assistant_assembles_full_chain():
     """完整装配：executors → RuleEngine、ChatService（注入工厂）、AlertAnalyzer。
 
-    这是本文件存在的首要理由——整条装配此前零断言。
+    验证核心服务与依赖按预期完成装配。
     """
     agent = Container(settings=Settings()).aiops_assistant()
     assert isinstance(agent, OpsAgent)
@@ -315,7 +313,7 @@ def test_create_app_health_endpoint_responds():
     body = resp.json()
     assert body["status"] == "ok"
     assert body["storage"] == "ok"
-    assert body["version"] == "0.5.0"
+    assert body["version"] == "0.6.1"
     assert body["components"]["prometheus"]["status"] == "unknown"
     assert body["components"]["storage"]["status"] == "disabled"
 

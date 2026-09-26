@@ -31,10 +31,9 @@
 | 值班诊断、故障状态或恢复步骤 | `docs/troubleshooting.md`、`docs/guide.md`、相关测试 |
 | 组件装配、插件或降级路径 | README 架构、模块 docstring、Container 测试 |
 | 运行快照、配置事务或主机登记 | `docs/architecture.md`、`docs/console.md`、并发/回滚/跨主机测试 |
-| 版本目标或实施顺序 | 更新维护计划，并同步 README 中的当前能力与限制 |
+| 版本号或发布说明 | 更新程序版本、README 和对应测试 |
 
-测试数量会变化，不应在多个历史文档里长期维护精确数字；README 只记录最近一次完整验证
-基线，开发交付信息以实际 `pytest` 输出为准。
+测试数量会变化，交付信息以实际 `pytest` 输出为准。
 
 ## 3. 注释原则
 
@@ -42,7 +41,7 @@
 - 删除已被当前实现取代的历史过程；仍影响兼容性的迁移历史留在迁移代码附近。
 - 不用“永远安全”“绝不会泄露”等超出实现覆盖面的承诺。
 - 注释中的接口、字段、默认值、文件名和状态必须可在代码中直接核对。
-- 临时限制写明解除条件，例如“当前仅支持单 worker；引入共享租约前不得多开”。
+- 写清实际适用范围，例如“配置应用仅支持单 worker”。
 - 凭据、真实地址和真实运维数据不得进入注释、示例或测试输出。
 
 ## 4. 分层约束
@@ -95,14 +94,20 @@ api → core → interfaces
 ## 8. 测试与提交前检查
 
 测试不得访问真实 DeepSeek、Prometheus、SSH 或公共网络，也不得写入真实数据库和日志。
+运行离线测试前，应在测试进程环境中设置 `LANGSMITH_TRACING=false`、
+`LANGCHAIN_TRACING=false` 和 `LANGCHAIN_TRACING_V2=false`。
 
 ```bash
-conda run -n langchain1.2 python -m pytest -q
+LANGSMITH_TRACING=false LANGCHAIN_TRACING=false LANGCHAIN_TRACING_V2=false \
+  conda run -n langchain1.2 python -m pytest -q
 node --check src/web/console.js
 node --test tests/console_ui.test.cjs
 python -m compileall -q src tests init.py
 git diff --check
 ```
+
+PowerShell 中先用 `$env:LANGSMITH_TRACING='false'` 等语句设置上述三个环境变量，
+再运行 `conda run`。
 
 根据改动再运行针对性检查，例如：
 

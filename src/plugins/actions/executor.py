@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from src.interfaces.action import ActionError, ActionExecutor
+from src.interfaces.action import ActionError, ActionExecutor, ActionOutcomeUnknown
 from src.plugins.common import audit as audit_common
 from src.plugins.common import cmddef as _cmddef
 from src.plugins.common import ssh as ssh_common
@@ -91,6 +91,12 @@ class CatalogCommandExecutor(ActionExecutor):
                 endpoint, command, sudo=self.cmd.sudo, output_limit=self.output_limit
             )
             code, out, err = result
+        except ssh_common.SshOutcomeUnknown as exc:
+            audit_common.record_execution(
+                action=self.name, command=command, host=host,
+                params=audit_params, started_at=started_at, error=str(exc),
+            )
+            raise ActionOutcomeUnknown(str(exc)) from exc
         except ssh_common.SshError as exc:
             audit_common.record_execution(
                 action=self.name, command=command, host=host,

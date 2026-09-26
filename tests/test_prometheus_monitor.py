@@ -1,8 +1,6 @@
 """PrometheusMonitor：解析边界与降级（全程离线，monkeypatch 掉 _request）。
 
-背景（阶段 8）：本插件解析 Prometheus 返回值的地方是全项目「坏数据」最密集处——
-越界百分比、空序列、单条 metric 缺 value、告警 value 非数值。
-这些分支写错不会崩，只会把脏数据悄悄当成真实读数报给用户 / 喂给 LLM。
+覆盖越界百分比、空序列、缺失 value 和非数值告警等输入边界。
 
 离线手法：monkeypatch PrometheusMonitor._request，不发起任何 HTTP 请求。
 """
@@ -361,9 +359,7 @@ def test_query_metric_unknown_id_is_monitor_error(monitor):
 def test_alert_count_honors_caller_selector(monkeypatch, monitor):
     """alert_count 分支也必须认 `selector` 里的 instance。
 
-    该分支曾经直接 `_effective_selector(definition)` 覆盖掉入参，于是「按实例数告警」
-    静默退化成「数全部告警」：不报错、不留痕，只是答案不对——而调用方拿它当实例级
-    读数用（`query_metric` 的 selector 契约就是为这个存在的）。
+    `query_metric` 的 selector 契约要求 alert_count 按实例过滤。
     """
     _patch_request(monkeypatch, {"alerts": [
         {"labels": {"alertname": "A", "instance": "h1"}, "state": "firing"},
@@ -380,3 +376,25 @@ def test_alert_count_honors_caller_selector(monkeypatch, monitor):
 
     assert everything == {"firing": 2.0, "pending": 2.0}
     assert only_h2 == {"firing": 1.0, "pending": 1.0}
+
+
+def test_trend_skips_malformed_series(monkeypatch, monitor):
+    _patch_range(monkeypatch, [None, {"values": None}, {"values": [[1, "42"], "bad"]}])
+    trend = monitor.query_metric_trend("cpu.usage", "h:9100")
+    assert trend["points"] == 1
+    assert trend["latest"] == 42.0
+
+
+def test_request_invalid_json_is_monitor_error(monkeypatch, monitor):
+    import requests
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            raise ValueError("broken JSON")
+
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: Resp())
+    with pytest.raises(MonitorError, match="invalid JSON"):
+        monitor.cpu_usage()

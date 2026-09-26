@@ -2,7 +2,7 @@
 # 规则只按 alertname 精确匹配；即使 auto_execute=false，命中后也不会进入 AI 分析。
 # rules.yaml 只引用 actions.yaml 的命令 key，不允许传入自由命令。
 # 启用 auto_execute 前，必须确认 target_instance、SSH 凭据和命令影响范围。
-# 修改后需重启（代码保留内部 reload_rules 方法，但当前没有 HTTP 热更新入口）。
+# 管理页保存后热生效；手动编辑后需由管理员显式应用磁盘配置。
 
 rules:
   - alertname: HighCPUUsage

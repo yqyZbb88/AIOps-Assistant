@@ -22,9 +22,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.deps import require_auth
+from src.interfaces.approval import ApprovalUnavailableError
 from src.interfaces.session import (
     SESSION_NAME_MAX_CHARS,
-    STATUS_PENDING_APPROVAL,
     SessionError,
     SessionInfo,
     SessionStore,
@@ -243,14 +243,15 @@ def delete_session(
     try:
         _owned_or_404(store, session_id, user)
         pending_ids = [
-            m.approval_id
-            for m in store.messages(session_id)
-            if m.status == STATUS_PENDING_APPROVAL and m.approval_id
+            p.approval_id for p in agent.pending_approvals(strict=True)
+            if p.session_id == session_id
         ]
-    except SessionError as exc:
+    except (SessionError, ApprovalUnavailableError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     cancelled = [aid for aid in pending_ids if agent.cancel_pending(aid)]
+    if len(cancelled) != len(pending_ids):
+        raise HTTPException(status_code=409, detail="Pending approval is being processed; retry session deletion")
 
     try:
         deleted = store.delete(session_id, user=user)

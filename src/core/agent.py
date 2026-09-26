@@ -97,9 +97,9 @@ class OpsAgent:
         return self.chat_service.storage_healthy
 
     # -- 人工审批（Agent 写命令的强制审核环节） -----------------------------
-    def pending_approvals(self) -> list[PendingApproval]:
+    def pending_approvals(self, *, strict: bool = False) -> list[PendingApproval]:
         """当前待人工决策的写命令调用（新的在前）；未启用写命令时为空列表。"""
-        return self.chat_service.pending_approvals()
+        return self.chat_service.pending_approvals(strict=strict)
 
     def decide(
         self,
@@ -122,7 +122,7 @@ class OpsAgent:
         """处理一条 Alertmanager 通知，返回确认响应 AlertAck。
 
         流程：逐条记录到 store → 规则引擎处置（auto_execute=true 才动作）→
-        无规则告警交给 AI 分析。任何单点失败不影响告警记录与其它告警。
+        无规则告警交给 AI 分析。归档失败会向调用方报错以便重试。
         """
         summaries = [self.store.record(alert) for alert in payload.alerts]
         if self.hosts is not None:
@@ -178,16 +178,14 @@ class OpsAgent:
 
         **刻意放在流程最末尾、一次调用、一个事务**，而不是插在三个步骤之间：
 
-        1. 本方法的 docstring 承诺「任何单点失败不影响告警记录与其它告警」。写库若插在
-           中间，一次 DB 异常就会中断其后的 `unmatched_alerts` / `analyze_many`——
-           等于给告警处理**新增了一个原本不存在的失败模式**。放在末尾，失败面收敛成
-           「少一条归档」。
+        1. 放在末尾可以先完成规则与分析，再归档本次处理结果。归档失败会向 API
+           返回可重试错误，避免调用方误以为已持久化。
         2. 三张表必须同批一致：一次调用 = 一个 BEGIN IMMEDIATE，不会出现
            「告警写了、处置没写」的半批。
         3. `rule_engine` / `analysis` 是纯决策且被测试锁着「零输出」，在那里插 IO
            会同时破坏可测性与那条护栏。
 
-        失败只记 ERROR：归档不该让告警接收失败。
+        归档失败需向调用方报错，供 Alertmanager 重试投递。
         """
         if self.history is None:
             return
@@ -226,9 +224,11 @@ class OpsAgent:
                 alerts=alerts, remediations=remediations, advice=advice
             )
         except HistoryError as exc:
-            logger.error("状态日志归档失败（本次告警未归档）: %s", exc)
-        except Exception as exc:  # noqa: BLE001 - 归档绝不能影响告警接收
-            logger.error("状态日志归档异常（本次告警未归档）: %s", exc, exc_info=True)
+            logger.error("Alert archive failed: %s", exc, exc_info=True)
+            raise
+        except Exception as exc:
+            logger.error("Unexpected alert archive failure: %s", exc, exc_info=True)
+            raise HistoryError("Alert archive failed") from exc
 
     @staticmethod
     def _remediation_fields(record: dict[str, Any]) -> dict[str, Any]:
@@ -262,10 +262,9 @@ class OpsAgent:
 
     @staticmethod
     def _print_remediation(records: list[dict[str, Any]]) -> None:
-        """把规则处置结果打印到控制台（阶段先以终端推送；后续可换钉钉/企微）。
+        """通过日志记录规则处置结果。
 
-        由 RuleEngine 移入：该引擎只有一个调用方（本类），移入后它变回纯决策，
-        本模块成为**唯一**的输出口子（与 _print_ai_advice 并列），便于将来整体替换通知渠道。
+        RuleEngine 只产生结构化结果；本类统一记录处置与 AI 建议日志。
         """
         for r in records:
             logger.info(
@@ -275,7 +274,7 @@ class OpsAgent:
 
     @staticmethod
     def _print_ai_advice(advice: list[dict[str, Any]]) -> None:
-        """把 AI 分析结果打印到控制台（阶段先以终端推送；后续可换钉钉/企微）。"""
+        """通过日志记录 AI 分析结果。"""
         for entry in advice:
             logger.info(
                 "AI 分析 alertname=%s severity=%s instance=%s advice=%s",

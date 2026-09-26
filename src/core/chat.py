@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Callable
 
 from src.core import capabilities
@@ -15,6 +16,7 @@ from src.interfaces.approval import (
     ApprovalError,
     ApprovalOutcome,
     ApprovalUnavailableError,
+    ApprovalOutcomeUnknownError,
     PendingApproval,
 )
 from src.interfaces.assistant import (
@@ -35,6 +37,7 @@ from src.interfaces.session import (
     STATUS_ABANDONED,
     STATUS_FINAL,
     STATUS_PENDING_APPROVAL,
+    STATUS_UNKNOWN,
     ChatMessage,
     ChatReply,
     HistoryCapable,
@@ -46,8 +49,9 @@ from src.interfaces.session import (
 )
 
 logger = logging.getLogger("aiops_assistant.chat")
+_AGENT_RETRY_SECONDS = 60
 
-# 帮助信息：列出现阶段支持的能力
+# 帮助信息：列出当前可用能力
 HELP_TEXT = (
     "可用能力：\n"
     "  - AI 对话（默认）：直接问任意运维问题，我会按需查询监控数据回答\n"
@@ -58,8 +62,8 @@ HELP_TEXT = (
     "\n用法（两段式：先建会话拿到 id，之后每轮都带上它）：\n"
     '  1) POST /sessions  {"name": "生产排查"}          →  {"session_id": "..."}\n'
     '  2) POST /chat      {"message": "...", "session_id": "<上一步的 id>"}\n'
-    "\n调用者的身份由 Authorization 头里的密钥推断（见 config/settings.yaml 的 auth 段），"
-    "不再由请求体里的字段指定。"
+    "\n开启鉴权后，服务端根据 Authorization 头中的密钥识别身份；"
+    "请求体不能指定身份。"
 )
 
 # 兜底回复：LLM 不可用时的最终兜底
@@ -119,6 +123,8 @@ class ChatService:
         self._assistant: Assistant | None = None
         self._host_assistants: dict[str, Assistant] = {}
         self._host_agent_broken: set[str] = set()
+        self._host_agent_retry_at: dict[str, float] = {}
+        self._agent_retry_at = 0.0
         self._agent_broken = assistant_factory is None and host_assistant_factory is None
         self._hosts = hosts
         # 只护「首次构建」，见 _ensure_assistant 的 docstring
@@ -339,7 +345,7 @@ class ChatService:
     # ------------------------------------------------------------------
     # 人工审批转发（写命令能力为可选；不支持时给出明确语义）
     # ------------------------------------------------------------------
-    def pending_approvals(self) -> list[PendingApproval]:
+    def pending_approvals(self, *, strict: bool = False) -> list[PendingApproval]:
         """当前待人工决策的写命令调用；Agent 未构建/不支持审批时返回空列表。
 
         **刻意走已建好的 self._assistant**，不调用 _ensure_assistant()：
@@ -354,6 +360,8 @@ class ChatService:
                 result.extend(assistant.pending_approvals())
             except Exception as exc:
                 logger.warning("查询待审批项失败: %s", exc)
+                if strict:
+                    raise ApprovalUnavailableError("Unable to verify pending approvals") from exc
         return sorted(result, key=lambda item: item.created_at, reverse=True)
 
     def decide(
@@ -407,6 +415,23 @@ class ChatService:
             # 未知 / 已过期 / 已被处理：审批队列里已经没有了，历史里那条不可能再有下文
             self._abandon_pending(approval_id)
             raise
+        except Exception as exc:
+            try:
+                still_pending = any(
+                    p.approval_id == approval_id for p in assistant.pending_approvals()
+                )
+            except Exception:
+                still_pending = False
+            if still_pending:
+                logger.error("Approval resume failed before consumption id=%s: %s", approval_id, exc, exc_info=True)
+                raise ApprovalUnavailableError(
+                    "Approval is still pending; retry after the temporary failure."
+                ) from exc
+            self._mark_unknown(approval_id)
+            logger.error("Approval resume failed; outcome unknown id=%s: %s", approval_id, exc, exc_info=True)
+            raise ApprovalOutcomeUnknownError(
+                "Approval was consumed; remote outcome is unknown. Verify the target before retrying."
+            ) from exc
         self._resolve_pending(approval_id, outcome)
         return outcome
 
@@ -440,6 +465,18 @@ class ChatService:
             )
         except SessionError as exc:
             logger.error("回填审批结果失败（历史里该轮将停在待审批态）: %s", exc)
+
+    def _mark_unknown(self, approval_id: str) -> None:
+        if self._sessions is None:
+            return
+        try:
+            self._sessions.update_pending(
+                approval_id,
+                content="Approval resume failed; remote outcome is unknown. Verify the target state.",
+                status=STATUS_UNKNOWN,
+            )
+        except SessionError as exc:
+            logger.error("Failed to mark approval outcome unknown id=%s: %s", approval_id, exc)
 
     def _abandon_pending(self, approval_id: str) -> None:
         """把一条不可能再有下文的待审批轮标为 abandoned。"""
@@ -476,34 +513,41 @@ class ChatService:
                 return None
             if host_id in self._host_assistants:
                 return self._host_assistants[host_id]
-            if host_id in self._host_agent_broken:
+            if host_id in self._host_agent_broken and time.monotonic() < self._host_agent_retry_at.get(host_id, 0):
                 return None
             with self._assistant_lock:
                 if host_id in self._host_assistants:
                     return self._host_assistants[host_id]
+                if host_id in self._host_agent_broken and time.monotonic() < self._host_agent_retry_at.get(host_id, 0):
+                    return None
                 try:
                     assistant = self._host_assistant_factory(host_id)
                     self._host_assistants[host_id] = assistant
+                    self._host_agent_broken.discard(host_id)
+                    self._host_agent_retry_at.pop(host_id, None)
                     return assistant
                 except Exception as exc:
                     self._host_agent_broken.add(host_id)
+                    self._host_agent_retry_at[host_id] = time.monotonic() + _AGENT_RETRY_SECONDS
                     logger.warning(
                         "主机 %s 的 Agent 构建不可用，回落关键词引擎: %s",
                         host_id,
                         exc,
                     )
                     return None
-        if self._agent_broken or self._assistant_factory is None:
+        if self._assistant_factory is None or (self._agent_broken and time.monotonic() < self._agent_retry_at):
             return None
         with self._assistant_lock:
             # 双检：等锁期间可能已被别的线程建好了
             if self._assistant is not None:
                 return self._assistant
-            if self._agent_broken:
+            if self._agent_broken and time.monotonic() < self._agent_retry_at:
                 return None
             try:
                 self._assistant = self._assistant_factory()
+                self._agent_broken = False
             except Exception as exc:  # 未装 langchain / .env 缺 key / init 失败等
                 self._agent_broken = True
+                self._agent_retry_at = time.monotonic() + _AGENT_RETRY_SECONDS
                 logger.warning("Agent 构建不可用，回落关键词引擎: %s", exc)
             return self._assistant

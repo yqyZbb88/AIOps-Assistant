@@ -544,3 +544,18 @@ def test_data_survives_new_container(tmp_path):
 
     assert resp.status_code == 200
     assert resp.json()["message_count"] == 2
+
+
+def test_delete_session_keeps_session_if_approval_lookup_fails(client, monkeypatch):
+    from src.interfaces.approval import ApprovalUnavailableError
+
+    session_id = _seed(client.store)
+
+    def fail_lookup(*, strict=False):
+        assert strict
+        raise ApprovalUnavailableError("approval store unavailable")
+
+    monkeypatch.setattr(client.app.state.agent, "pending_approvals", fail_lookup)
+    response = client.delete(f"/sessions/{session_id}")
+    assert response.status_code == 503
+    assert client.get(f"/sessions/{session_id}").status_code == 200

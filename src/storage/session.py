@@ -273,10 +273,11 @@ class SqliteSessionStore(SessionStore):
         return [_row_to_message(r) for r in reversed(rows)]
 
     def messages(self, session_id: str, *, limit: int = 100) -> list[ChatMessage]:
-        """取全部状态的消息供展示（旧→新），含 pending / abandoned。"""
+        """取最近的消息供展示（旧→新），含 pending / abandoned。"""
         rows = self._query(
+            f"SELECT {_MESSAGE_COLUMNS} FROM ("
             f"SELECT {_MESSAGE_COLUMNS} FROM messages WHERE session_id = ? "
-            "ORDER BY seq ASC LIMIT ?",
+            "ORDER BY seq DESC LIMIT ?) ORDER BY seq ASC",
             (session_id, max(1, int(limit))),
         )
         return [_row_to_message(r) for r in rows]
@@ -572,7 +573,7 @@ class InMemorySessionStore(SessionStore):
         return visible[-max(1, int(limit)):]
 
     def messages(self, session_id: str, *, limit: int = 100) -> list[ChatMessage]:
-        return self._messages.get(session_id, [])[: max(1, int(limit))]
+        return self._messages.get(session_id, [])[-max(1, int(limit)):]
 
     def append_turn(
         self,

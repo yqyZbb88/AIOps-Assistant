@@ -127,9 +127,8 @@ class InspectionSettings:
 class StorageSettings:
     """SQLite 持久化配置。
 
-    `enabled` 的 dataclass 默认值是 **False**：测试里 `Settings()` 被直接构造多次
-    （create_app(settings=Settings())），默认打开会让用例写真实 db 文件、跨用例串数据。
-    出厂是否打开只由 config/settings.yaml 决定。
+    直接构造 `Settings()` 时默认关闭持久化；从文件启动时使用
+    `config/settings.yaml` 的 `storage.enabled` 值。
     """
 
     enabled: bool = False
@@ -146,9 +145,8 @@ class StorageSettings:
 class AuthSettings:
     """共享密钥鉴权配置。
 
-    `enabled` 的 dataclass 默认值是 **False**：与 StorageSettings.enabled 同理——
-    测试里 `Settings()` 被直接构造多次（`create_app(settings=Settings())`），
-    默认打开会让既有用例集体 401。出厂是否打开只由 config/settings.yaml 决定。
+    直接构造 `Settings()` 时默认关闭普通接口鉴权；从文件启动时使用
+    `config/settings.yaml` 的 `auth.enabled` 值。
 
     `tokens` 是「密钥 → 身份」的 **JSON 字符串原文**，解析在 `utils/auth.py`。
     这里保持成字符串，是因为 yaml 的插值结果本就是字符串，而本模块只做类型规约
@@ -183,8 +181,7 @@ class AuthSettings:
 class LoggingSettings:
     level: str = "INFO"
     audit: bool = True
-    # 审计落盘：dataclass 默认**空串**（不落文件）——与 storage.enabled 同理，
-    # 测试里 Settings() 被直接构造多次，默认写文件会在仓库里堆 logs/ 并跨用例串数据。
+    # 直接构造 Settings() 时不写审计文件；从文件启动时使用 logging.audit_file。
     audit_file: str = ""
     audit_max_bytes: int = 5 * 1024 * 1024
     audit_backup_count: int = 3

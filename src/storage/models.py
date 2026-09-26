@@ -70,7 +70,7 @@ class AlertmanagerPayload(BaseModel):
     version: str = ""
     groupKey: str = ""
     truncatedAlerts: int = 0
-    # 以下字段当前阶段不参与处理，保留模型定义供后续阶段直接使用
+    # 保留 Alertmanager 负载中的可选字段，以兼容完整的 webhook 结构
     groupLabels: dict[str, str] = Field(default_factory=dict)
     commonLabels: dict[str, str] = Field(default_factory=dict)
     commonAnnotations: dict[str, str] = Field(default_factory=dict)

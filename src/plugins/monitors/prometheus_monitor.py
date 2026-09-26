@@ -51,8 +51,7 @@ def _instance_from_selector(selector: Mapping[str, str] | None) -> str | None:
     标签范围的正主是指标自己的 base_selector + metrics.yaml 的 selector，调用方不能
     用这个参数替换 PromQL 文本、也不该塞别的标签。多个 instance 键时取第一个。
 
-    两条分支都必须走这里——曾经只有非 alert_count 分支认它，alert_count 分支直接
-    用 `_effective_selector(definition)` 覆盖掉了入参，于是「按实例数告警」静默失效。
+    普通指标和 alert_count 都使用调用方提供的 instance，避免两类查询的范围不一致。
     """
     if not selector:
         return None
@@ -90,7 +89,12 @@ class PrometheusMonitor(MonitorSource):
         except requests.RequestException as exc:
             raise MonitorError(f"Prometheus 请求失败: {exc}") from exc
 
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise MonitorError("Prometheus returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise MonitorError("Prometheus returned an invalid response object")
         if payload.get("status") != "success":
             raise MonitorError(f"Prometheus 返回错误: {payload.get('error', '未知错误')}")
         data = payload.get("data")
@@ -243,6 +247,9 @@ class PrometheusMonitor(MonitorSource):
                 high = definition.max_value if definition.max_value is not None else value
                 value = max(low, min(high, value))
             labels_raw = item.get("metric") or {}
+            if not isinstance(labels_raw, dict):
+                logger.warning("Skipping metric sample with invalid labels: %s", metric_id)
+                continue
             labels = {
                 key: str(labels_raw.get(key, "unknown"))
                 for key in definition.group_by
@@ -282,11 +289,12 @@ class PrometheusMonitor(MonitorSource):
 
         summaries = [
             _summarize_values(
-                item.get("values", []),
+                item.get("values") if isinstance(item.get("values"), list) else [],
                 low=definition.min_value,
                 high=definition.max_value,
             )
             for item in series
+            if isinstance(item, dict)
         ]
         valid = [summary for summary in summaries if summary["points"]]
         if not valid:
@@ -324,9 +332,18 @@ class PrometheusMonitor(MonitorSource):
     ) -> list[dict[str, Any]]:
         data = self._request("alerts", {})
         records: list[dict[str, Any]] = []
-        for item in data.get("alerts", []):
-            labels = item.get("labels", {})
-            annotations = item.get("annotations", {})
+        raw_alerts = data.get("alerts", [])
+        if not isinstance(raw_alerts, list):
+            raise MonitorError("Prometheus returned an invalid alerts list")
+        for item in raw_alerts:
+            if not isinstance(item, dict):
+                logger.warning("Skipping malformed Prometheus alert item")
+                continue
+            labels = item.get("labels") or {}
+            annotations = item.get("annotations") or {}
+            if not isinstance(labels, dict) or not isinstance(annotations, dict):
+                logger.warning("Skipping Prometheus alert with malformed labels")
+                continue
             raw_value = item.get("value")
             try:
                 value = float(raw_value) if raw_value not in (None, "") else None
@@ -416,7 +433,10 @@ def _summarize_values(
 ) -> dict[str, Any]:
     """把 range values 汇总为 latest/min/max/avg/points。"""
     nums: list[float] = []
-    for _, raw in values:
+    for point in values:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            continue
+        _, raw = point
         if raw in (None, ""):
             continue
         try:

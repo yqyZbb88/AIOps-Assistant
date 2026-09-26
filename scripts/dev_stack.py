@@ -39,6 +39,12 @@ def local_admin_token() -> str:
 def bootstrap() -> dict[str, str]:
     for name in ("assistant-data", "assistant-logs", "secrets", "textfile"):
         (RUNTIME / name).mkdir(parents=True, exist_ok=True)
+    if os.name == "posix":
+        RUNTIME.chmod(0o700)
+        (RUNTIME / "secrets").chmod(0o700)
+        for secret_file in (ENV_FILE, RUNTIME / "secrets" / "alertmanager_token"):
+            if secret_file.exists():
+                secret_file.chmod(0o600)
     if ENV_FILE.exists():
         values = {}
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
@@ -59,6 +65,9 @@ def bootstrap() -> dict[str, str]:
     }
     ENV_FILE.write_text("\n".join(f"{key}={value}" for key, value in values.items()) + "\n", encoding="utf-8")
     (RUNTIME / "secrets" / "alertmanager_token").write_text(alert_token, encoding="utf-8")
+    if os.name == "posix":
+        ENV_FILE.chmod(0o600)
+        (RUNTIME / "secrets" / "alertmanager_token").chmod(0o600)
     return values
 
 
