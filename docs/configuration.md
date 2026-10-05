@@ -1,6 +1,10 @@
 # AIOps-Assistant YAML 配置指南
 
-本文覆盖 `config/` 下所有运行时 YAML 文件：
+本文覆盖七个运行时 YAML 文件。本地 Python 使用根 `config/`；Compose 使用
+`.runtime/config/`，首次从 `deploy/config/` 复制，升级不覆盖已有值。下文 `config/`
+是相对于应用工作目录的路径，在容器内为 `/app/config/`。部署入口见 [deployment.md](deployment.md)。
+
+配置文件包括：
 
 页面允许修改的配置子集及保存流程见 [console.md](console.md)；以下仍是磁盘文件的完整
 字段参考。配置保存产生的 YAML 备份与 SQLite 数据备份不同，后者见
@@ -31,7 +35,10 @@ value: ${VAR:-default}
 
 - `${VAR}`：读取环境变量；变量缺失时替换为空字符串并记录 WARNING。
 - `${VAR:-default}`：变量存在时取变量值，否则取 default。
-- 项目启动时优先使用系统环境变量，再用根目录 `.env` 补充未设置值。
+- 本地 Python 启动时优先使用系统环境变量，再用根目录 `.env` 补充未设置值。
+- Compose 的根 `.env` 提供可选模型/SSH 参数与发布端口；身份由初始化服务生成。
+  初始化将凭据保存至 `.runtime/compose.env`，Assistant 入口导入其派生 JSON 后启动。
+  新模板的 `OPS_LLM_ENABLED` / `OPS_AGENT_ENABLED` 随模型密钥是否存在赋值；管理页保存固定开关后以配置为准。
 - 密钥不要直接写入 YAML；使用环境变量占位。
 
 ### 2. 严格校验
@@ -79,6 +86,8 @@ settings.yaml
 
 下列表格的“默认值”指仓库自带 `config/settings.yaml` 的值；环境变量占位符
 按启动进程的环境求值。启动时读取该 YAML，未配置的字段使用程序内置默认值。
+Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `node-exporter:9100`、
+没有 SSH 授权和处置规则，命令目录关闭；不提供模型密钥时 AI 关闭。模板不会改变旧部署设置。
 
 ### app
 
@@ -674,7 +683,7 @@ metrics:
 `external` 只允许选择 Prometheus `/api/v1/targets` 已发现的目标。
 `managed` 必须配置 `prometheus.file_sd_path`，Compose 已将
 `.runtime/prometheus-targets/assistant.yml` 映射到 Assistant 可写目录和 Prometheus
-只读目录，并在 `deploy/prometheus/prometheus.yml` 预置 `aiops-hosts` 的
+只读目录 `/etc/aiops-targets/`，并在 `deploy/prometheus/prometheus.yml` 预置 `aiops-hosts` 的
 `file_sd_configs`。首次部署该能力需更新一次**本地** Prometheus 容器配置；
 此后新增目标只原子更新目标文件，无需修改远程主机。新主机的诊断、规则动作和 Agent
 写授权默认全为空，`up=0` 可以登记但不代表 Exporter 已恢复。

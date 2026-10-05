@@ -10,26 +10,29 @@ METRICS = {"cpu": "aiops_demo_cpu_percent", "memory": "aiops_demo_memory_percent
 HIGH = {"cpu": 95, "memory": 96, "disk": 96}
 
 
-def write(values: dict[str, float]) -> None:
-    TARGET.parent.mkdir(parents=True, exist_ok=True)
+def write(values: dict[str, float], target: Path | None = None) -> None:
+    target = TARGET if target is None else target
+    target.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     for name, metric in METRICS.items():
         lines.extend((f"# HELP {metric} Safe synthetic {name} fault gauge.", f"# TYPE {metric} gauge", f"{metric} {values[name]}"))
-    temporary = TARGET.with_suffix(".tmp")
+    temporary = target.with_suffix(".tmp")
     # Node Exporter 的文本格式要求 LF；Windows 默认 CRLF 会把类型解析成 ``gauge\r``。
     with temporary.open("w", encoding="utf-8", newline="\n") as stream:
         stream.write("\n".join(lines) + "\n")
-    temporary.replace(TARGET)
+    temporary.replace(target)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("fault", choices=[*METRICS, "all", "reset"])
     parser.add_argument("state", nargs="?", choices=["on", "off"], default="on")
+    parser.add_argument("--runtime", type=Path, help="部署目录；init 容器中使用 /runtime")
     args = parser.parse_args()
+    target = args.runtime / "textfile" / TARGET.name if args.runtime else TARGET
     current = {name: 0.0 for name in METRICS}
-    if TARGET.exists():
-        for line in TARGET.read_text(encoding="utf-8").splitlines():
+    if target.exists():
+        for line in target.read_text(encoding="utf-8").splitlines():
             parts = line.split()
             for name, metric in METRICS.items():
                 if len(parts) == 2 and parts[0] == metric:
@@ -38,7 +41,7 @@ def main() -> int:
     enabled = args.state == "on" and args.fault != "reset"
     for name in targets:
         current[name] = float(HIGH[name] if enabled else 0)
-    write(current)
+    write(current, target)
     print("演示指标已更新：" + ", ".join(f"{name}={current[name]:g}" for name in METRICS))
     return 0
 

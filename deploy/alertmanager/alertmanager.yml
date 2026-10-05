@@ -14,4 +14,4 @@ receivers:
         http_config:
           authorization:
             type: Bearer
-            credentials_file: /run/secrets/alertmanager_token
+            credentials_file: /run/alertmanager-secrets/token

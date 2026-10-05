@@ -15,3 +15,13 @@ PROJECT_HANDOVER.md
 ARCHITECTURE.md
 docs/roadmap.md
 roadmap.md
+
+.env*
+config
+tests
+docs
+.claude
+.codex
+.agents
+.vscode
+*.local.yaml

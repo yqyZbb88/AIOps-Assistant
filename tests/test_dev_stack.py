@@ -38,26 +38,10 @@ def test_local_admin_token_rejects_missing_admin_mapping(tmp_path: Path, monkeyp
         dev_stack.local_admin_token()
 
 
-def test_compose_uses_runtime_token_even_if_shell_has_another_token(tmp_path: Path, monkeypatch):
-    runtime = tmp_path / ".runtime"
-    runtime.mkdir()
-    env_file = runtime / "compose.env"
-    env_file.write_text(
-        'OPS_API_TOKENS={"compose-admin":"admin"}\n'
-        'OPS_APPROVER_IDENTITIES=["admin"]\n'
-        "AIOPS_USER_TOKEN=compose-admin\n",
-        encoding="utf-8",
-    )
+def test_compose_uses_explicit_project_file_and_has_no_host_bootstrap(tmp_path, monkeypatch):
     monkeypatch.setattr(dev_stack, "ROOT", tmp_path)
-    monkeypatch.setattr(dev_stack, "RUNTIME", runtime)
-    monkeypatch.setattr(dev_stack, "ENV_FILE", env_file)
-    monkeypatch.setenv("OPS_API_TOKENS", '{"shell-admin":"admin"}')
     calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return type("Result", (), {"returncode": 0})()
-
-    monkeypatch.setattr(dev_stack.subprocess, "run", fake_run)
+    monkeypatch.setattr(dev_stack.subprocess, "run", lambda command, **kwargs: calls.append((command, kwargs)) or type("Result", (), {"returncode": 0})())
     assert dev_stack.compose("ps") == 0
-    assert calls[0][1]["env"]["OPS_API_TOKENS"] == '{"compose-admin":"admin"}'
+    assert calls[0][0] == ["docker", "compose", "--project-directory", str(tmp_path), "-f", str(tmp_path / "compose.yaml"), "ps"]
+    assert not (tmp_path / ".runtime").exists()

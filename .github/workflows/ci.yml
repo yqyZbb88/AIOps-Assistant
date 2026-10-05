@@ -7,13 +7,52 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      LANGSMITH_TRACING: "false"
+      LANGCHAIN_TRACING: "false"
+      LANGCHAIN_TRACING_V2: "false"
+      OPS_API_TOKENS: '{"ci-admin-token":"admin","ci-webhook-token":"alertmanager"}'
+      OPS_ADMIN_IDENTITIES: '["admin"]'
+      OPS_APPROVER_IDENTITIES: '["admin"]'
+      DEEPSEEK_API_KEY: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r requirements.txt
-      - run: python -m compileall -q src tests init.py
+          cache-dependency-path: requirements*.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python -m pip install -r requirements.txt -c requirements-lock.txt
+      - run: python -m pip check
+      - run: python -m compileall -q src scripts tests init.py
       - run: python -m pytest -q --basetemp=.pytest_tmp
+
+  deployment-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      COMPOSE_PROJECT_NAME: aiops-ci
+      AIOPS_RUNTIME_DIR: ./.pytest_tmp_compose
+      DEEPSEEK_API_KEY: ""
+      SSH_PASSWORD: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and wait for healthy services
+        run: docker compose --env-file .env.example up -d --build --wait --wait-timeout 180
+      - name: Check fresh deployment and real webhook delivery
+        run: docker compose --env-file .env.example exec -T assistant python - < tests/compose_smoke.py
+      - name: Recreate without losing state
+        run: docker compose --env-file .env.example up -d --force-recreate --wait --wait-timeout 180
+      - name: Check credentials, configuration and SQLite persistence
+        run: docker compose --env-file .env.example exec -T assistant python - --verify < tests/compose_smoke.py
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          docker compose --env-file .env.example ps --all
+          docker compose --env-file .env.example logs --tail 100
+      - name: Remove isolated CI stack
+        if: always()
+        run: docker compose --env-file .env.example down --volumes

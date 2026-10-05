@@ -1,16 +1,16 @@
-"""跨平台开发监控栈入口；生成本地密钥后调用 Docker Compose。"""
+"""跨平台 Compose 便捷入口；宿主机无需项目依赖（local Token 查询除外）。"""
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import secrets
+import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME = ROOT / ".runtime"
-ENV_FILE = RUNTIME / "compose.env"
 
 
 def local_admin_token() -> str:
@@ -36,89 +36,84 @@ def local_admin_token() -> str:
     raise RuntimeError("本地配置中没有映射到管理员身份的 Token")
 
 
-def bootstrap() -> dict[str, str]:
-    for name in ("assistant-data", "assistant-logs", "secrets", "textfile"):
-        (RUNTIME / name).mkdir(parents=True, exist_ok=True)
-    if os.name == "posix":
-        RUNTIME.chmod(0o700)
-        (RUNTIME / "secrets").chmod(0o700)
-        for secret_file in (ENV_FILE, RUNTIME / "secrets" / "alertmanager_token"):
-            if secret_file.exists():
-                secret_file.chmod(0o600)
-    if ENV_FILE.exists():
-        values = {}
-        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                values[key] = value
-        return values
-    user_token = secrets.token_urlsafe(24)
-    alert_token = secrets.token_urlsafe(24)
-    values = {
-        "OPS_API_TOKENS": json.dumps({user_token: "admin", alert_token: "alertmanager"}, separators=(",", ":")),
-        "OPS_APPROVER_IDENTITIES": '["admin"]',
-        "DEEPSEEK_API_KEY": os.getenv("DEEPSEEK_API_KEY", ""),
-        "GF_SECURITY_ADMIN_USER": "admin",
-        "GF_SECURITY_ADMIN_PASSWORD": secrets.token_urlsafe(18),
-        "GRAFANA_HOST_PORT": os.getenv("GRAFANA_HOST_PORT", "3000"),
-        "AIOPS_USER_TOKEN": user_token,
-    }
-    ENV_FILE.write_text("\n".join(f"{key}={value}" for key, value in values.items()) + "\n", encoding="utf-8")
-    (RUNTIME / "secrets" / "alertmanager_token").write_text(alert_token, encoding="utf-8")
-    if os.name == "posix":
-        ENV_FILE.chmod(0o600)
-        (RUNTIME / "secrets" / "alertmanager_token").chmod(0o600)
-    return values
+def compose_command(*args: str) -> list[str]:
+    return ["docker", "compose", "--project-directory", str(ROOT), "-f", str(ROOT / "compose.yaml"), *args]
+
+
+def doctor() -> None:
+    if shutil.which("docker") is None:
+        raise RuntimeError("未找到 Docker，请安装并启动 Docker Desktop 或 Docker Engine + Compose 插件")
+    checks = [
+        (["docker", "compose", "version", "--short"], "Docker Compose 不可用，需要 2.24 或以上版本"),
+        (["docker", "info", "--format", "{{.ServerVersion}}"], "Docker 引擎未就绪，请启动 Docker Desktop / Docker 服务"),
+        (compose_command("config", "--quiet"), "Compose 配置无效，请检查 .env 中的端口和路径"),
+    ]
+    for index, (command, message) in enumerate(checks):
+        try:
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=25, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise RuntimeError(message) from None
+        if result.returncode:
+            raise RuntimeError(message)
+        if index == 0:
+            match = re.search(r"(\d+)\.(\d+)", result.stdout)
+            if not match or tuple(map(int, match.groups())) < (2, 24):
+                raise RuntimeError(message)
 
 
 def compose(*args: str) -> int:
-    # Compose 解析时外层进程环境优先于 --env-file。明确锁定开发栈生成的身份映射，
-    # 否则 show-token 展示的密钥可能与真正注入容器的密钥不一致。
-    values = bootstrap()
-    environment = os.environ.copy()
-    for name in ("OPS_API_TOKENS", "OPS_APPROVER_IDENTITIES"):
-        if name in values:
-            environment[name] = values[name]
-    return subprocess.run(
-        ["docker", "compose", "--env-file", str(ENV_FILE), *args],
-        cwd=ROOT,
-        env=environment,
-        check=False,
-    ).returncode
+    return subprocess.run(compose_command(*args), cwd=ROOT, check=False).returncode
+
+
+def compose_secret(*, grafana: bool = False) -> str:
+    command = "show-grafana-password" if grafana else "show-token"
+    result = subprocess.run(compose_command("run", "--rm", "--no-deps", "init", command),
+                            cwd=ROOT, capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise RuntimeError("无法读取 Compose 凭据，请检查初始化状态和 Docker 引擎")
+    return result.stdout.strip()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["up", "down", "status", "logs", "show-token"], nargs="?", default="up")
+    parser.add_argument("command", choices=["up", "down", "status", "logs", "doctor", "show-token", "show-grafana-password"], nargs="?", default="up")
     parser.add_argument("--source", choices=["compose", "local"], default="compose",
-                        help="show-token 的凭据来源：Compose 开发栈或本地 Python 服务")
+                        help="show-token 的凭据来源")
+    parser.add_argument("--wait-timeout", type=int, default=180, help="等待就绪的秒数，不含构建时间")
     args = parser.parse_args()
-    if args.command == "show-token":
-        if args.source == "local":
-            try:
-                print(local_admin_token())
-            except RuntimeError as exc:
-                parser.error(str(exc))
-        else:
-            print(bootstrap().get("AIOPS_USER_TOKEN", ""))
-        return 0
-    if args.source != "compose":
+    if args.source != "compose" and args.command != "show-token":
         parser.error("--source local 仅适用于 show-token")
-    values = bootstrap()
-    if args.command == "up":
-        subprocess.run([os.sys.executable, str(ROOT / "scripts" / "demo_fault.py"), "reset"], check=True)
-        code = compose("up", "--build", "-d")
-        if code == 0:
-            grafana_port = os.getenv("GRAFANA_HOST_PORT", values.get("GRAFANA_HOST_PORT", "3000"))
-            print("控制台: http://127.0.0.1:8000/console")
-            print(f"Grafana: http://127.0.0.1:{grafana_port}")
-            print("Compose 控制台 Token: " + values.get("AIOPS_USER_TOKEN", ""))
-        return code
-    if args.command == "down":
-        return compose("down")
-    if args.command == "status":
-        return compose("ps")
-    return compose("logs", "--tail", "200")
+    if args.wait_timeout < 1:
+        parser.error("--wait-timeout 必须大于 0")
+    try:
+        if args.command in {"show-token", "show-grafana-password"}:
+            print(local_admin_token() if args.source == "local" else compose_secret(grafana=args.command == "show-grafana-password"))
+            return 0
+        if args.command in {"up", "doctor"}:
+            doctor()
+        if args.command == "doctor":
+            print("Docker、Compose 与部署配置检查通过。")
+            return 0
+        if args.command == "up":
+            code = compose("up", "--build", "--wait", "--wait-timeout", str(args.wait_timeout))
+            if code == 0:
+                print("服务已就绪。默认控制台 http://127.0.0.1:8000/console；自定义端口见 .env。")
+                print("查看地址：python scripts/dev_stack.py status")
+                print("查看管理员 Token：python scripts/dev_stack.py show-token")
+            else:
+                print("部署未就绪；运行 python scripts/dev_stack.py status / logs 排查。数据已保留。", file=sys.stderr)
+            return code
+        if args.command == "down":
+            return compose("down")
+        if args.command == "status":
+            return compose("ps", "--all")
+        return compose("logs", "--tail", "200")
+    except (OSError, RuntimeError, ValueError, KeyError, StopIteration) as exc:
+        if args.command in {"show-token", "show-grafana-password"}:
+            print("无法读取凭据，请检查部署状态、目录权限和凭据来源。Docker 方式见 docs/deployment.md。", file=sys.stderr)
+        else:
+            print(f"部署失败：{exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

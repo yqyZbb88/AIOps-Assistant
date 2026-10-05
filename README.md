@@ -4,7 +4,7 @@ AIOps-Assistant 是面向多台 Linux 主机、单 Prometheus/Alertmanager 和�
 智能运维助手。它把 Prometheus/Alertmanager 的事实数据、白名单 SSH 诊断、人工审批写操作、周期巡检和
 SQLite 历史记录组织成一条可审计的运维链路。
 
-使用与部署说明从 [使用指南](docs/guide.md) 开始；配置字段见
+部署从 [部署与升级](docs/deployment.md) 开始；日常操作见 [使用指南](docs/guide.md)，配置字段见
 [配置指南](docs/configuration.md)，接口见 [API 参考](docs/api.md)，
 系统组成见 [架构说明](docs/architecture.md)。
 
@@ -69,36 +69,31 @@ PromQL 或自由 Shell。写命令只能来自管理员维护的目录。
 
 ## 快速开始
 
-### 一分钟 Compose 启动
+### Docker Compose 启动（推荐）
 
-安装 Docker Desktop（Windows）或 Docker Engine + Compose（Linux）后运行：
-
-```bash
-python scripts/dev_stack.py up
-```
-
-脚本会在被忽略的 `.runtime/` 中生成 Compose 开发栈 Token、Grafana 密码、数据和日志目录，
-构建 Assistant 并启动五个服务。终端会显示控制台地址和 Compose 用户 Token。再次查看：
+只需 Docker Desktop（Linux 容器）或 Docker Engine + Compose 2.24+，无需宿主机 Python：
 
 ```bash
-python scripts/dev_stack.py show-token
+docker compose up -d --build --wait --wait-timeout 180
+docker compose run --rm --no-deps init show-token
 ```
 
-Grafana 默认绑定 `127.0.0.1:3000`。端口已被本机服务占用时，可在启动前设置
-`GRAFANA_HOST_PORT`（例如 `3001`）；容器内端口仍为 `3000`。
+第一条命令自动初始化配置和凭据，等待五个服务健康后返回；`init` 显示 `Exited (0)` 正常。
+第二条显式显示管理员 Token，填入 `http://127.0.0.1:8000/console` 即可。
+新部署默认开启鉴权；不填模型密钥也能使用监控与关键词问答。
 
-停止服务但保留监控数据卷：
+实际配置位于 `.runtime/config/`，首次从 `deploy/config/` 复制；重复启动保留配置、密钥和数据。
+Grafana 默认位于 `http://127.0.0.1:3000`，初始密码通过
+`docker compose run --rm --no-deps init show-grafana-password` 查看。
+`docker compose down` 停止服务并保留数据；五个发布端口均绑定本机回环地址。
 
-```bash
-python scripts/dev_stack.py down
-```
-
-Windows 上的 Node Exporter 观察 Docker Linux 虚拟机/容器环境，不代表 Windows 宿主机指标。
+模型密钥、端口调整、SSH、旧版本迁移和备份见 [部署与升级](docs/deployment.md)。
+旧部署保留原鉴权与功能开关；Windows/macOS 上 Node Exporter 观察 Docker Linux 环境。
 
 ### 图形化控制台
 
-打开 `http://127.0.0.1:8000/console` 并输入用户 Token。请核对
-`config/settings.yaml` 中的 `auth.enabled`；生成 Token 本身不会开启普通接口鉴权。
+打开 `http://127.0.0.1:8000/console` 并输入管理员 Token。新 Compose 部署默认开启鉴权；
+旧部署迁移保留原设置，实际开关见 `.runtime/config/settings.yaml`；本地 Python 使用 `config/settings.yaml`。
 控制台提供总览、主机详情、问答诊断、人工审批、运维记录和个性化设置。主题、显示密度、自动刷新、默认主机、收藏指标
 及总览卡片顺序只保存在浏览器 `localStorage`；Bearer Token 只保存在当前标签页的
 `sessionStorage`。旧 `/status` 已移除，访问会返回 404。
@@ -212,7 +207,7 @@ Alertmanager 共用 Token，因为 webhook 可触发 `auto_execute=true` 的规�
 
 ## 配置
 
-运行时配置位于 `config/`。管理页可编辑字段保存后立即生效；页面外手动修改
+Compose 运行时配置位于 `.runtime/config/`，本地 Python 配置位于 `config/`。管理页可编辑字段保存后立即生效；页面外手动修改
 YAML 后须由管理员显式应用。服务监听、SQLite/日志路径和环境密钥仍需重启：
 
 | 文件 | 作用 |
@@ -260,6 +255,8 @@ logs/inspection.log
 
 | 文档 | 内容 |
 |---|---|
+| [部署与升级](docs/deployment.md) | Docker 启动、可选配置、凭据、升级和恢复 |
+| [本机测试与验收](docs/testing.md) | 离线回归、独立 Compose 测试栈、页面与业务闭环、故障恢复 |
 | [使用指南](docs/guide.md) | 部署、日常操作、备份和排障 |
 | [配置指南](docs/configuration.md) | 全部运行时 YAML 字段和示例 |
 | [鉴权说明](docs/auth.md) | Token、身份、审批角色和 Alertmanager 配置 |

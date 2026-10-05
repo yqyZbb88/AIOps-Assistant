@@ -1,0 +1,65 @@
+# Compose 首次初始化模板；生效副本位于 .runtime/config/。
+# Agent SSH 只读诊断白名单。
+# enabled=false 或配置无效时只关闭诊断工具，不影响聊天和巡检。
+# 命令模板由管理员维护，模型只能选择命令 key 和通过 schema 校验的语义参数。
+# 命令目录可由管理员热应用；环境变量中的连接密钥变更仍需重启。
+
+enabled: false
+provider: ssh
+
+target:
+  host: "${SSH_HOST:-localhost}"
+  port: 22                  # 必须 >= 1
+  username: "${SSH_USER:-ops}"
+  key_filename: "${SSH_KEY_FILENAME:-}"
+  password: "${SSH_PASSWORD:-}"
+  known_hosts: "${SSH_KNOWN_HOSTS:-}"  # 留空时使用系统 known_hosts
+  connect_timeout: 8       # SSH 连接与命令超时秒数，必须 >= 1
+
+output_limit: 4000  # SSH channel 最多保留的输出字符数；超出部分排空但不驻留内存
+
+commands:
+  memory:
+    summary: 查看内存使用明细
+    template: "free -m"
+    params: {}
+
+  disk:
+    summary: 查看磁盘占用和文件系统类型
+    template: "df -hT"
+    params: {}
+
+  top_processes:
+    summary: 按 CPU 占用排序列出进程
+    template: "ps -eo pid,ppid,user,%cpu,%mem,etime,cmd --sort=-%cpu | head -n {limit}"
+    params:
+      limit:
+        type: int
+        default: 10
+        min: 1
+        max: 50
+        description: 返回行数（1-50）
+
+  service_status:
+    summary: 查看 systemd 服务状态
+    template: "systemctl status --no-pager -l {service}"
+    params:
+      service:
+        type: str
+        pattern: "^[A-Za-z0-9_.:@-]{1,128}$"
+        description: 服务名，如 nginx / mysql
+
+  service_logs:
+    summary: 查看服务最近日志
+    template: "journalctl -u {service} --no-pager -n {lines}"
+    params:
+      service:
+        type: str
+        pattern: "^[A-Za-z0-9_.:@-]{1,128}$"
+        description: 服务名，如 nginx / mysql
+      lines:
+        type: int
+        default: 50
+        min: 1
+        max: 200
+        description: 返回行数（1-200）

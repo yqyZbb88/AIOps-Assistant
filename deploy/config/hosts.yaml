@@ -1,0 +1,14 @@
+# Compose 首次初始化模板；生效副本位于 .runtime/config/。
+version: 1
+credentials: {}
+hosts:
+  - id: local-node
+    name: Compose Linux 节点
+    enabled: true
+    prometheus:
+      job: node-exporter
+      instance: node-exporter:9100
+    allow:
+      diagnostics: []
+      rule_actions: []
+      agent_actions: []

@@ -21,13 +21,16 @@ SSH 写命令、告警规则启停、配置保存或 Assistant 重启时，先�
 
 ## 控制台 Token 返回 401
 
+Docker 启动、端口、挂载与初始化失败先查 [部署排障](deployment.md#部署失败排查)。
+Compose 实际 YAML 位于 `.runtime/config/`，不要修改根 `config/` 后误以为容器会生效。
+
 先确认 8000 端口运行的是哪一种 Assistant：本地 Python 进程读取根目录 `.env` 与其启动环境，
-Compose 服务读取 `.runtime/compose.env`。两个文件中的 Token 不会自动合并，也不会因文件
+Compose 服务使用 `.runtime/compose.env` 生成的专用凭据文件。两个文件中的 Token 不会自动合并，也不会因文件
 变化自动进入已经运行的进程。分别用以下命令取得对应管理员 Token：
 
 ```bash
 python scripts/dev_stack.py show-token --source local
-python scripts/dev_stack.py show-token --source compose
+docker compose run --rm --no-deps init show-token
 ```
 
 只将 Token 输入控制台连接框，不要粘贴到工单、截图或命令日志。若本地 Token 可用而 Compose

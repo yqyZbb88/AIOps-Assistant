@@ -1,0 +1,107 @@
+# Compose 首次初始化模板；生效副本位于 .runtime/config/。
+# 统一指标配置。
+# PromQL、单位、阈值方向和工具名由代码目录维护；本文件只配置启用范围、阈值和 selector。
+# 手动编辑后需由管理员显式应用磁盘配置。
+
+version: 1                                        # 当前只支持 version=1
+instance: ${PROMETHEUS_INSTANCE:-localhost:9100}  # 全局 instance 标签；指标级 selector 可覆盖
+max_alert_analysis_metrics: 8                     # 告警 AI 单次最多分析的指标数
+
+metrics:
+  # enabled=true 时至少要启用一个 surface。
+  # severity_enabled=true 时必须提供符合指标方向的 warning/critical。
+  # 核心指标：参与巡检、聊天工具和告警分析。
+  cpu.usage:
+    enabled: true
+    surfaces: { inspection: true, chat: true, alert_analysis: true }
+    warning: 80
+    critical: 90
+    severity_enabled: true
+
+  memory.usage:
+    enabled: true
+    surfaces: { inspection: true, chat: true, alert_analysis: true }
+    warning: 85
+    critical: 95
+    severity_enabled: true
+
+  disk.usage:
+    enabled: true
+    surfaces: { inspection: true, chat: true, alert_analysis: true }
+    warning: 80
+    critical: 90
+    severity_enabled: true
+
+  # 增强巡检指标：先观察，确认基线后再开启阈值。
+  cpu.load1:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  cpu.iowait:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  memory.available:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  memory.swap_usage:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  disk.read_bytes:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  disk.write_bytes:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  disk.io_util:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  network.rx_bytes:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  network.tx_bytes:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  network.rx_errors:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  network.tx_errors:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  system.process_count:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  system.uptime:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    severity_enabled: false
+
+  # 活动告警数：参与巡检和聊天。
+  alerts.active_count:
+    enabled: true
+    surfaces: { inspection: true, chat: true, alert_analysis: false }
+    warning: 1
+    critical: 3
+    severity_enabled: true

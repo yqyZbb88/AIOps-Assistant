@@ -1,0 +1,23 @@
+# AIOps-Assistant 依赖清单：核心 + 可选两块。
+# 推荐在独立虚拟环境安装（本项目开发于 conda 环境 `langchain1.2`）。
+# 可选依赖全部惰性加载：未安装时对应能力自动降级，服务照常启动。
+
+# ---------- 核心（服务必需） ----------
+fastapi>=0.110,<1.0
+uvicorn>=0.29,<1.0
+pydantic>=2.5,<3.0
+requests>=2.31,<3.0
+pyyaml>=6.0
+ruamel.yaml>=0.18,<0.19
+
+# ---------- 可选 ① 聊天 Agent 与告警 AI 分析（agent/、plugins/llm_clients/） ----------
+#   模型统一复用根目录 init.py 的 init_chat_model（需 python-dotenv 读 .env）。
+langchain>=1.0,<2.0
+langgraph>=1.0,<2.0
+langchain-core>=1.0,<2.0
+langchain-deepseek>=1.0,<2.0
+python-dotenv>=1.0
+
+# ---------- 可选 ② SSH 动作执行与只读诊断（plugins/actions/、plugins/diagnostics/） ----------
+#   需要执行 restart_service / run_command，或启用 config/diagnostics.yaml 的 AI 只读诊断时安装。
+paramiko>=3.0,<6.0

@@ -461,7 +461,7 @@ def test_admin_save_preserves_comments_backs_up_and_applies_immediately(tmp_path
     body = response.json()
     assert body["restart_required"] is False
     assert body["active_revision"] == body["revision"]
-    assert {"settings.yaml", "rules.yaml"} <= set(body["changed_files"])
+    assert {"settings.yaml", "rules.yaml"} <= {Path(name).name for name in body["changed_files"]}
     assert body["backup_id"]
     assert "# keep-settings-comment" in paths["settings"].read_text(encoding="utf-8")
     assert "# keep-rules-comment" in paths["rules"].read_text(encoding="utf-8")

@@ -270,7 +270,9 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 
 1. 停止服务。
 2. 复制整个 `data/` 目录。
-3. 同时备份 `.env` 和 `config/`。
+3. 本地 Python 同时备份 `.env` 和 `config/`。Compose 停止后应备份整个 `.runtime/`，
+   包括 `config/`、`compose.env`、`deployment.json`、凭据目录、SQLite 与日志；
+   另行备份三个 Docker 命名卷及根 `.env`。恢复时保持项目名和部署目录一致，详见 [deployment.md](deployment.md)。
 
 运行中优先使用 SQLite 的在线备份接口（CLI 的 `.backup` 使用该接口），生成独立的
 一致性快照；不要在写入期间用普通文件复制代替：

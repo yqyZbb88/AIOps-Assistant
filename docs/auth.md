@@ -1,10 +1,15 @@
 # AIOps-Assistant 鉴权与密钥
 
-本文说明如何生成、配置、使用和轮换 AIOps-Assistant 的鉴权密钥。快速部署流程见 [guide.md](guide.md)；YAML 字段见 [configuration.md](configuration.md)。
+本文说明如何生成、配置、使用和轮换 AIOps-Assistant 的鉴权密钥。自动部署流程见 [deployment.md](deployment.md)；YAML 字段见 [configuration.md](configuration.md)。
 
 ## 一、先看结论
 
-最少需要配置：
+Compose 首次部署自动生成管理员和 Alertmanager 独立 Token，并启用普通接口鉴权。
+通过 `docker compose run --rm --no-deps init show-token` 查看管理员 Token；无需手动设置下面的身份变量。
+旧部署迁移保持原开关。Compose 的 YAML 位于 `.runtime/config/`，持久化凭据位于
+`.runtime/compose.env`；根 `.env` 中的 `OPS_*` 身份变量仅用于本地 Python。
+
+以下手动配置以本地 Python 模式为例，最少需要配置：
 
 ```env
 OPS_API_TOKENS={"k-admin-随机值":"admin","k-am-随机值":"alertmanager"}
@@ -35,12 +40,12 @@ auth:
 
 | 名称 | 用途 | 存放位置 | 谁需要 |
 |---|---|---|---|
-| `OPS_API_TOKENS` | API Key 到身份的映射 | `.env` | 人、脚本、Alertmanager |
-| `OPS_APPROVER_IDENTITIES` | 审批人身份列表 | `.env` | 服务端 |
-| `OPS_ADMIN_IDENTITIES` | 最高权限管理员身份列表 | `.env` | 服务端 |
-| `SSH_KEY_FILENAME` / `SSH_PASSWORD` | SSH 私钥路径或登录密码 | `.env` | 服务连接目标主机 |
-| `DEEPSEEK_API_KEY` | 模型调用 | `.env` | 服务端 |
-| `OPS_REDACTION_SECRETS` | 额外精确脱敏值的 JSON 数组 | `.env` | 服务端 |
+| `OPS_API_TOKENS` | API Key 到身份的映射 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 人、脚本、Alertmanager |
+| `OPS_APPROVER_IDENTITIES` | 审批人身份列表 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务端 |
+| `OPS_ADMIN_IDENTITIES` | 最高权限管理员身份列表 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务端 |
+| `SSH_KEY_FILENAME` / `SSH_PASSWORD` | SSH 私钥路径或登录密码 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务连接目标主机 |
+| `DEEPSEEK_API_KEY` | 模型调用 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务端 |
+| `OPS_REDACTION_SECRETS` | 额外精确脱敏值的 JSON 数组 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务端 |
 | Alertmanager 凭据文件 | webhook Bearer Token | 独立文件 | Alertmanager |
 
 只有 API Token 和 Alertmanager webhook Token 用于“谁在调用本服务”。其它密钥用于本服务连接外部系统。
@@ -270,7 +275,14 @@ receivers:
 
 ## 九、轮换和吊销
 
-推荐顺序：
+Compose 轮换时编辑 `.runtime/compose.env` 的持久化字段，保留现有引号格式；
+管理员 Token 更换后同时更新 `AIOPS_USER_TOKEN`，且它必须映射到管理员身份。
+然后执行 `docker compose up -d --force-recreate --wait --wait-timeout 180`，
+初始化会重新生成各服务凭据。仅 `restart` 不会更新派生文件；不要直接修改派生文件。
+Alertmanager 采用映射中第一个 `alertmanager` 身份的 Token；新增替代 Token 后需把它排在旧值前面，
+完成重建及推送验证后再删除旧值。Grafana 已初始化的密码需要在 Grafana 中修改，修改初始化文件不会重置数据库密码。
+
+本地 Python 的推荐顺序：
 
 1. 新增一条密钥到 `OPS_API_TOKENS`。
 2. 重启服务。

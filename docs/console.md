@@ -7,6 +7,10 @@
 
 ## 进入与连接
 
+新 Compose 部署已自动启用鉴权，使用 `docker compose run --rm --no-deps init show-token`
+获取管理员 Token；旧部署保留原设置。配置保存写入 `.runtime/config/`，本地 Python 模式写入
+根 `config/`。启动、升级和凭据位置见 [deployment.md](deployment.md)。
+
 1. 启动 Assistant 后访问 `http://127.0.0.1:8000/console`（按实际绑定地址调整）。
 2. 页面外壳可匿名打开，但此时不包含主机、告警、会话、审批或配置数据。
 3. 点击“连接”并输入当前 API Token。控制台用 `Authorization: Bearer <Token>` 请求数据；

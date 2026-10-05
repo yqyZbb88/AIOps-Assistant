@@ -83,3 +83,16 @@ active operation，配置应用遇到进行中的写请求或未决审批返回 
 
 修改组件时同步核对对应接口、配置和测试。
 完整验证命令见 [贡献约定](../CONTRIBUTING.md)。
+
+## 部署初始化与持久化
+
+Compose 使用同一应用镜像运行一次性 `init` 和单 worker 的 Assistant。`init` 先生成或恢复
+持久化凭据，再补齐运行配置和服务专用凭据；Prometheus 健康后启动 Assistant，
+Assistant 就绪后启动 Alertmanager。启动命令通过 `--wait` 等待常驻服务健康。
+
+`deploy/config/` 仅作为新部署模板，`.runtime/config/` 为实际可写配置。旧部署首次迁移
+从根 `config/` 复制，后续不会覆盖管理员变更。`compose.env` 是凭据来源，
+`deployment.json` 记录初始化来源与完成状态；丢失已初始化的源凭据会拒绝生成新密钥。
+Linux 初始化使用文件锁和原子替换；不同实例必须使用不同运行目录、项目名和端口。
+服务只挂载各自需要的凭据目录，SQLite 与监控数据卷独立于容器生命周期。
+详见 [部署与升级](deployment.md)。

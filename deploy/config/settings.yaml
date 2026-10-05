@@ -1,0 +1,55 @@
+# Compose 首次初始化模板；生效副本位于 .runtime/config/。
+app:
+  name: AIOps-Assistant
+server:
+  host: 127.0.0.1
+  port: 8000
+prometheus:
+  base_url: ${PROMETHEUS_URL:-http://prometheus:9090}
+  timeout: 5
+  target_mode: managed
+  file_sd_path: /app/prometheus-targets/assistant.yml
+monitor:
+  provider: prometheus
+llm:
+  provider: deepseek
+  enabled: ${OPS_LLM_ENABLED:-false}
+agent:
+  enabled: ${OPS_AGENT_ENABLED:-false}
+  name: ops_assistant
+  debug: false
+  recursion_limit: 25
+chat:
+  max_message_chars: 8000
+metrics:
+  file: config/metrics.yaml
+hosts:
+  file: config/hosts.yaml
+alert:
+  recent_limit: 100
+  trend_minutes: 60
+  trend_step: 5m
+inspection:
+  enabled: true
+  interval_seconds: 300
+  run_on_start: true
+  ttl_hours: 168
+  max_rows: 2500
+  max_hosts_per_run: 50
+  max_queries_per_run: 500
+  round_timeout_seconds: 120
+storage:
+  enabled: true
+  db_path: data/aiops_assistant.db
+logging:
+  level: INFO
+  audit: true
+  audit_file: logs/audit.log
+  inspection_file: logs/inspection.log
+auth:
+  enabled: true
+  tokens: '${OPS_API_TOKENS}'
+  approval_mode: approvers_only
+  approver_identities: '${OPS_APPROVER_IDENTITIES}'
+  admin_identities: '${OPS_ADMIN_IDENTITIES}'
+  alert_identity: alertmanager

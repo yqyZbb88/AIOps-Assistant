@@ -634,6 +634,10 @@ class AdminConfigManager:
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
+            # 保留现有 YAML 的权限；Prometheus 以非 root 用户读取 file_sd 文件。
+            # mkstemp 默认 0600，直接替换会使原本可读的目标文件在热更新后不可读。
+            mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+            os.chmod(temp_name, mode)
             os.replace(temp_name, path)
         finally:
             try:

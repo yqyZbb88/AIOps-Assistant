@@ -7,34 +7,26 @@
 
 ## 快速开始
 
-### 一分钟 Compose 启动
+### Docker Compose 启动（推荐）
 
-前提是已安装 Docker Desktop（Windows）或 Docker Engine + Compose（Linux）：
-
-```bash
-python scripts/dev_stack.py up
-```
-
-脚本首次运行会创建 `.runtime/`、生成用户 Token、Alertmanager 专用 Token 和 Grafana
-管理员密码，然后构建并启动全部五个服务。打开 `http://127.0.0.1:8000/console`，把终端显示的
-用户 Token 填入连接窗口即可。Token 只进入浏览器 `sessionStorage`，关闭该标签页会话后清除。
-旧 `/status` 页面已移除，状态、记录和管理操作统一从 `/console` 进入。
-
-Grafana 默认地址是 `http://127.0.0.1:3000`。若宿主机端口已被占用，先设置
-`GRAFANA_HOST_PORT`（例如 `3001`）再执行 `up`；这不会改变容器内端口。
+只需 Docker Desktop（Linux 容器）或 Docker Engine + Compose 2.24+，无需宿主机 Python：
 
 ```bash
-python scripts/dev_stack.py status
-python scripts/dev_stack.py show-token
-python scripts/dev_stack.py logs
-python scripts/dev_stack.py down
+docker compose up -d --build --wait --wait-timeout 180
+docker compose run --rm --no-deps init show-token
 ```
 
-`down` 默认保留 Prometheus、Alertmanager 和 Grafana 命名卷。
-这里的 `show-token` 只显示 `.runtime/compose.env` 中的 Compose Token。
-如果使用下面的本地 Python 启动方式，请改用
-`python scripts/dev_stack.py show-token --source local`；它读取根目录 `.env`
-和当前环境变量中的管理员身份映射。两种启动方式的 Token 不会自动互认。
+第一条命令自动初始化配置和凭据，等待五个服务健康后返回；`init` 显示 `Exited (0)` 正常。
+第二条显式显示管理员 Token，填入 `http://127.0.0.1:8000/console` 即可。
+新部署默认开启鉴权；不填模型密钥也能使用监控与关键词问答。
+
+实际配置位于 `.runtime/config/`，首次从 `deploy/config/` 复制；重复启动保留配置、密钥和数据。
+Grafana 默认位于 `http://127.0.0.1:3000`，初始密码通过
+`docker compose run --rm --no-deps init show-grafana-password` 查看。
+`docker compose down` 停止服务并保留数据；五个发布端口均绑定本机回环地址。
+
+模型密钥、端口调整、SSH、旧版本迁移和备份见 [部署与升级](deployment.md)。
+旧部署保留原鉴权与功能开关；Windows/macOS 上 Node Exporter 观察 Docker Linux 环境。
 
 ### 本地 Python 启动
 
@@ -122,14 +114,15 @@ curl -X POST http://127.0.0.1:8000/chat \
 Compose 启动后，用 textfile 指标模拟高 CPU，不会制造真实负载：
 
 ```bash
-python scripts/demo_fault.py cpu on
+docker compose run --rm --no-deps --entrypoint python init scripts/demo_fault.py cpu on --runtime /runtime
 ```
 
 规则包含 `for: 30s`，等待 Prometheus 评估和 Alertmanager 推送后，在控制台查看活动告警、
-告警归档和处置记录。`HighCPUUsage` 命中项目规则，但默认只生成“不自动执行”的记录。
+告警归档。新部署的处置规则为空、写命令关闭；配置模型密钥后可生成 AI 建议，
+不配置时仍接收和归档告警。已有部署按其实际规则处理。重复启动不会重置演示指标。
 
 ```bash
-python scripts/demo_fault.py reset
+docker compose run --rm --no-deps --entrypoint python init scripts/demo_fault.py reset --runtime /runtime
 docker compose stop node-exporter
 docker compose start node-exporter
 ```
@@ -455,7 +448,8 @@ Compose 的挂载和网络：
 |---|---|
 | Assistant SQLite | `.runtime/assistant-data/` |
 | Assistant 日志 | `.runtime/assistant-logs/` |
-| 本地凭据 | `.runtime/compose.env`、`.runtime/secrets/` |
+| 生效配置 | `.runtime/config/`（本地 Python 使用根 `config/`） |
+| 部署凭据及元数据 | `.runtime/compose.env`、`.runtime/deployment.json`、各服务专用凭据目录 |
 | 演示 textfile 指标 | `.runtime/textfile/` |
 | Prometheus/Alertmanager/Grafana 数据 | Docker 命名卷 |
 
@@ -467,7 +461,7 @@ Linux 默认栈采集容器环境；宿主机指标取决于所部署的 Exporte
 
 数据库结构和维护细节见 [database.md](database.md)。
 
-需要备份：
+本地 Python 模式需要备份：
 
 ```text
 data/aiops_assistant.db
@@ -483,7 +477,8 @@ logs/
 - 或使用 SQLite `.backup`
 - 停机文件级复制时保持主 `.db` 与存在的 `-wal` 来自同一时刻；`-shm` 可重建，
   但最省心的是复制整个数据目录。运行中请用 SQLite `.backup`，不要只复制 `.db`
-- Compose 下同时备份 `.runtime/assistant-data`、`.runtime/assistant-logs` 和需要保留的命名卷
+- Compose 下停止服务后备份整个 `.runtime/`（含配置、初始化标记、凭据与数据库）及需要保留的命名卷；
+  根 `.env` 如有自定义端口、模型或 SSH 环境值也需保留，详见 [部署与升级](deployment.md)
 - `.runtime/compose.env` 与 secrets 必须按密钥材料单独加密保管，不要提交版本库
 
 示例：

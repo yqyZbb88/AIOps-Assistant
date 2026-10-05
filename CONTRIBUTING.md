@@ -31,6 +31,7 @@
 | 值班诊断、故障状态或恢复步骤 | `docs/troubleshooting.md`、`docs/guide.md`、相关测试 |
 | 组件装配、插件或降级路径 | README 架构、模块 docstring、Container 测试 |
 | 运行快照、配置事务或主机登记 | `docs/architecture.md`、`docs/console.md`、并发/回滚/跨主机测试 |
+| 镜像、Compose、部署脚本或模板 | `docs/deployment.md`、README、使用/鉴权/配置指南、部署测试与 CI |
 | 版本号或发布说明 | 更新程序版本、README 和对应测试 |
 
 测试数量会变化，交付信息以实际 `pytest` 输出为准。
@@ -74,7 +75,9 @@ api → core → interfaces
 
 ## 6. 配置约定
 
-- 密钥只来自 `.env` 或运行环境；YAML 只保留占位符。
+- 密钥来自 `.env`、部署专用凭据文件或运行环境；YAML 只保留占位符。
+- `deploy/config/` 是新 Compose 部署的独立安全模板，不能从开发机运行配置直接打包。
+- 初始化必须幂等，保留既有配置、Token 和数据；升级兼容性需有回归测试。
 - 新增字段必须有类型、默认值、范围、失败语义和生效时机。
 - `settings.yaml` 和 `metrics.yaml` 的错误属于启动配置错误，应拒绝不确定启动。
 - 可选命令目录错误可以关闭对应能力，但必须记录明确日志，不能静默放宽。
@@ -92,6 +95,8 @@ api → core → interfaces
 - 时间戳统一使用 `src/utils/time.py` 的 UTC 秒级格式。
 
 ## 8. 测试与提交前检查
+
+完整命令与人工验收步骤见 [本机测试与验收](docs/testing.md)。
 
 测试不得访问真实 DeepSeek、Prometheus、SSH 或公共网络，也不得写入真实数据库和日志。
 运行离线测试前，应在测试进程环境中设置 `LANGSMITH_TRACING=false`、
@@ -122,3 +127,14 @@ rg -n "src\.agent" src/core
 - 新增配置已有安全默认值和文档。
 - 新增接口默认受鉴权保护，豁免必须显式说明。
 - 文档示例能对应当前请求/响应结构。
+
+## 部署验证与依赖
+
+`requirements-runtime.txt` 声明运行依赖，`requirements.txt` 加入测试依赖；
+`requirements-lock.txt` 固定已验证的直接与传递依赖版本，是约束快照，不是带哈希的安装锁。
+CI 与 Docker 构建均使用 `-c requirements-lock.txt`。更新时在 Python 3.13 的干净环境
+重新解析依赖、检查 `pip check`，同步快照并运行离线测试和 Compose 冒烟测试。
+
+离线测试不连接真实 SSH 或模型；独立 CI 部署任务只测试临时 Docker 服务，
+验证健康状态、鉴权、告警链路及重建后的会话与配置持久化。该任务需要网络下载镜像，
+本地验证必须使用独立项目名、部署目录和端口，不能复用真实部署数据。
