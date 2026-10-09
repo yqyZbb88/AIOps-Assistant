@@ -176,7 +176,7 @@ class SessionInfo:
 def is_owner(info: SessionInfo, identity: str | None) -> bool:
     """调用者是否有权访问这个会话。
 
-    - `identity is None` → **鉴权未启用**：没有身份可比，一律放行（行为与改造前一致）；
+    - `identity is None` 仅供可信内部旧入口；HTTP 始终传入已验证身份，不使用此兼容分支；
     - 否则要求 `info.user` **精确匹配**，取「一律拒绝」——`user` 为空的存量行
       **任何身份都不匹配**（空串不等于任何非空身份）。
 
@@ -265,7 +265,7 @@ class SessionStore(ABC):
 
         **session_id 永远由存储层生成**——它是选中会话的**唯一**方式。
 
-        `user` 是**会话的归属身份**（鉴权关闭时传 `None`/空）。实现必须把 `None`
+        `user` 是**会话的归属身份**（仅可信内部旧入口可传 `None`/空）。实现必须把 `None`
         归一成 `""` 再落库，否则会 `INSERT ... user=NULL` 并构造出 `SessionInfo(user=None)`——
         同一字段在读路径上却是 `str`（`_row_to_session` 有 `or ""` 兜底），类型漂移。
 
@@ -280,11 +280,11 @@ class SessionStore(ABC):
         """取会话元信息；不存在返回 None。"""
 
     @abstractmethod
-    def list(self, *, user: str | None = None, limit: int = 50) -> list[SessionInfo]:
+    def list(self, *, user: str | None = None, limit: int = 50, host_ids: set[str] | None = None) -> list[SessionInfo]:
         """列出会话，最近更新的在前。
 
-        `user` 给定时**只返回该身份的会话**（鉴权开启时的形态）；`None` = 不筛
-        （鉴权关闭，行为与改造前一致）。
+        `user` 给定时**只返回该身份的会话**；`None` = 不筛
+        （仅供可信内部维护；HTTP 始终传入身份和主机范围）。
 
         过滤必须下推到 **LIMIT 之前**（写进 SQL 的 WHERE）：先取 limit 条再过滤，
         会让结果少于 `limit`——调用方拿到的「最近 50 条」其实不是最近的 50 条。

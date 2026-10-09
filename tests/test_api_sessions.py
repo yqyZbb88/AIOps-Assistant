@@ -11,11 +11,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.main import create_app
-from src.utils.config_loader import HostsSettings, Settings, StorageSettings
+from src.utils.config_loader import AuthSettings, HostsSettings, Settings, StorageSettings
 
 
 def _settings(tmp_path, *, enabled: bool = True) -> Settings:
     return Settings(
+        auth=AuthSettings(tokens='{"test-ops":"ops"}', admin_identities='["ops"]'),
         storage=StorageSettings(enabled=enabled, db_path=str(tmp_path / "ops.db")),
     )
 
@@ -23,7 +24,7 @@ def _settings(tmp_path, *, enabled: bool = True) -> Settings:
 @pytest.fixture
 def client(tmp_path) -> TestClient:
     app = create_app(settings=_settings(tmp_path))
-    with TestClient(app) as c:
+    with TestClient(app, headers={"Authorization": "Bearer test-ops"}) as c:
         c.store = app.state.container.sessions()  # type: ignore[attr-defined]
     return c
 
@@ -32,13 +33,13 @@ def client(tmp_path) -> TestClient:
 def disabled_client(tmp_path) -> TestClient:
     """持久化未启用：模拟出厂默认 / 用户显式关闭。"""
     app = create_app(settings=_settings(tmp_path, enabled=False))
-    with TestClient(app) as c:
+    with TestClient(app, headers={"Authorization": "Bearer test-ops"}) as c:
         c.path = tmp_path / "ops.db"  # type: ignore[attr-defined]
     return c
 
 
 def _seed(store) -> str:
-    info = store.create(user="ops")
+    info = store.create(user="ops", host_id="legacy-default")
     store.append_turn(info.session_id, user_content="CPU 怎么样", assistant_content="45%")
     return info.session_id
 
@@ -84,7 +85,7 @@ def test_get_session_returns_metadata_and_messages(client):
 
 def test_get_session_shows_pending_messages(client):
     """展示口要看到 pending 行（与给模型看的窗口不同）。"""
-    info = client.store.create()
+    info = client.store.create(user="ops", host_id="legacy-default")
     client.store.append_turn(
         info.session_id, user_content="重启 nginx", assistant_content="⚠️ 待审批",
         status="pending_approval", approval_id="ap1",
@@ -189,11 +190,12 @@ hosts:
         encoding="utf-8",
     )
     settings = Settings(
+        auth=AuthSettings(tokens='{"test-ops":"ops"}', admin_identities='["ops"]'),
         storage=StorageSettings(enabled=True, db_path=str(tmp_path / "ops.db")),
         hosts=HostsSettings(file=str(hosts_file)),
     )
     app = create_app(settings=settings)
-    with TestClient(app) as multi:
+    with TestClient(app, headers={"Authorization": "Bearer test-ops"}) as multi:
         assert multi.post("/sessions", json={}).status_code == 422
         response = multi.post("/sessions", json={"host_id": "host-b"})
 
@@ -386,7 +388,7 @@ def chat_client(tmp_path):
     app = create_app(settings=_settings(tmp_path))
     agent = FakeHistoryAssistant()
     app.state.agent.chat_service._assistant = agent
-    with TestClient(app) as c:
+    with TestClient(app, headers={"Authorization": "Bearer test-ops"}) as c:
         c.agent = agent  # type: ignore[attr-defined]
         c.store = app.state.container.sessions()  # type: ignore[attr-defined]
     return c
@@ -476,16 +478,10 @@ def test_chat_ignores_legacy_user_and_session_name_fields(chat_client):
     assert resp.status_code == 404, "走到了会话解析（而不是在校验阶段被旧字段拦下）"
 
 
-def test_chat_works_when_storage_disabled(disabled_client):
-    """持久化关掉时 /chat 照常回答，只是 session_id 为 null。"""
-    from tests.test_chat_history import FakeHistoryAssistant
+def test_chat_requires_storage_for_host_scope(disabled_client):
+    resp = disabled_client.post("/chat", json={"message": "hello", "session_id": "whatever"})
+    assert resp.status_code == 503
 
-    disabled_client.app.state.agent.chat_service._assistant = FakeHistoryAssistant()
-    resp = disabled_client.post("/chat", json={"message": "你好", "session_id": "whatever"})
-
-    assert resp.status_code == 200
-    assert resp.json()["reply"] == "[多轮]你好"
-    assert resp.json()["session_id"] is None
 
 
 # -- 归一化函数本身（直接单测，不绕 HTTP） ------------------------------------
@@ -535,11 +531,11 @@ def test_invisible_char_error_shows_codepoint():
 def test_data_survives_new_container(tmp_path):
     """换一个 app 实例仍能读到——这正是「持久化」与内存缓冲的区别。"""
     app1 = create_app(settings=_settings(tmp_path))
-    with TestClient(app1) as c1:
+    with TestClient(app1, headers={"Authorization": "Bearer test-ops"}) as c1:
         session_id = _seed(app1.state.container.sessions())
 
     app2 = create_app(settings=_settings(tmp_path))
-    with TestClient(app2) as c2:
+    with TestClient(app2, headers={"Authorization": "Bearer test-ops"}) as c2:
         resp = c2.get(f"/sessions/{session_id}")
 
     assert resp.status_code == 200

@@ -1,10 +1,5 @@
-"""聊天路由：`POST /chat`。
-
-请求只包含本轮 `message` 和必填 `session_id`；会话由 `POST /sessions` 创建。
-普通鉴权开启且存储可用时，服务端从 Bearer Token 推断身份、校验会话归属并加载历史。
-存储关闭或降级为无存储时仍可回答，但响应中的 `session_id` / `session_name`
-为 null，且不保留历史。
-"""
+"""聊天始终验证 Token、会话归属与固定主机访问权。
+会话存储不可用时返回 503，禁止回退到无主机范围的聊天。"""
 from __future__ import annotations
 
 import logging
@@ -13,6 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from src.api.deps import require_auth
+from src.api.sessions import _store, _owned_or_404
+from src.api.access import require_host
 from src.core.agent import OpsAgent
 from src.interfaces.session import SessionError, SessionNotFoundError
 
@@ -27,10 +24,10 @@ class ChatRequest(BaseModel):
     **两段式：先 `POST /sessions` 建会话拿 id，之后每轮都带上它。**
 
     - `message`：本轮用户输入。
-    - `session_id`：**必填**。须已存在；开启鉴权时还须属于调用者。未知或无权访问一律 404
+    - `session_id`：**必填**。须已存在且属于调用者。未知或无权访问一律 404
       （两者同形，不泄露「这个 id 存在，只是不是你的」）。
 
-    **调用者身份不在请求体中**。普通鉴权开启时，服务端从 Bearer Token
+    **调用者身份不在请求体中**。服务端始终从 Bearer Token
     推断身份；关闭时身份为 `None`，不按身份隔离。额外的 `user` 或
     `session_name` 字段会被忽略，不作为可信输入。
     """
@@ -76,12 +73,7 @@ def chat(
     request: Request,
     user: str | None = Depends(require_auth),
 ) -> ChatResponse:
-    """接收用户消息，经 OpsAgent 返回回复（Agent-first + 关键词兜底）。
-
-    `user` 由 `require_auth` 从密钥推出；鉴权关闭时为 `None`（此时不校验会话归属，
-    行为与改造前一致）。持久化启用时，同一 `session_id` 的多轮会带上历史；
-    未知 / 不属于调用者的 `session_id` → 404。
-    """
+    """验证 Token、会话所有者及固定主机范围后调用 Agent；存储不可用返回 503。"""
     agent: OpsAgent = request.app.state.agent
     max_chars = int(request.app.state.settings.chat.max_message_chars)
     if len(req.message) > max_chars:
@@ -93,6 +85,8 @@ def chat(
         "收到消息 from=%s session_id=%s: %s", user, req.session_id, req.message
     )
     try:
+        info = _owned_or_404(request, _store(request), req.session_id, user)
+        require_host(request, info.host_id)
         turn = agent.chat_turn(req.message, session_id=req.session_id, user=user)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

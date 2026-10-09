@@ -62,7 +62,7 @@ class ApprovalDecisionContextCapable(Protocol):
         reason: str = "",
         decided_by: str | None = None,
     ) -> ApprovalOutcome:
-        """以 decided_by 身份提交决策；None 表示鉴权关闭或旧调用方。"""
+        """以 decided_by 身份提交决策；None 仅供可信内部旧调用方。"""
         ...
 
 

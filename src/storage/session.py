@@ -183,7 +183,7 @@ class SqliteSessionStore(SessionStore):
         self, *, user: str | None = "", title: str = "", name: str = "",
         host_id: str = ""
     ) -> SessionInfo:
-        # 归一 None → ""：鉴权关闭时调用方给的就是 None。不归一的话会 INSERT 成 NULL，
+        # 归一 None → ""：可信内部旧入口可传 None。不归一的话会 INSERT 成 NULL，
         # 并构造出 SessionInfo(user=None)，而读路径 _row_to_session 有 `or ""` 兜底——
         # 同一个字段两条路径两种类型。
         user = user or ""
@@ -209,7 +209,7 @@ class SqliteSessionStore(SessionStore):
         return _row_to_session(rows[0]) if rows else None
 
 
-    def list(self, *, user: str | None = None, limit: int = 50) -> list[SessionInfo]:
+    def list(self, *, user: str | None = None, limit: int = 50, host_ids: set[str] | None = None) -> list[SessionInfo]:
         # 次键 rowid 不可省：时间戳是秒级精度，同一秒内建的两个会话 updated_at 完全相同，
         # 只按 updated_at 排序时顺序不确定（测试会随机翻车）。
         #
@@ -218,6 +218,11 @@ class SqliteSessionStore(SessionStore):
         where, params = "", []
         if user is not None:
             where, params = "WHERE s.user = ? ", [user]
+        if host_ids is not None:
+            if not host_ids:
+                return []
+            where += ("AND " if where else "WHERE ") + "s.host_id IN (" + ",".join("?" for _ in host_ids) + ") "
+            params.extend(sorted(host_ids))
         rows = self._query(
             f"SELECT {_SESSION_COLUMNS} FROM sessions s "
             f"{where}"
@@ -546,13 +551,15 @@ class InMemorySessionStore(SessionStore):
     def get(self, session_id: str) -> SessionInfo | None:
         return self._info(session_id)
 
-    def list(self, *, user: str | None = None, limit: int = 50) -> list[SessionInfo]:
+    def list(self, *, user: str | None = None, limit: int = 50, host_ids: set[str] | None = None) -> list[SessionInfo]:
         # OrderedDict 尾部 = 最新，故 reversed 即「最近更新的在前」。
         # 过滤放在切片**之前**，与 SQLite 版把条件写进 WHERE（而非取回来再筛）同理：
         # 否则「最近 50 条」会少于 50 条。
         rows = list(reversed(self._sessions.items()))
         if user is not None:
             rows = [(sid, row) for sid, row in rows if row.get("user", "") == user]
+        if host_ids is not None:
+            rows = [(sid, row) for sid, row in rows if row.get("host_id", "") in host_ids]
         infos = [self._info(sid) for sid, _ in rows]
         return [i for i in infos if i is not None][: max(1, int(limit))]
 

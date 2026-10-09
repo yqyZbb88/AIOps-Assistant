@@ -196,7 +196,7 @@ def test_may_decide_requires_exact_match():
 
 
 def test_may_decide_rejects_unowned_for_any_identity():
-    """`user` 为空的记录（鉴权关闭时产生的）**任何身份都不匹配**。
+    """`user` 为空的记录（旧版匿名模式产生的）**任何身份都不匹配**。
 
     拒绝的后果是「批不了」而不是「有危险」——那条命令会挂到 TTL 淘汰，永不执行。
     """

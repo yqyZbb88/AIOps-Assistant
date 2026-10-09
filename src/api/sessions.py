@@ -1,18 +1,5 @@
-"""会话路由：POST /sessions 新建、GET /sessions 列表、GET/PATCH/DELETE /sessions/{id}。
-
-对话历史来自 `storage`（config/settings.yaml）控制的 SQLite；持久化未启用时
-列表返回空数组，创建、读取、改名和删除返回 503。
-
-鉴权（config/settings.yaml 的 auth 段）：
-启用后本组路由要求 `Authorization: Bearer <密钥>`，且**只能看到 / 改 / 删自己的会话**
-（身份由密钥推断，见 src/api/deps.py）。归属不匹配一律 404，与「未知 id」同形——
-不泄露「这个 id 存在，只是不属于你」。
-
-未启用时仍是**无鉴权**状态：`GET /sessions` 会把**全部**会话的 id 列出来，而
-`GET /sessions/{id}` 会把对话原文整段吐给任何能访问该端口的人——其中可能含主机名、
-报错原文、运维细节与写命令的参数。`server.host` 默认仅 127.0.0.1 是目前唯一的缓解。
-**绑到 0.0.0.0 之前请务必打开 auth。**
-"""
+"""会话接口始终要求有效 Token。会话归创建者所有，还须具有会话主机访问权；
+不存在、他人会话及已撤销主机权限统一返回 404。存储不可用时写入/读取返回 503。"""
 from __future__ import annotations
 
 import logging
@@ -31,7 +18,7 @@ from src.interfaces.session import (
     is_owner,
     normalize_session_name,
 )
-from src.interfaces.host import HostError
+from src.api.access import can_access, require_host, visible_host_ids
 
 logger = logging.getLogger("aiops_assistant.api.sessions")
 
@@ -109,13 +96,13 @@ def _store(request: Request) -> SessionStore:
     return store
 
 
-def _owned_or_404(store: SessionStore, session_id: str, user: str | None) -> SessionInfo:
+def _owned_or_404(request: Request, store: SessionStore, session_id: str, user: str | None) -> SessionInfo:
     """取会话并校验归属；**不存在与不属于调用者一律 404**（同形，不泄露 id 是否存在）。
 
     归属判定用 `interfaces.is_owner`——那是唯一的实现，`/chat` 走的是同一个。
     """
     info = store.get(session_id)
-    if info is None or not is_owner(info, user):
+    if info is None or not is_owner(info, user) or not can_access(request, info.host_id):
         raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
     return info
 
@@ -134,12 +121,9 @@ def create_session(
     store = _store(request)
     hosts = request.app.state.container.hosts()
     if body.host_id:
-        try:
-            host = hosts.require(body.host_id)
-        except HostError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        host = require_host(request, body.host_id)
     else:
-        enabled = hosts.enabled()
+        enabled = [h for h in hosts.enabled() if can_access(request, h.host_id)]
         if len(enabled) != 1:
             raise HTTPException(
                 status_code=422,
@@ -160,19 +144,13 @@ def list_sessions(
     limit: int = Query(50, ge=1, le=500, description="最多返回条数"),
     user: str | None = Depends(require_auth),
 ) -> list[dict[str, Any]]:
-    """列出会话，最近更新的在前。
-
-    鉴权开启时**只列调用者自己的**；鉴权关闭时列全部（`user=None` → 不筛），
-    后者是改造前的行为，也是上面那段安全提示所说的残余风险。
-
-    持久化未启用时返回**空列表**（沿用 GET /approvals 的约定：能力缺失 = 空而非报错）；
-    存储故障则返回 503——那是故障，不该伪装成「没有会话」。
-    """
+    """仅列当前 Token 身份仍可访问的主机会话，过滤在 LIMIT 之前。
+    存储关闭返回空列表，存储故障返回 503。"""
     store = request.app.state.container.sessions()
     if store is None:
         return []
     try:
-        return [s.to_dict() for s in store.list(user=user, limit=limit)]
+        return [s.to_dict() for s in store.list(user=user, limit=limit, host_ids=visible_host_ids(request))]
     except SessionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -188,7 +166,7 @@ def get_session(
     """
     store = _store(request)
     try:
-        info = _owned_or_404(store, session_id, user)
+        info = _owned_or_404(request, store, session_id, user)
         payload = info.to_dict()
         payload["messages"] = [m.to_dict() for m in store.messages(session_id)]
         return payload
@@ -211,11 +189,11 @@ def rename_session(
     """
     store = _store(request)
     try:
-        _owned_or_404(store, session_id, user)
+        _owned_or_404(request, store, session_id, user)
         if not store.rename(session_id, name=body.name, user=user):
             raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
         # 更新和读取不在同一事务；并发删除或 TTL 清理仍可能移除会话。
-        info = _owned_or_404(store, session_id, user)
+        info = _owned_or_404(request, store, session_id, user)
     except SessionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("会话已改名 id=%s name=%r", session_id, body.name)
@@ -241,7 +219,7 @@ def delete_session(
     store = _store(request)
     agent = request.app.state.agent
     try:
-        _owned_or_404(store, session_id, user)
+        _owned_or_404(request, store, session_id, user)
         pending_ids = [
             p.approval_id for p in agent.pending_approvals(strict=True)
             if p.session_id == session_id

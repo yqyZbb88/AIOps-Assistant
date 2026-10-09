@@ -16,7 +16,7 @@ _TOKENS = '{"k-alice": "alice", "k-bob": "bob"}'
 
 # -- 配置解析 ---------------------------------------------------------------
 def test_unset_config_yields_no_tokens():
-    """空串 / 纯空白 / None 一律当「没配」——鉴权是否生效另由 enabled 决定。"""
+    """空串 / 纯空白 / None 一律解析为空映射；启动校验负责拒绝缺失凭据。"""
     assert parse_tokens("") == ()
     assert parse_tokens("   ") == ()
     # None 是 yaml 写 `tokens:` 不带值时的产物（_as_scalar 只处理「键缺失」的默认值）
@@ -63,15 +63,11 @@ def test_parse_approvers_is_strict_and_deduplicates():
 
 def test_approvers_only_requires_approvers():
     with pytest.raises(AuthConfigError, match="必须至少配置一个审批人"):
-        ensure_usable(
-            True,
-            _TOKENS,
+        ensure_usable(_TOKENS,
             approval_mode="approvers_only",
             approvers_raw="[]",
         )
-    ensure_usable(
-        True,
-        _TOKENS,
+    ensure_usable(_TOKENS,
         approval_mode="approvers_only",
         approvers_raw='["bob"]',
     )
@@ -129,21 +125,24 @@ def test_resolve_identity_scans_every_token(monkeypatch):
 
 
 # -- 启动期校验 -------------------------------------------------------------
-def test_ensure_usable_is_noop_when_disabled():
-    ensure_usable(False, "")
-    ensure_usable(False, "{连 JSON 都不是")  # 关闭时连解析都不做
+def test_ensure_usable_always_validates_tokens():
+    with pytest.raises(AuthConfigError):
+        ensure_usable("")
+    with pytest.raises(AuthConfigError):
+        ensure_usable("{not json")
+
 
 
 def test_ensure_usable_accepts_valid_config():
-    ensure_usable(True, _TOKENS)
+    ensure_usable(_TOKENS)
 
 
-def test_ensure_usable_rejects_enabled_without_tokens():
+def test_ensure_usable_rejects_missing_tokens():
     """绝不接受「空密钥 = 放行」——一次配置漏填就会让服务全开。"""
     with pytest.raises(AuthConfigError, match="解析不出任何密钥"):
-        ensure_usable(True, "")
+        ensure_usable("")
 
 
 def test_ensure_usable_rejects_invalid_config():
     with pytest.raises(AuthConfigError):
-        ensure_usable(True, "{not json")
+        ensure_usable("{not json")

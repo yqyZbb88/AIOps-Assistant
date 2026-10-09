@@ -40,7 +40,7 @@
 对外专题统一在 `docs/`，主题完整说明按 [文档职责](docs/README.md#文档职责) 指定位置维护，
 其它页面链接引用，避免复制字段表、接口表和备份/排障步骤。
 通用技术交接在 [项目整体交接](docs/handover.md) 维护，只提供当前行为摘要与专题入口。
-本地审查、涉及环境或人员的私有交接和规划材料放入被忽略的 `docs/_local/`，
+本地审查、涉及环境或人员的私有交接和规划材料放入被忽略的 `.runtime/`，
 不得混入公开使用说明或镜像。
 
 ## 3. 注释原则
@@ -104,11 +104,11 @@ api → core → interfaces
 
 ## 8. 测试与提交前检查
 
-完整命令与人工验收步骤见 [本机测试与验收](docs/testing.md)。
+完整命令与人工验收步骤见 [容器测试与验收](docs/testing.md)。
 
 测试不得访问真实 DeepSeek、Prometheus、SSH 或公共网络，也不得写入真实数据库和日志。
-执行 [离线自动化测试](docs/testing.md#2-离线自动化测试) 中与你的 shell 对应的完整命令，
-包括合成测试身份、关闭追踪、pytest、Node、编译、依赖与差异门禁。
+执行 [离线自动化测试](docs/testing.md#2-离线自动化测试) 中的容器命令；test 目标自带合成身份、关闭追踪与 Node 运行时。
+同时核对编译、依赖与差异门禁。
 需要定向检查时使用该页提供的组合，不在此维护另一份可能漏项的命令清单。
 
 提交前还要确认：
@@ -122,7 +122,7 @@ api → core → interfaces
 
 `requirements-runtime.txt` 声明运行依赖，`requirements.txt` 加入测试依赖；
 `requirements-lock.txt` 固定已验证的直接与传递依赖版本，是约束快照，不是带哈希的安装锁。
-CI 与 Docker 构建均使用 `-c requirements-lock.txt`。更新时在 Python 3.13 的干净环境
+CI 与 Docker 构建均使用 `-c requirements-lock.txt`。更新时在 Python 3.13 的干净容器环境
 重新解析依赖、检查 `pip check`，同步快照并运行离线测试和 Compose 冒烟测试。
 
 离线测试不连接真实 SSH 或模型；独立 CI 部署任务只测试临时 Docker 服务，

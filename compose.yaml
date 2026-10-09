@@ -33,7 +33,6 @@ services:
       SSH_KNOWN_HOSTS: ${SSH_KNOWN_HOSTS:-}
     volumes:
       - ${AIOPS_RUNTIME_DIR:-./.runtime}:/runtime
-      - ./config:/legacy-config:ro
     restart: "no"
     logging: *logging
 

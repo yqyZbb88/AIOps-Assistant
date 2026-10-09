@@ -6,7 +6,7 @@ from src.utils.config_loader import AuthSettings, Settings
 
 
 def test_status_routes_are_removed_without_redirect():
-    settings = Settings(auth=AuthSettings(enabled=True, tokens='{"secret-token":"admin"}'))
+    settings = Settings(auth=AuthSettings(tokens='{"secret-token":"admin"}'))
     with TestClient(create_app(settings=settings)) as client:
         page = client.get("/status")
         css = client.get("/status-assets/status.css")

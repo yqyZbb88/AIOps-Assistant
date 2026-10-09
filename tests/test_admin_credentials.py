@@ -216,9 +216,9 @@ def test_model_factory_cache_is_shared_per_configuration_and_retains_old_instanc
 
 
 def test_anonymous_credentials_remain_protected_when_business_auth_disabled(tmp_path):
-    _, settings, manager = _setup(tmp_path, auth_enabled=False)
+    _, settings, manager = _setup(tmp_path, )
     with TestClient(create_app(settings=settings, admin_config_manager=manager)) as client:
-        assert client.get("/hosts").status_code == 200
+        assert client.get("/hosts").status_code == 401
         assert client.get("/admin/credentials").status_code == 401
         assert client.get("/admin/credentials", headers=_auth("user-token")).status_code == 403
         snap = get(client).json()

@@ -109,8 +109,13 @@ def test_executors_empty_when_catalog_file_missing(monkeypatch, tmp_path):
     assert c.executors() == {}
 
 
-def test_executors_built_from_real_catalog():
-    """默认真实 config/actions.yaml → 构建出非空执行器表，键与目录 key 对应。"""
+def test_executors_built_from_enabled_catalog(tmp_path, monkeypatch):
+    """显式启用可信目录后构建非空执行器表；不依赖部署默认开关。"""
+    from pathlib import Path
+    source = Path(__file__).parents[1] / "deploy/config/actions.yaml"
+    path = tmp_path / "actions.yaml"
+    path.write_text(source.read_text(encoding="utf-8").replace("enabled: false", "enabled: true"), encoding="utf-8")
+    monkeypatch.setenv("OPS_ACTIONS_FILE", str(path))
     executors = Container(settings=Settings()).executors()
     assert executors, "config/actions.yaml 应当至少声明一条写命令"
     for key, ex in executors.items():
@@ -136,8 +141,13 @@ def test_diagnostics_none_when_paramiko_missing(monkeypatch):
     assert Container(settings=Settings()).diagnostics() is None
 
 
-def test_diagnostics_built_when_config_and_paramiko_present():
-    """paramiko 已装 + config/diagnostics.yaml 存在 → 构造诊断源（离线，不连接）。"""
+def test_diagnostics_built_when_config_and_paramiko_present(tmp_path, monkeypatch):
+    """显式启用诊断目录时构造诊断源，离线不连接 SSH。"""
+    from pathlib import Path
+    source = Path(__file__).parents[1] / "deploy/config/diagnostics.yaml"
+    path = tmp_path / "diagnostics.yaml"
+    path.write_text(source.read_text(encoding="utf-8").replace("enabled: false", "enabled: true"), encoding="utf-8")
+    monkeypatch.setenv("OPS_DIAGNOSTICS_FILE", str(path))
     diag = Container(settings=Settings()).diagnostics()
     assert diag is not None and diag.name == "ssh"
     assert diag.commands(), "diagnostics.yaml 应当至少声明一条只读命令"
@@ -313,7 +323,7 @@ def test_create_app_health_endpoint_responds():
     body = resp.json()
     assert body["status"] == "ok"
     assert body["storage"] == "ok"
-    assert body["version"] == "0.6.1"
+    assert body["version"] == "0.6.2"
     assert body["components"]["prometheus"]["status"] == "unknown"
     assert body["components"]["storage"]["status"] == "disabled"
 
@@ -445,7 +455,7 @@ def test_agent_actions_none_when_paramiko_missing(monkeypatch, tmp_path):
 
 
 def test_agent_actions_collision_with_monitor_tool_disables_family(
-    monkeypatch, tmp_path, caplog
+    monkeypatch, tmp_path, caplog, enabled_catalogs
 ):
     """与监控工具名冲突 → 本能力关闭（重名工具会被静默遮蔽），但不影响其它能力。"""
     monkeypatch.setenv(
@@ -461,7 +471,7 @@ def test_agent_actions_collision_with_monitor_tool_disables_family(
 
 
 def test_agent_actions_collision_with_diagnostics_key_disables_family(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, enabled_catalogs
 ):
     """与只读诊断命令名冲突同样关闭本族（诊断能力本身不受损）。"""
     monkeypatch.setenv(

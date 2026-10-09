@@ -51,7 +51,8 @@ def main():
     request("/ready")
     request("/hosts", expected=401)
     assert any(h["host_id"] == "local-node" for h in request("/hosts", token=admin))
-    request("/admin/config", token=admin)
+    snapshot = request("/admin/config", token=admin)
+    assert "auth_enabled" not in snapshot["config"]["settings"]
     request("/admin/config", token=webhook, expected=403)
     request("/alert", token=admin, data={"alerts": []}, expected=403)
     assert request("/alert", token=webhook, data={"alerts": []})["received"] == 0
@@ -111,6 +112,10 @@ def main():
         "username": "smoke", "method": "private_key", "private_key": private.getvalue(), "known_hosts": "fixture ssh-rsa " + key.get_base64()}})
     request("/admin/credentials/model", token=admin, method="PUT", data={"revision": ssh_saved["revision"], "data": {
         "key_action": "clear", "model": "deepseek-chat", "base_url": "https://example.invalid", "timeout": 10, "max_retries": 0, "max_tokens": 32}})
+    snapshot = request("/admin/config", token=admin)
+    snapshot["config"]["settings"]["host_access"]["smoke-user"] = ["local-node"]
+    request("/admin/config", token=admin, method="PUT", data={
+        "revision": snapshot["revision"], "config": snapshot["config"]})
     with config_file.open("a", encoding="utf-8") as handle:
         handle.write("\n# Isolated deployment smoke: preserve this edit across recreation.\n")
     state_file.write_text(json.dumps({

@@ -3,7 +3,7 @@
 动作不再是「一个动作一个 Python 类」，而是目录（actions.yaml）里声明的命令 +
 本通用执行器绑定执行：
 - 命令模板/参数 schema 复用 src/plugins/common/cmddef（build_command 逐参校验 + shlex 转义）；
-- 连接（endpoint）来自规则 params 的连接字段，经 common/endpoint 规约，凭据只在 .env 占位；
+- 连接（endpoint）来自规则 params 的连接字段，经 common/endpoint 规约，凭据通过主机注册表或容器环境注入；
 - sudo 只按目录项声明（管理员可信配置）；规则不能越权把非 sudo 项提权；
 - 失败语义（写动作）：远端非零退出码 = 失败 → 抛 ActionError（与只读诊断相反）；
 - 每次真实 SSH 尝试写审计（common/audit），成功记轻量 result（不含整段输出）。

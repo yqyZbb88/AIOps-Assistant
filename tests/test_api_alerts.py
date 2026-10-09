@@ -8,11 +8,12 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from src.utils.config_loader import LLMSettings, Settings, StorageSettings
+from src.utils.config_loader import AuthSettings, LLMSettings, Settings, StorageSettings
 
 
 def _settings(tmp_path, *, enabled: bool = True) -> Settings:
     return Settings(
+        auth=AuthSettings(tokens='{"test-ops":"ops"}', admin_identities='["ops"]'),
         llm=LLMSettings(enabled=False),
         storage=StorageSettings(enabled=enabled, db_path=str(tmp_path / "ops.db")),
     )
@@ -33,10 +34,13 @@ def _alert(alertname: str = "HighCPUUsage", instance: str = "h1:9100", **kw) -> 
 
 
 @pytest.fixture
-def client(tmp_path) -> TestClient:
+def client(tmp_path, monkeypatch, enabled_catalogs) -> TestClient:
+    rules = tmp_path / "rules.yaml"
+    rules.write_text("auto_execute_enabled: false\nrules:\n  - alertname: HighCPUUsage\n    action: restart_service\n    params: {service: nginx}\n    auto_execute: false\n", encoding="utf-8")
+    monkeypatch.setenv("OPS_RULES_FILE", str(rules))
     from src.main import create_app
 
-    with TestClient(create_app(settings=_settings(tmp_path))) as c:
+    with TestClient(create_app(settings=_settings(tmp_path)), headers={"Authorization": "Bearer test-ops"}) as c:
         c.store = c.app.state.container.history()  # type: ignore[attr-defined]
     return c
 
@@ -45,7 +49,7 @@ def client(tmp_path) -> TestClient:
 def disabled_client(tmp_path) -> TestClient:
     from src.main import create_app
 
-    with TestClient(create_app(settings=_settings(tmp_path, enabled=False))) as c:
+    with TestClient(create_app(settings=_settings(tmp_path, enabled=False)), headers={"Authorization": "Bearer test-ops"}) as c:
         c.path = tmp_path / "ops.db"  # type: ignore[attr-defined]
     return c
 
@@ -63,7 +67,7 @@ def test_alert_is_archived(client):
 
 
 def test_remediation_is_archived(client):
-    """HighCPUUsage 在推荐 rules.yaml 中命中 restart_service，但默认不自动执行。"""
+    """HighCPUUsage 在显式测试规则中命中 restart_service，但默认不自动执行。"""
     client.post("/alert", json=_payload(_alert("HighCPUUsage")))
 
     body = client.get("/alerts/history").json()
@@ -113,10 +117,10 @@ def test_history_survives_restart(tmp_path):
     """换一个 app 实例仍能查到——这才是「归档」与「内存缓冲」的区别。"""
     from src.main import create_app
 
-    with TestClient(create_app(settings=_settings(tmp_path))) as c1:
+    with TestClient(create_app(settings=_settings(tmp_path)), headers={"Authorization": "Bearer test-ops"}) as c1:
         c1.post("/alert", json=_payload(_alert()))
 
-    with TestClient(create_app(settings=_settings(tmp_path))) as c2:
+    with TestClient(create_app(settings=_settings(tmp_path)), headers={"Authorization": "Bearer test-ops"}) as c2:
         body = c2.get("/alerts/history").json()
 
     assert [a["alertname"] for a in body["alerts"]] == ["HighCPUUsage"]

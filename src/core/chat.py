@@ -62,7 +62,7 @@ HELP_TEXT = (
     "\n用法（两段式：先建会话拿到 id，之后每轮都带上它）：\n"
     '  1) POST /sessions  {"name": "生产排查"}          →  {"session_id": "..."}\n'
     '  2) POST /chat      {"message": "...", "session_id": "<上一步的 id>"}\n'
-    "\n开启鉴权后，服务端根据 Authorization 头中的密钥识别身份；"
+    "\n服务端根据 Authorization 头中的密钥识别身份；"
     "请求体不能指定身份。"
 )
 
@@ -178,7 +178,7 @@ class ChatService:
     ) -> ChatReply:
         """带会话的一轮：Agent-first → 关键词兜底，并把这一轮写进会话表。
 
-        `user` 是**调用者的身份**，由上层从密钥推出（鉴权关闭时为 `None`）——它只用于
+        `user` 是**调用者的身份**，由上层从有效密钥推出（None 仅供可信内部旧入口）——它只用于
         (a) 新建会话时记归属、(b) 校验 `session_id` 是不是自己的，**绝不参与选中会话**
         （选中只认 id；把身份当会话键会让同一个人开两个话题时互相污染）。
 
@@ -275,7 +275,7 @@ class ChatService:
         - **归属不匹配也一律 404**（不是 403）：与「未知 id」同形，不泄露
           「这个 id 存在，只是不属于你」。判定用 `interfaces.is_owner`——那是唯一的
           归属实现，api 层的 `/sessions/*` 用的是同一个。
-        - `user is None`（鉴权关闭）→ 不校验归属，行为与改造前一致。
+        - `user is None` 仅用于可信内部旧入口；HTTP 不能传入匿名身份。
 
         **没给 `session_id`：建一段新会话。** 这条路径**不是** `/chat` 走的——那边
         `session_id` 是必填字段、建会话只认 `POST /sessions`。它服务的是**旧的单轮入口**
@@ -303,6 +303,8 @@ class ChatService:
         except SessionNotFoundError:
             raise
         except SessionError as exc:
+            if session_id and user is not None:
+                raise
             logger.error("会话存储不可用，本轮不落库: %s", exc)
             return None, "", ""
 
@@ -577,7 +579,7 @@ class ChatService:
             try:
                 self._assistant = self._assistant_factory()
                 self._agent_broken = False
-            except Exception as exc:  # 未装 langchain / .env 缺 key / init 失败等
+            except Exception as exc:  # 未装 langchain / 模型凭据缺失 / init 失败等
                 self._agent_broken = True
                 self._agent_retry_at = time.monotonic() + _AGENT_RETRY_SECONDS
                 logger.warning("Agent 构建不可用，回落关键词引擎: %s", exc)

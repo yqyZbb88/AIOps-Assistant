@@ -7,7 +7,7 @@ import re
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from src.interfaces.host import HostError
+from src.api.access import can_access, require_host, recent_records
 from src.interfaces.monitor import MetricNotApplicable, MonitorError
 
 router = APIRouter()
@@ -21,7 +21,7 @@ def list_hosts(
     registry = request.app.state.container.hosts()
     return [
         host.to_public_dict()
-        for host in registry.all(include_disabled=include_disabled)
+        for host in registry.all(include_disabled=include_disabled) if can_access(request, host.host_id)
     ]
 
 
@@ -39,24 +39,19 @@ def list_executions(
     return {
         "storage": "ok",
         "executions": [
-            item.to_dict() for item in store.recent(limit=limit, host_id=host_id)
+            item.to_dict() for item in recent_records(request, store.recent, limit=limit, host_id=host_id, timestamp="created_at")
         ],
     }
 
 
 @router.get("/hosts/{host_id}", response_model=dict[str, Any])
 def get_host(host_id: str, request: Request) -> dict[str, Any]:
-    host = request.app.state.container.hosts().get(host_id)
-    if host is None:
-        raise HTTPException(status_code=404, detail=f"未知主机 ID: {host_id}")
+    host = require_host(request, host_id, enabled=False)
     return host.to_public_dict()
 
 
 def _enabled_host(request: Request, host_id: str):
-    try:
-        return request.app.state.container.hosts().require(host_id)
-    except HostError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return require_host(request, host_id)
 
 
 @router.get("/hosts/{host_id}/status", response_model=dict[str, Any])

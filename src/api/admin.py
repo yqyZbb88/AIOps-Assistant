@@ -1,7 +1,7 @@
 """最高权限管理员的结构化配置接口。
 
 本 router 不挂普通 `require_auth`：所有端点各自强制 `require_admin`，因此即使
-`auth.enabled=false` 也不会匿名开放。配置 GET 只返回可编辑脱敏草稿；
+所有业务 API 始终校验身份。配置 GET 只返回可编辑脱敏草稿；
 PUT 校验、备份、写回后切换运行快照；主机向导只接受已发现或自管目标。
 """
 from __future__ import annotations

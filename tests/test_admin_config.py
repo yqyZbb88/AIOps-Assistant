@@ -27,7 +27,6 @@ agent:
 inspection:
   enabled: false
 auth:
-  enabled: true
   tokens: '{"admin-token":"admin","user-token":"alice","alert-token":"alertmanager"}'
   approval_mode: approvers_only
   approver_identities: '["admin"]'
@@ -93,7 +92,7 @@ commands:
     return paths
 
 
-def _setup(tmp_path, *, auth_enabled=True, target_mode="external"):
+def _setup(tmp_path, *, target_mode="external"):
     paths = _files(tmp_path)
     target_file = tmp_path / "targets" / "assistant.yml"
     if target_mode == "managed":
@@ -103,7 +102,6 @@ def _setup(tmp_path, *, auth_enabled=True, target_mode="external"):
                 + target_file.as_posix() + "'\n"
             )
     auth = AuthSettings(
-        enabled=auth_enabled,
         tokens='{"admin-token":"admin","user-token":"alice","alert-token":"alertmanager"}',
         approval_mode="approvers_only",
         approver_identities='["admin"]',
@@ -344,18 +342,19 @@ def test_request_keeps_old_snapshot_while_new_requests_see_hot_config(tmp_path):
     with TestClient(app) as client:
         before = client.get("/admin/config", headers=_auth("admin-token")).json()
         draft = copy.deepcopy(before["config"])
-        draft["settings"]["auth_enabled"] = False
+        draft["settings"]["host_access"] = {"alice": ["node-a"]}
         token = app.state.runtime.bind_request()
         try:
-            assert app.state.settings.auth.enabled is True
-            response = client.put("/admin/config", headers=_auth("admin-token"),
-                                  json={"revision": before["revision"], "config": draft})
+            assert app.state.settings.auth.host_access == "{}"
+            response = client.put("/admin/config", headers=_auth("admin-token"), json={"revision": before["revision"], "config": draft})
             assert response.status_code == 200, response.text
-            assert app.state.settings.auth.enabled is True
+            assert app.state.settings.auth.host_access == "{}"
         finally:
             app.state.runtime.reset_request(token)
-        assert app.state.settings.auth.enabled is False
-        assert client.get("/hosts").status_code == 200
+        assert json.loads(app.state.settings.auth.host_access) == {"alice": ["node-a"]}
+        assert client.get("/hosts").status_code == 401
+        assert len(client.get("/hosts", headers=_auth("user-token")).json()) == 1
+
 
 
 def test_hot_update_keeps_one_inspection_thread(tmp_path):
@@ -377,7 +376,7 @@ def test_hot_update_keeps_one_inspection_thread(tmp_path):
 def test_metrics_file_changes_disk_revision_and_can_be_applied(tmp_path):
     paths, settings, _old_manager = _setup(tmp_path)
     metrics = tmp_path / "metrics.yaml"
-    metrics.write_bytes((Path(__file__).parents[1] / "config" / "metrics.yaml").read_bytes())
+    metrics.write_bytes((Path(__file__).parents[1] / "deploy" / "config" / "metrics.yaml").read_bytes())
     with paths["settings"].open("a", encoding="utf-8") as handle:
         handle.write("metrics:\n  file: '" + metrics.as_posix() + "'\n")
     settings = replace(settings, metrics=MetricsSettings(file=metrics.as_posix()))
@@ -423,7 +422,7 @@ def _auth(token):
 
 
 def test_admin_api_is_independent_from_regular_auth_switch(tmp_path):
-    _, settings, manager = _setup(tmp_path, auth_enabled=False)
+    _, settings, manager = _setup(tmp_path, )
     with TestClient(create_app(settings=settings, admin_config_manager=manager)) as client:
         assert client.get("/admin/config").status_code == 401
         assert client.get("/admin/config", headers=_auth("user-token")).status_code == 403
@@ -471,17 +470,19 @@ def test_admin_save_preserves_comments_backs_up_and_applies_immediately(tmp_path
     assert "super-secret" in paths["rules"].read_text(encoding="utf-8")
 
 
-def test_admin_save_switches_regular_auth_but_keeps_admin_gate(tmp_path):
+def test_admin_rejects_removed_auth_switch(tmp_path):
     _, settings, manager = _setup(tmp_path)
     with TestClient(create_app(settings=settings, admin_config_manager=manager)) as client:
         before = client.get("/admin/config", headers=_auth("admin-token")).json()
         draft = copy.deepcopy(before["config"])
+        assert "auth_enabled" not in draft["settings"]
         draft["settings"]["auth_enabled"] = False
-        saved = client.put("/admin/config", headers=_auth("admin-token"),
-                           json={"revision": before["revision"], "config": draft})
-        assert saved.status_code == 200, saved.text
-        assert client.get("/hosts").status_code == 200
+        saved = client.put("/admin/config", headers=_auth("admin-token"), json={"revision": before["revision"], "config": draft})
+        assert saved.status_code == 422
+        assert client.get("/hosts").status_code == 401
         assert client.get("/admin/config").status_code == 401
+        assert manager.revision() == before["revision"]
+
 
 
 def test_manual_disk_apply_uses_revision_and_rejects_restart_only_fields(tmp_path):
@@ -499,12 +500,12 @@ def test_manual_disk_apply_uses_revision_and_rejects_restart_only_fields(tmp_pat
                               json={"revision": disk["revision"]})
         assert applied.status_code == 200, applied.text
         assert applied.json()["restart_required"] is False
-        path.write_text(path.read_text(encoding="utf-8") + "server:\n  port: 8001\n", encoding="utf-8")
+        path.write_text(path.read_text(encoding="utf-8") + "storage:\n  db_path: data/other.db\n", encoding="utf-8")
         new_disk = client.get("/admin/config", headers=_auth("admin-token")).json()
         rejected = client.post("/admin/config/apply", headers=_auth("admin-token"),
                                json={"revision": new_disk["revision"]})
         assert rejected.status_code == 422
-        assert "server" in rejected.json()["detail"]
+        assert "storage.db_path" in rejected.json()["detail"]
         assert manager.runtime.current.revision == applied.json()["revision"]
 
 
@@ -632,3 +633,51 @@ def test_concurrent_first_onboarding_requests_share_ticket_store(tmp_path, monke
     left._verified["synthetic-ticket"] = ("test-revision", 0)
     assert _onboarding(request)._verified["synthetic-ticket"] == ("test-revision", 0)
     assert len(instances) == 1
+
+
+def test_stale_approver_case_does_not_block_host_access_or_grant_new_role(tmp_path):
+    import yaml
+    from src.utils.auth import parse_approvers
+    from tests.test_admin_credentials import update, get
+
+    paths, settings, manager = _setup(tmp_path)
+    document = yaml.safe_load(paths["settings"].read_text(encoding="utf-8"))
+    document["auth"]["tokens"] = json.dumps({"admin-token": "admin", "alert-token": "alertmanager"})
+    document["auth"]["approver_identities"] = '["admin", "alice"]'
+    paths["settings"].write_text(yaml.safe_dump(document), encoding="utf-8", newline="\n")
+    settings = replace(settings, auth=replace(settings.auth,
+        tokens=document["auth"]["tokens"], approver_identities=document["auth"]["approver_identities"]))
+    manager = AdminConfigManager(settings, settings_file=paths["settings"], hosts_file=paths["hosts"],
+        rules_file=paths["rules"], actions_file=paths["actions"],
+        agent_actions_file=paths["agent_actions"], diagnostics_file=paths["diagnostics"],
+        backup_root=tmp_path / "backups")
+    with TestClient(create_app(settings=settings, admin_config_manager=manager)) as client:
+        created = update(client, "tokens", get(client).json()["revision"], {"identity": "Alice"}, "POST")
+        assert created.status_code == 200
+        token = created.json()["token_once"]
+        snap = client.get("/admin/config", headers=_auth("admin-token")).json()
+        assert "Alice" in snap["available_identities"] and "alice" not in snap["available_identities"]
+        draft = copy.deepcopy(snap["config"])
+        draft["settings"]["host_access"] = {"Alice": ["node-a"]}
+        saved = client.put("/admin/config", headers=_auth("admin-token"),
+            json={"revision": snap["revision"], "config": draft})
+        assert saved.status_code == 200, saved.text
+        assert parse_approvers(manager.runtime.current.settings.auth.approver_identities) == ("admin", "alice")
+        assert [host["host_id"] for host in client.get("/hosts", headers=_auth(token)).json()] == ["node-a"]
+
+        snap = client.get("/admin/config", headers=_auth("admin-token")).json()
+        draft = copy.deepcopy(snap["config"])
+        draft["settings"]["approver_identities"] = ["admin", "ALICE"]
+        rejected = client.put("/admin/config", headers=_auth("admin-token"),
+            json={"revision": snap["revision"], "config": draft})
+        assert rejected.status_code == 422
+        assert "ALICE" in rejected.json()["detail"] and "Alice" in rejected.json()["detail"]
+        assert manager.revision() == snap["revision"]
+        assert parse_approvers(manager.runtime.current.settings.auth.approver_identities) == ("admin", "alice")
+
+        # Only an explicit administrator choice can replace alice with Alice.
+        draft["settings"]["approver_identities"] = ["admin", "Alice"]
+        saved = client.put("/admin/config", headers=_auth("admin-token"),
+            json={"revision": snap["revision"], "config": draft})
+        assert saved.status_code == 200
+        assert parse_approvers(manager.runtime.current.settings.auth.approver_identities) == ("admin", "Alice")

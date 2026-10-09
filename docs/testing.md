@@ -1,4 +1,4 @@
-# 0.6.1 本机测试与验收
+# 0.6.2 容器测试与验收
 
 本文用于在开发机或部署机上验证 AIOps-Assistant 的功能、异常处理和数据保留。
 每个场景给出操作与预期结果；测试报告按实际执行填写，不把部署成功等同于业务验收通过。
@@ -8,8 +8,8 @@
 
 | 范围 | 使用环境 | 验证内容 |
 |---|---|---|
-| 离线自动化 | Python 3.13、Node.js 22，安装开发依赖 | API、配置、SQLite、主机隔离、模拟 LLM/SSH、控制台逻辑 |
-| 本机 Compose | Docker 与 Compose 2.24+，使用独立测试栈 | 初始化、鉴权、监控、真实本地告警投递、重建保留数据 |
+| 离线自动化 | 独立 Docker test 镜像，内置 Python/Node | API、配置、SQLite、主机隔离、模拟 LLM/SSH、控制台逻辑 |
+| 隔离 Compose | Docker 与 Compose 2.24+，使用独立测试栈 | 初始化、鉴权、监控、真实本地告警投递、重建保留数据 |
 | 页面验收 | 浏览器访问测试栈 | 会话、主机、记录、配置热更新与失败提示 |
 | AI/SSH 闭环 | 模型密钥、独立 Linux 测试主机及 SSH 凭据 | AI 分析、只读诊断、人工审批和受控执行 |
 
@@ -23,69 +23,40 @@ Compose 首次构建与拉取镜像需要可用的仓库网络。仅运行 Compo
 
 ## 2. 离线自动化测试
 
-建议在独立 Python 环境中安装开发依赖：
+全部回归在独立 test 镜像内运行，包含 Python 3.13、Node 22 与测试依赖；
+生产镜像不包含 pytest 或测试代码。宿主机只需要 Docker，不安装项目运行环境。
 
 ```bash
-python -m pip install -r requirements.txt -c requirements-lock.txt
-python -m pip check
-```
-
-Windows PowerShell：
-
-```powershell
-$env:LANGSMITH_TRACING = 'false'
-$env:LANGCHAIN_TRACING = 'false'
-$env:LANGCHAIN_TRACING_V2 = 'false'
-$env:OPS_API_TOKENS = '{"local-test-admin-token":"admin","local-test-webhook-token":"alertmanager"}'
-$env:OPS_ADMIN_IDENTITIES = '["admin"]'
-$env:OPS_APPROVER_IDENTITIES = '["admin"]'
-
-python -m pytest -q --basetemp=.pytest_tmp_local
-node --check src/web/console.js
-node --test tests/console_ui.test.cjs
-python -m compileall -q src scripts tests init.py
+docker build --target test -t aiops-regression:0.6.2 .
+docker run --rm --network none aiops-regression:0.6.2
+docker run --rm --network none --entrypoint node aiops-regression:0.6.2 --check src/web/console.js
+docker run --rm --network none --entrypoint node aiops-regression:0.6.2 --test tests/console_ui.test.cjs
+docker run --rm --network none --entrypoint python aiops-regression:0.6.2 -m compileall -q src scripts tests init.py
 git diff --check
 ```
 
-Linux Bash：
+首次构建需下载镜像和依赖，运行回归时使用 --network none。测试自带合成身份、
+关闭模型和追踪，不挂载真实运行目录；业务数据写入容器临时目录，退出即清理。
+pytest 包含 Node 交互测试包装器；单独 Node 命令便于检查语法与查看前端用例结果。
+构建执行 pip check。通过标准为无失败、无意外跳过、依赖与编译/差异检查无错误；
+记录实际数量和第三方警告，不把固定数量作为通过条件。
+
+定向检查可在镜像名后传入用例文件：
 
 ```bash
-export LANGSMITH_TRACING=false LANGCHAIN_TRACING=false LANGCHAIN_TRACING_V2=false
-export OPS_API_TOKENS='{"local-test-admin-token":"admin","local-test-webhook-token":"alertmanager"}'
-export OPS_ADMIN_IDENTITIES='["admin"]' OPS_APPROVER_IDENTITIES='["admin"]'
-
-python3 -m pytest -q --basetemp=.pytest_tmp_local
-node --check src/web/console.js
-node --test tests/console_ui.test.cjs
-python3 -m compileall -q src scripts tests init.py
-git diff --check
+docker run --rm --network none aiops-regression:0.6.2 -q tests/test_deployment.py tests/test_stack.py
+docker run --rm --network none aiops-regression:0.6.2 -q tests/test_admin_config.py tests/test_config_loader.py tests/test_hosts_config.py
+docker run --rm --network none aiops-regression:0.6.2 -q tests/test_admin_credentials.py tests/test_metric_query_matrix.py
 ```
 
-也可以在已有的 `langchain1.2` 环境中把 Python 命令改成
-`conda run -n langchain1.2 python ...`。上面的身份映射仅用于测试进程，不是登录部署控制台的
-Token，也不要写入真实 `.env`。Python 测试会在没有 Node 时跳过前端运行时测试；完整验收
-需要单独执行 Node 命令并确认通过。
-
-通过标准：安装后的 `pip check` 无依赖冲突，pytest 无失败，Node 测试通过，编译与
-`git diff --check` 无错误。记录实际测试数量、跳过项与警告原因，不使用固定测试数量判定通过。
-
-只排查某一类问题时可先运行：
-
-```bash
-python -m pytest -q tests/test_deployment.py tests/test_dev_stack.py
-python -m pytest -q tests/test_admin_config.py tests/test_config_loader.py tests/test_hosts_config.py
-python -m pytest -q tests/test_sqlite_db.py tests/test_session_store.py tests/test_history_store.py tests/test_execution_store.py
-python -m pytest -q tests/test_api_auth.py tests/test_ssh_security.py tests/test_multi_host_boundaries.py
-```
-
-Linux 未提供 `python` 命令时改用 `python3`。完成相关修正后再执行完整回归。
+相关修正完成后执行完整回归，CI 使用同一 test 目标。
 
 ## 3. 建立独立 Compose 测试栈
 
 测试栈使用项目名 `aiops-local-test`、目录 `.runtime/local-test` 和独立端口。
 不要把已有部署的数据复制到这个目录，也不要将后面的停止、重建、告警或故障操作用于真实服务。
 
-在新的终端中设置以下环境变量。不要在本机测试终端导出真实模型或 SSH 凭据。
+在新的终端中设置以下环境变量。不要在隔离测试终端导出真实模型或 SSH 凭据。
 
 Windows PowerShell：
 
@@ -150,7 +121,7 @@ docker compose -p aiops-local-test --env-file .env.example ps --all
 
 ```bash
 docker compose -p aiops-local-test --env-file .env.example cp tests/compose_smoke.py assistant:/tmp/compose_smoke.py
-docker compose -p aiops-local-test --env-file .env.example exec -T assistant python /tmp/compose_smoke.py
+docker compose -p aiops-local-test --env-file .env.example exec -T -e PYTHONPATH=/app assistant python /tmp/compose_smoke.py
 ```
 
 预期退出码为 0，最后显示：
@@ -168,7 +139,7 @@ Alertmanager → Assistant → SQLite 告警归档，并验证全部 17 项即�
 ```bash
 docker compose -p aiops-local-test --env-file .env.example up -d --force-recreate --wait --wait-timeout 180
 docker compose -p aiops-local-test --env-file .env.example cp tests/compose_smoke.py assistant:/tmp/compose_smoke.py
-docker compose -p aiops-local-test --env-file .env.example exec -T assistant python /tmp/compose_smoke.py --verify
+docker compose -p aiops-local-test --env-file .env.example exec -T -e PYTHONPATH=/app assistant python /tmp/compose_smoke.py --verify
 ```
 
 预期退出码为 0，显示：
@@ -359,7 +330,7 @@ API、模型输出、截图和应用日志不暴露 Token、密码或私钥。�
 真实内部拓扑或未经脱敏的命令输出。以下是模板，不代表已执行：
 
 ```markdown
-# AIOps-Assistant 0.6.1 本机测试记录
+# AIOps-Assistant 0.6.2 容器测试记录
 
 - 测试时间与时区：
 - 操作系统 / Docker / Compose / Python / Node 版本：
@@ -382,7 +353,7 @@ API、模型输出、截图和应用日志不暴露 Token、密码或私钥。�
 - 结论：本次通过的测试范围；未执行项及原因。
 ```
 
-基础验收要求离线回归、本机 Compose 冒烟、页面操作、告警投递、依赖失败恢复和重启持久化
+基础验收要求离线回归、隔离 Compose 冒烟、页面操作、告警投递、依赖失败恢复和重启持久化
 通过。实际启用 AI、SSH 或写命令的部署还需完成对应场景；未配置的能力不要求为了测试而开放。
 
 ## 凭据、全指标和真实 Prometheus 验收
@@ -410,12 +381,49 @@ SSH 和无密钥模型配置；重建后验证配置、用户鉴权、原管理�
 不同 job 隔离，以及健康状态无告警；同时断言 pending 和 firing 的完整标签。
 
 ```bash
-python tests/prometheus_alert_acceptance.py /tmp/alerts-promtool.yml
-docker run --rm --network none \
-  -v "$PWD/deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro" \
-  -v "/tmp/alerts-promtool.yml:/tests/alerts-promtool.yml:ro" \
-  --entrypoint promtool prom/prometheus:v3.13.3 test rules /tests/alerts-promtool.yml
+docker compose -p aiops-local-test --env-file .env.example cp tests/prometheus_alert_acceptance.py assistant:/tmp/prometheus_alert_acceptance.py
+docker compose -p aiops-local-test --env-file .env.example exec -T -e PYTHONPATH=/app assistant python /tmp/prometheus_alert_acceptance.py /app/data/alerts-promtool.yml
+docker compose -p aiops-local-test --env-file .env.example cp assistant:/app/data/alerts-promtool.yml .runtime/local-test/alerts-promtool.yml
+docker compose -p aiops-local-test --env-file .env.example cp .runtime/local-test/alerts-promtool.yml prometheus:/tmp/alerts-promtool.yml
+docker compose -p aiops-local-test --env-file .env.example exec -T prometheus promtool test rules /tmp/alerts-promtool.yml
 ```
 
 CI 在隔离 Compose 中执行同样的真实引擎验收。修改任一主机告警时，既要验证阈值，
 也要验证标签；写法约束见 [主机告警 PromQL 编写约束](configuration.md#主机告警-promql-编写约束)。
+
+## 用户与主机授权验收
+
+离线矩阵在 tests/test_host_access.py：强制身份校验、多用户会话、全部主机查询入口、
+无 host_id 的记录过滤、权限撤销/恢复、Token 轮换/撤销、配置冲突、非法授权回滚、
+角色与申请人/审批人主机权限。前端另验证身份授权编辑、撤权清理和过期响应隔离。
+
+隔离 Compose 自动验收先运行用户权限脚本，再运行上面的 compose_smoke.py，
+避免新增测试主机改变后者记录的配置哈希；重建后分别执行两个脚本的 --verify。
+使用同一隔离项目及环境，不连接模型或 SSH：
+
+```bash
+docker compose -p aiops-local-test --env-file .env.example cp tests/compose_access_smoke.py assistant:/tmp/compose_access_smoke.py
+docker compose -p aiops-local-test --env-file .env.example exec -T assistant python /tmp/compose_access_smoke.py
+# 然后运行 compose_smoke.py、重建整栈、运行 compose_smoke.py --verify
+docker compose -p aiops-local-test --env-file .env.example cp tests/compose_access_smoke.py assistant:/tmp/compose_access_smoke.py
+docker compose -p aiops-local-test --env-file .env.example exec -T assistant python /tmp/compose_access_smoke.py --verify
+```
+
+用户脚本会登记 restricted-node 测试目标，创建两个合成身份并授予不同主机，检查跨用户
+读取/聊天/改名/删除均拒绝，跨主机 9 类查询均拒绝，轮换后身份及会话保留。
+重建验证历史与 ACL，再测试撤权阻止旧会话、恢复授权恢复历史、Token 撤销返回 401，
+同时检查原管理员及 webhook 继续有效。状态文件含合成测试 Token，验收后清除，
+只能用于可丢弃栈。成功的 --verify 会消费状态文件，不能重复执行。
+
+## 废弃配置迁移验收
+
+tests/test_config_loader.py 验证旧 auth.enabled、alert.trend_step、app.version 被严格拒绝，
+代码版本为只读元信息；tests/test_deployment.py 覆盖新模板无鉴权开关、四类旧字段移除、
+未知字段保留、原文备份、环境占位符引号、角色/ACL/凭据保留、重复初始化及备份/写入失败。
+tests/test_admin_config.py 验证 GET 不含 auth_enabled、提交旧字段返回 422 且 revision 不变。
+容器启动无可用 Token 时失败；内部空配置装配的业务请求仍为 503，不能匿名访问。
+
+实际隔离升级验收应先用旧模板初始化配置，保留 JSON 环境占位符引号，再启动新版 init。
+确认原文备份完整、只移除已列明字段、原部署凭据未变化、服务健康；然后运行用户权限及
+部署 smoke，整栈重建后运行两个 --verify。仅使用可丢弃项目、数据目录和合成凭据，
+不直接对实际部署运行写入型验收。2026-10-09 本轮结果见 [交接记录](handover.md)。

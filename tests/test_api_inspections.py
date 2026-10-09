@@ -24,9 +24,9 @@ def _as(token: str = "k-ops") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _settings(tmp_path, *, auth=True, storage=True):
+def _settings(tmp_path, *, storage=True):
     return Settings(
-        auth=AuthSettings(enabled=auth, tokens=_TOKENS if auth else ""),
+        auth=AuthSettings(tokens=_TOKENS, admin_identities='["ops"]'),
         storage=(
             StorageSettings(enabled=True, db_path=str(tmp_path / "ops.db"))
             if storage

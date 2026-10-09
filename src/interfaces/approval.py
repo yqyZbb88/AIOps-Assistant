@@ -45,7 +45,7 @@ class PendingApproval:
     allowed_decisions: tuple[str, ...] = ("approve", "reject")
     #: 触发这条写命令的会话；None = 旧入口或无会话存储
     session_id: str | None = None
-    #: 触发这条写命令的**身份**（由密钥推出）；空串 = 鉴权关闭时产生的
+    #: 触发这条写命令的**身份**（由密钥推出）；空串 = 旧版匿名模式产生的
     user: str = ""
     host_id: str = ""
     target_summary: str = ""
@@ -75,7 +75,7 @@ def may_decide(
 ) -> bool:
     """调用者是否有权列出 / 决策这条待审批项。
 
-    - 鉴权未启用：没有身份可比，一律放行（fail-open，见 ``api/approvals.py`` 的说明）；
+    - identity=None 仅保留给可信内部旧入口；HTTP 不允许匿名决策；
     - ``approvers_only=True``：只允许 ``approvers`` 里的身份，支持职责分离——审批人是
       **岗位**，可列出并批准**任何人**触发的项，不限于自己发起的；
     - 默认模式（``owner``）：要求 ``pending.user`` 精确匹配，即只有触发人自己。

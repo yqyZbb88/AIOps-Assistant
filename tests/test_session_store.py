@@ -436,7 +436,7 @@ def test_delete_drops_decisions_of_that_session(store):
     assert store.decided_approval_ids() == {"ap-kept"}
 
 
-# -- 归属（鉴权开启后由 api/core 传入身份；None = 鉴权关闭，不筛） --------------
+# -- 归属（API/core 传入身份；None 仅限可信内部调用，不筛） --------------
 def test_list_filters_by_user(store):
     store.create(user="alice")
     store.create(user="bob")
@@ -538,7 +538,7 @@ def test_rename_does_not_bump_updated_at(store):
 
 # -- create 的 user 归一 -----------------------------------------------------
 def test_create_normalises_none_user_to_empty_string(store):
-    """鉴权关闭时调用方传的就是 `None`。
+    """可信内部调用可传 `None`；HTTP 业务请求始终传已验证身份。
 
     不归一的话会 `INSERT ... user=NULL` 并构造出 `SessionInfo(user=None)`，
     而读路径 `_row_to_session` 有 `or ""` 兜底——同一个字段两条路径两种类型。

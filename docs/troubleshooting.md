@@ -24,18 +24,14 @@ SSH 写命令、告警规则启停、配置保存或 Assistant 重启时，先�
 Docker 启动、端口、挂载与初始化失败先查 [部署排障](deployment.md#部署失败排查)。
 Compose 实际 YAML 位于 `.runtime/config/`，不要修改根 `config/` 后误以为容器会生效。
 
-先确认 8000 端口运行的是哪一种 Assistant：本地 Python 进程读取根目录 `.env` 与其启动环境，
-Compose 服务使用 `.runtime/compose.env` 生成的专用凭据文件。两个文件中的 Token 不会自动合并，也不会因文件
-变化自动进入已经运行的进程。分别用以下命令取得对应管理员 Token：
+先确认访问的 Compose 项目名、发布端口和运行目录，再显式查看对应管理员 Token：
 
 ```bash
-python scripts/dev_stack.py show-token --source local
 docker compose run --rm --no-deps init show-token
 ```
 
-只将 Token 输入控制台连接框，不要粘贴到工单、截图或命令日志。若本地 Token 可用而 Compose
-Token 返回 401，先核对服务启动方式；不要为此关闭鉴权。确认 Token 来源正确但仍为 401 时，
-检查进程是否在 Token 更新前启动，并按维护流程重启对应的 Assistant。
+只将 Token 输入连接框，不粘贴到工单、截图或日志。页面 Token 还应核对轮换/撤销状态。
+部署凭据修改后需重建 init 与 Assistant；不要直接改派生文件；鉴权开关已删除，连接问题应检查 Token 和身份映射。
 
 ## Prometheus 与 Exporter：只读分层检查
 

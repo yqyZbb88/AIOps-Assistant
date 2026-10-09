@@ -7,28 +7,17 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      LANGSMITH_TRACING: "false"
-      LANGCHAIN_TRACING: "false"
-      LANGCHAIN_TRACING_V2: "false"
-      OPS_API_TOKENS: '{"ci-admin-token":"admin","ci-webhook-token":"alertmanager"}'
-      OPS_ADMIN_IDENTITIES: '["admin"]'
-      OPS_APPROVER_IDENTITIES: '["admin"]'
-      DEEPSEEK_API_KEY: ""
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - run: python -m pip install -r requirements.txt -c requirements-lock.txt
-      - run: python -m pip check
-      - run: python -m compileall -q src scripts tests init.py
-      - run: python -m pytest -q --basetemp=.pytest_tmp
+      - name: Build isolated regression image
+        run: docker build --target test -t aiops-regression:ci .
+      - name: Compile container sources and check frontend syntax
+        run: |
+          docker run --rm --network none --entrypoint python aiops-regression:ci -m compileall -q src scripts tests init.py
+          docker run --rm --network none --entrypoint node aiops-regression:ci --check src/web/console.js
+          git diff --check
+      - name: Offline regression in container
+        run: docker run --rm --network none aiops-regression:ci
 
   deployment-smoke:
     runs-on: ubuntu-latest
@@ -50,12 +39,16 @@ jobs:
         run: |
           docker compose --env-file .env.example exec -T assistant python - /app/data/alerts-promtool.yml < tests/prometheus_alert_acceptance.py
           docker compose --env-file .env.example exec -T prometheus promtool test rules /dev/stdin < .pytest_tmp_compose/assistant-data/alerts-promtool.yml
+      - name: Check two-user session isolation and host access
+        run: docker compose --env-file .env.example exec -T assistant python - < tests/compose_access_smoke.py
       - name: Check fresh deployment and real webhook delivery
         run: docker compose --env-file .env.example exec -T assistant python - < tests/compose_smoke.py
       - name: Recreate without losing state
         run: docker compose --env-file .env.example up -d --force-recreate --wait --wait-timeout 180
       - name: Check credentials, configuration and SQLite persistence
         run: docker compose --env-file .env.example exec -T assistant python - --verify < tests/compose_smoke.py
+      - name: Check host access and private sessions after recreation
+        run: docker compose --env-file .env.example exec -T assistant python - --verify < tests/compose_access_smoke.py
       - name: Diagnostics on failure
         if: failure()
         run: |

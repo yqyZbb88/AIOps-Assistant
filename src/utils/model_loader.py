@@ -1,6 +1,6 @@
 """模型入口：按配置版本复用 init.py 惰性工厂创建的实例。
 
-- 顶层不导入 langchain、dotenv 或 init，真正取模型时才惰性导入；
+- 顶层不导入 langchain 或 init，真正取模型时才惰性导入；
 - 同一配置版本的聊天 Agent 和 LLM 客户端共享实例；旧请求保留原实例；
 - 模型初始化失败时抛出 ModelLoadError，由调用方转换为对应接口错误。
 """
@@ -16,7 +16,7 @@ from src.utils.config_loader import ROOT_DIR
 
 
 class ModelLoadError(Exception):
-    """模型初始化失败（可选依赖缺失 / .env 未配 / init.py 报错）。"""
+    """模型初始化失败（可选依赖缺失 / 模型凭据未配 / init.py 报错）。"""
 
 
 # 进程内缓存的模型对象（首次调用时惰性创建；全进程共用）
@@ -28,7 +28,7 @@ _model_lock = threading.RLock()
 def get_model(config: dict | None = None) -> Any:
     """惰性返回 init.py 中创建的模型对象（首次调用时才 import init.py）。
 
-    显式从仓库根加载 .env，避免 python-dotenv 自动搜索随调用环境变化。
+    凭据仅来自显式配置或容器环境，不加载宿主机 .env。
     """
     global _model
     if config is not None:
@@ -48,21 +48,13 @@ def get_model(config: dict | None = None) -> Any:
     with _model_lock:
         if _model is None:
             try:
-                try:
-                    from dotenv import load_dotenv
-
-                    load_dotenv(ROOT_DIR / ".env", override=False)
-                except Exception:  # 未安装 python-dotenv 时忽略，交给 init.py 处理
-                    pass
                 if str(ROOT_DIR) not in sys.path:
                     sys.path.insert(0, str(ROOT_DIR))
                 from init import model  # 复用 init.py：单一模型入口
 
                 _model = model
-            except Exception as exc:
-                raise ModelLoadError(
-                    f"LLM 初始化失败（请检查 .env 的 DEEPSEEK_API_KEY 与 init.py）: {exc}"
-                ) from exc
+            except Exception:
+                raise ModelLoadError("LLM 初始化失败，请检查模型配置或依赖") from None
         return _model
 
 

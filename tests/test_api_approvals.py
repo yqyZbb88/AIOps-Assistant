@@ -26,7 +26,7 @@ def _as(token: str) -> dict[str, str]:
 class FakeApprovalAssistant:
     """实现 Assistant + ApprovalCapable 的假对象。"""
 
-    def __init__(self, pending_user: str = "") -> None:
+    def __init__(self, pending_user: str = "alice") -> None:
         self.decisions: list[tuple[str, str, str]] = []
         self.decision_actors: list[str | None] = []
         self._pending: list[PendingApproval] = [
@@ -34,7 +34,7 @@ class FakeApprovalAssistant:
                 approval_id="abc123",
                 created_at="2026-01-01T00:00:00+00:00",
                 actions=({"name": "restart_service", "args": {"service": "nginx"}},),
-                user=pending_user,
+                user=pending_user, host_id="legacy-default",
             )
         ]
 
@@ -67,11 +67,11 @@ class FakeApprovalAssistant:
 
 @pytest.fixture
 def client() -> TestClient:
-    app = create_app(settings=Settings())
+    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}')))
     fake = FakeApprovalAssistant()
     # 注入假 assistant：绕过 langchain/网络，同时保住真实路由与 OpsAgent 转发链路
     app.state.agent.chat_service._assistant = fake
-    with TestClient(app) as c:
+    with TestClient(app, headers=_as("k-alice")) as c:
         c.fake = fake  # type: ignore[attr-defined]
     return c
 
@@ -94,7 +94,7 @@ def test_approve_resumes(client):
     assert body["status"] == "completed"
     assert body["next_approval_id"] is None
     assert client.fake.decisions == [("abc123", "approve", "")]
-    assert client.fake.decision_actors == [None]
+    assert client.fake.decision_actors == ["alice"]
 
 
 def test_reject_passes_through(client):
@@ -121,29 +121,18 @@ def test_unknown_id_is_404(client):
 
 def test_unavailable_agent_is_503():
     """未启用写命令能力时：列表为空，提交决策 503（功能没开 ≠ 找错 id）。"""
-    app = create_app(settings=Settings())
+    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}')))
     # _assistant 保持 None 且工厂会失败（无 langchain/无 key）→ 审批不可用
     app.state.agent.chat_service._agent_broken = True
-    with TestClient(app) as c:
+    with TestClient(app, headers=_as("k-alice")) as c:
         assert c.get("/approvals").json() == []
         assert c.post("/approvals/x", json={"action": "approve"}).status_code == 503
 
 
-def test_chat_response_shape(client):
-    """/chat **响应体**三键不变；变的是请求体（2026-09-12 破坏性变更）。
+def test_chat_without_verified_session_is_503(client):
+    resp = client.post("/chat", json={"message": "hello", "session_id": "whatever"})
+    assert resp.status_code == 503
 
-    请求体删掉了 `user` 与 `session_name`、`session_id` 改为必填——身份改由密钥推出，
-    建会话拆到了 `POST /sessions`。响应里 `session_name` 保留，含义从「客户端给的别名」
-    变成「该会话的标签（只读回带）」。
-
-    这里持久化是关的（`client` 用 `Settings()`），`session_id` 传什么都行：
-    存储不可用时会被忽略，`reply` 照常走关键词/假 Agent。
-    """
-    resp = client.post("/chat", json={"message": "你好", "session_id": "whatever"})
-
-    assert resp.status_code == 200
-    assert set(resp.json()) == {"reply", "session_id", "session_name"}
-    assert isinstance(resp.json()["reply"], str)
 
 
 def test_chat_without_session_id_is_422(client):
@@ -151,10 +140,10 @@ def test_chat_without_session_id_is_422(client):
     assert client.post("/chat", json={"message": "你好"}).status_code == 422
 
 
-# -- 归属隔离（鉴权开启时） --------------------------------------------------
+# -- 归属隔离 --------------------------------------------------
 def _auth_app(pending_user: str):
     """鉴权开着的 client，待审批项归属 `pending_user`。"""
-    app = create_app(settings=Settings(auth=AuthSettings(enabled=True, tokens=_TOKENS)))
+    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}')))
     app.state.agent.chat_service._assistant = FakeApprovalAssistant(pending_user=pending_user)
     return app
 
@@ -188,7 +177,7 @@ def test_decide_by_non_owner_is_404():
 def test_decide_by_non_owner_does_not_touch_the_queue():
     """越权尝试不得有任何副作用——队列还在，原始助手一次决策都没收到。"""
     app = _auth_app(pending_user="alice")
-    with TestClient(app) as c:
+    with TestClient(app, headers=_as("k-alice")) as c:
         c.post("/approvals/abc123", json={"action": "approve"}, headers=_as("k-bob"))
 
         assert len(c.get("/approvals", headers=_as("k-alice")).json()) == 1
@@ -204,11 +193,11 @@ def test_decide_by_owner_works():
 
 
 def test_unowned_pending_is_invisible_to_everyone():
-    """鉴权关闭时产生的待审批项（`user` 为空）→ 开启鉴权后**谁都批不了**。
+    """旧版匿名待审批项（`user` 为空）**任何身份都批不了**。
 
     后果是它一直挂到 TTL 淘汰、**命令永不执行**——这正是 fail-safe 要的方向。
     （实践中这条路径很难触发：待审批项存在进程内存里，不跨重启存活，
-    所以「关着鉴权产生的项」在开启鉴权那一刻已经随重启消失了。这里只是把规则钉死。）
+    所以「旧版匿名产生的项」在升级重启时已经消失了。这里只是把规则钉死。）
     """
     with TestClient(_auth_app(pending_user="")) as c:
         assert c.get("/approvals", headers=_as("k-alice")).json() == []
@@ -217,14 +206,12 @@ def test_unowned_pending_is_invisible_to_everyone():
         ).status_code == 404
 
 
-def test_auth_off_sees_and_decides_any_pending():
-    """鉴权关闭 → 不校验归属，行为与改造前完全一致。"""
-    app = create_app(settings=Settings())
-    app.state.agent.chat_service._assistant = FakeApprovalAssistant(pending_user="someone")
-
+def test_anonymous_pending_cannot_be_decided():
+    app = _auth_app(pending_user="")
     with TestClient(app) as c:
-        assert len(c.get("/approvals").json()) == 1
-        assert c.post("/approvals/abc123", json={"action": "approve"}).status_code == 200
+        assert c.get("/approvals", headers=_as("k-alice")).json() == []
+        assert c.post("/approvals/abc123", json={"action": "approve"}, headers=_as("k-alice")).status_code == 404
+
 
 
 def test_unknown_id_is_404_even_when_owned_by_someone_else():
@@ -239,8 +226,8 @@ def _approvers_only_app(pending_user: str = "alice"):
     app = create_app(
         settings=Settings(
             auth=AuthSettings(
-                enabled=True,
                 tokens=_TOKENS,
+                host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}',
                 approval_mode="approvers_only",
                 approver_identities='["bob"]',
             )
@@ -252,7 +239,7 @@ def _approvers_only_app(pending_user: str = "alice"):
 
 def test_approvers_only_blocks_requester_and_allows_approver():
     app = _approvers_only_app()
-    with TestClient(app) as c:
+    with TestClient(app, headers=_as("k-alice")) as c:
         assert c.get("/approvals", headers=_as("k-alice")).json() == []
         assert c.get("/approvals", headers=_as("k-bob")).json()[0]["approval_id"] == "abc123"
         assert c.post(
@@ -334,22 +321,17 @@ def test_non_owner_leaves_no_audit_line(caplog):
     assert _audit_lines(caplog) == []
 
 
-def test_decided_by_is_empty_when_auth_is_off(caplog):
-    """鉴权关闭时没有身份可言——审计里留空串，而不是编一个假的。
-
-    「当时有没有鉴权」本身就是审计要回答的问题之一。
-    """
-    app = create_app(settings=Settings())
-    app.state.agent.chat_service._assistant = FakeApprovalAssistant(pending_user="")
+def test_anonymous_request_cannot_leave_approval_audit(caplog):
+    app = _auth_app(pending_user="alice")
     with TestClient(app) as c:
         caplog.set_level(logging.INFO, logger=AUDIT_LOGGER_NAME)
-        c.post("/approvals/abc123", json={"action": "approve"})
+        assert c.post("/approvals/abc123", json={"action": "approve"}).status_code == 401
+    assert _audit_lines(caplog) == []
 
-    assert _audit_lines(caplog)[0]["decided_by"] == ""
 
 
 def test_approvals_routes_registered():
-    app = create_app(settings=Settings())
+    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}')))
     paths = {r.path for r in app.routes}
     assert "/approvals" in paths
     assert "/approvals/{approval_id}" in paths
@@ -362,8 +344,8 @@ def test_approval_waits_for_published_turn_then_can_resume(client, tmp_path):
     from src.storage.session import SqliteSessionStore
     store = SqliteSessionStore(open_database(tmp_path / "sessions.db"))
     client.app.state.agent.chat_service._sessions = store
-    session = store.create()
-    client.fake._pending = [PendingApproval("abc123", "test-time", session_id=session.session_id)]
+    session = store.create(user="alice", host_id="legacy-default")
+    client.fake._pending = [PendingApproval("abc123", "test-time", session_id=session.session_id, user="alice", host_id="legacy-default")]
     response = client.post("/approvals/abc123", json={"action": "approve"})
     assert response.status_code == 503
     assert client.fake.decisions == []

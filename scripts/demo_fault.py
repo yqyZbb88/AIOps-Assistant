@@ -4,14 +4,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / ".runtime" / "textfile" / "aiops_demo_fault.prom"
+TARGET_NAME = "aiops_demo_fault.prom"
 METRICS = {"cpu": "aiops_demo_cpu_percent", "memory": "aiops_demo_memory_percent", "disk": "aiops_demo_disk_percent"}
 HIGH = {"cpu": 95, "memory": 96, "disk": 96}
 
 
-def write(values: dict[str, float], target: Path | None = None) -> None:
-    target = TARGET if target is None else target
+def write(values: dict[str, float], target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
     for name, metric in METRICS.items():
@@ -27,9 +25,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("fault", choices=[*METRICS, "all", "reset"])
     parser.add_argument("state", nargs="?", choices=["on", "off"], default="on")
-    parser.add_argument("--runtime", type=Path, help="部署目录；init 容器中使用 /runtime")
+    parser.add_argument("--runtime", type=Path, default=Path("/runtime"), help="容器部署目录，默认 /runtime")
     args = parser.parse_args()
-    target = args.runtime / "textfile" / TARGET.name if args.runtime else TARGET
+    target = args.runtime / "textfile" / TARGET_NAME
     current = {name: 0.0 for name in METRICS}
     if target.exists():
         for line in target.read_text(encoding="utf-8").splitlines():

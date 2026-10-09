@@ -1,344 +1,178 @@
 # AIOps-Assistant 鉴权与密钥
 
-本文说明如何生成、配置、使用和轮换 AIOps-Assistant 的鉴权密钥。自动部署流程见 [deployment.md](deployment.md)；YAML 字段见 [configuration.md](configuration.md)。
+## 一、凭据来源与首次连接
 
-## 一、先看结论
+新容器部署自动生成管理员和 Alertmanager 专用 Token，保存在
+`.runtime/compose.env`，初始化派生服务专用文件。管理员显式查看：
 
-Compose 首次部署自动生成管理员和 Alertmanager 独立 Token，并启用普通接口鉴权。
-通过 `docker compose run --rm --no-deps init show-token` 查看管理员 Token；无需手动设置下面的身份变量。
-旧部署迁移保持原开关。Compose 的 YAML 位于 `.runtime/config/`，持久化凭据位于
-`.runtime/compose.env`；根 `.env` 中的 `OPS_*` 身份变量仅用于本地 Python。
-
-以下手动配置以本地 Python 模式为例，最少需要配置：
-
-```env
-OPS_API_TOKENS={"k-admin-随机值":"admin","k-am-随机值":"alertmanager"}
+```bash
+docker compose run --rm --no-deps init show-token
 ```
 
-启用鉴权后，建议配置审批人：
+浏览器只将 Token 输入连接框；不粘贴到工单、截图或日志。根 `.env` 提供 Compose
+参数和可选模型/SSH 配置，不能替代持久化业务身份。应用不自动加载宿主机 .env。
 
-```env
-OPS_APPROVER_IDENTITIES=["admin"]
-OPS_ADMIN_IDENTITIES=["admin"]
-```
-
-启用普通业务接口鉴权时，可按下例设置 `config/settings.yaml`：
+运行 `.runtime/config/settings.yaml` 使用环境占位，密钥不写 YAML：
 
 ```yaml
 auth:
-  enabled: true
-  tokens: '${OPS_API_TOKENS:-}'
+  tokens: '${OPS_API_TOKENS}'
   approval_mode: approvers_only
-  approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
-  admin_identities: '${OPS_ADMIN_IDENTITIES:-["admin"]}'
+  approver_identities: '${OPS_APPROVER_IDENTITIES}'
+  admin_identities: '${OPS_ADMIN_IDENTITIES}'
   alert_identity: alertmanager
 ```
 
-修改环境变量中的 Token 后重启服务；手动修改 YAML 后，由管理员显式应用磁盘配置。
+全部业务 API 始终验证 Token 并解析身份，没有可用 Token 的容器拒绝启动。
+鉴权没有关闭开关；`auth.enabled` 已删除，init 会备份后移除旧字段。
 
 ## 二、项目中涉及哪些密钥
 
-| 名称 | 用途 | 存放位置 | 谁需要 |
-|---|---|---|---|
-| `OPS_API_TOKENS` | API Key 到身份的映射 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 人、脚本、Alertmanager |
-| `OPS_APPROVER_IDENTITIES` | 审批人身份列表 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务端 |
-| `OPS_ADMIN_IDENTITIES` | 最高权限管理员身份列表 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务端 |
-| `SSH_KEY_FILENAME` / `SSH_PASSWORD` | SSH 私钥路径或登录密码 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务连接目标主机 |
-| `DEEPSEEK_API_KEY` | 模型调用 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务端 |
-| `OPS_REDACTION_SECRETS` | 额外精确脱敏值的 JSON 数组 | `.env`（本地）/ `.runtime/compose.env`（Compose） | 服务端 |
-| Alertmanager 凭据文件 | webhook Bearer Token | 独立文件 | Alertmanager |
+| 名称 | 用途 | 权威来源 |
+|---|---|---|
+| OPS_API_TOKENS | Token → 身份映射 | compose.env，合并页面用户 Token |
+| OPS_ADMIN_IDENTITIES / OPS_APPROVER_IDENTITIES | 管理员与审批人身份名单 | 部署凭据或管理页角色配置 |
+| SSH 私钥/密码和 known_hosts | 连接并验证目标主机 | 页面凭据目录或部署环境/ssh 目录 |
+| DEEPSEEK_API_KEY | 模型调用 | 页面模型配置或部署环境 |
+| OPS_REDACTION_SECRETS | 额外精确脱敏值，JSON 数组 | 部署环境 |
+| Alertmanager Token 文件 | webhook Bearer Token | init 从部署映射派生 |
 
-只有 API Token 和 Alertmanager webhook Token 用于“谁在调用本服务”。其它密钥用于本服务连接外部系统。
+页面凭据保存在 assistant-data/admin-credentials/，包含 state.json 与 SSH assets。
+密钥不进入普通配置备份或数据库历史。停机备份和恢复该目录时同时保留资产与状态，
+通过受控渠道交付，不提交版本库。页面配置优先使用，未配置时使用部署来源。
 
-## 三、生成 API 密钥
+## 三、页面用户 Token
 
-使用随机值：
+管理员在“系统管理 → 用户 Token”按身份名生成随机 Token，可轮换或撤销页面管理项。
+成功创建或轮换仅显示一次明文；响应禁止缓存，浏览器不持久化该值，离开页面清空展示。
+请当次妥善记录。部署管理员和 webhook Token 只读保留，不能从页面删除或覆盖。
 
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-不要使用：
-
-- 用户名或密码
-- 时间和 UUID
-- 可读单词
-- 多个用户共享的长期固定字符串
-
-建议每个用户、每个脚本和 Alertmanager 各自使用独立密钥，方便单独吊销和审计。
+页面 Token 与部署映射合并。身份名大小写敏感且不能空白；角色继续由管理员/审批人名单
+授权，生成 Token 本身不授予管理或审批权限。页面保存有 revision 校验；存在写操作或
+未决审批时返回 409。撤销影响后续请求，不删除该身份历史会话。
 
 ## 四、配置 API 鉴权
 
-### 1. 写入环境变量
+### 1. 映射与角色
 
-`OPS_API_TOKENS` 是 JSON 对象：
+部署映射是 JSON 对象，key 为随机 Token，value 为身份名：
 
 ```json
-{"k-admin-随机值":"admin","k-am-随机值":"alertmanager"}
+{"随机管理员Token":"admin","随机webhookToken":"alertmanager"}
 ```
 
-- JSON key 是密钥，客户端放入 `Authorization: Bearer <key>`。
-- JSON value 是身份名，服务端据此判断会话和审批归属。
-- key 和 value 不能为空。
-- 身份名大小写敏感。
-
-不要把 key 和 value 写反。通常密钥较长且随机，身份名较短且可读。
+不要颠倒二者。更新部署身份时，在停止服务或受控维护窗口编辑 compose.env，
+保留合法引号格式及管理员、webhook 映射；不能将它作为 Compose --env-file 使用。
+页面创建一般用户优先使用上一节入口。
 
 ### 2. 配置审批模式
 
-有两种模式：
-
-| `approval_mode` | 谁可以审批 |
+| approval_mode | 谁可见且可审批 |
 |---|---|
-| `owner` | **只有触发人自己**。此模式**不看** `approver_identities`，列在里面的身份也批不了别人的申请 |
-| `approvers_only` | `approver_identities` 中的身份可以审批**任何人**触发的申请 |
+| owner | 仅触发人；不使用 approver_identities |
+| approvers_only | 审批名单中的身份可以处理任何人的申请 |
 
-注意 `approvers_only` 的语义是「审批人是**岗位**，不是**当事人本人**」：`admin` 既能
-列出也能批准 `zhang` 触发的写命令。**同一份判定同时决定「看得见」与「批得动」**
-（`src/interfaces/approval.py` 的 `may_decide`），所以 `GET /approvals` 的列表范围和
-`POST /approvals/{id}` 的授权范围永远一致；范围外的 id 一律返回 404，与「不存在」同形。
+可见范围和决定权限使用同一判定；范围外 ID 返回 404。管理员名单与审批名单独立，
+管理员不自动成为审批人。名单中的身份需要有可用 Token 映射，页面保存会验证。
+逐主机 SSH 权限、命令目录和审批仍各自生效。
 
-推荐使用 `approvers_only`：
+### 3. Alertmanager 身份
 
-```env
-OPS_APPROVER_IDENTITIES=["admin","audit"]
+auth.alert_identity 默认 alertmanager；POST /alert 要求匹配该身份。
+留空会允许任何有效身份推送告警，可能触发无需人工审批的规则自动处置，应保留专用身份。
+Compose 初始化自动配置 /run/alertmanager-secrets/token，部署的 Alertmanager 通过
+credentials_file 读取；该文件只含 Token，无 Bearer 前缀、引号或身份名。
+
+### 4. 保存与生效
+
+管理页角色、用户主机授权与页面 Token 可热生效；手动 YAML 修改需“应用磁盘配置”。
+部署凭据变更需要重建，以重新派生文件并注入进程：
+
+```bash
+docker compose up -d --force-recreate --wait --wait-timeout 180
 ```
 
-如果 `approvers_only` 模式没有配置审批人，服务会拒绝启动。
-
-审批人与系统管理员是两份独立名单：能批准写命令不自动获得配置管理权，管理员也不会
-自动成为审批人。是否可批准仍由当前审批模式决定。
-
-### 3. 配置 Alertmanager 身份
-
-```yaml
-auth:
-  alert_identity: alertmanager
-```
-
-`auth.enabled=true` 且设置该字段时，只有身份名为 `alertmanager` 的 API Token
-可以调用 `POST /alert`。
-
-如果该字段留空：
-
-- 所有有效 API Token 都可以调用 `/alert`
-- 启动时会产生 WARNING
-- 不建议在生产环境使用
-
-### 4. 配置系统管理员
-
-`OPS_ADMIN_IDENTITIES` 是身份名 JSON 数组，不是 Token 数组。列表不能为空，每个身份都
-必须存在于 `OPS_API_TOKENS` 的值中，否则启动会拒绝。默认出厂身份为 `admin`。
-
-`GET/PUT /admin/config` 始终要求有效 Bearer Token 和管理员身份；即便普通业务接口设置
-`auth.enabled=false`，管理接口也不会匿名开放。GET 只返回可编辑的脱敏投影与可用身份名，
-不会返回 Token 明文、SSH 凭据或连接目标。PUT 必须携带读取时的 revision；409 表示磁盘
-配置已变化，应重新加载后人工合并修改，不要盲目覆盖。保存成功后可编辑鉴权字段
-立即生效；页面外修改 YAML 后须由管理员显式应用。页面的“待应用”比较磁盘与当前运行
-revision。环境变量 Token 的增删仍需重启 Assistant。详见
-[控制台说明](console.md) 与 [API 参考](api.md)。
-
-### 5. 密钥轮换与重启
-
-管理页面的普通接口鉴权开关、身份和审批模式可热更新；修改 `.env` 中的 Token
-映射仍必须重启。手动修改 `settings.yaml` 后须通过管理员接口显式应用。
+单独 restart 不会重建派生凭据；不要直接编辑派生文件。
 
 ## 五、如何使用 API
 
-### 命令行
-
 ```bash
-curl -H "Authorization: Bearer <密钥>"   http://127.0.0.1:8000/sessions
+curl -H "Authorization: Bearer <Token>" http://127.0.0.1:8000/hosts
 ```
 
-### Python
+PowerShell 使用 curl.exe，或 Invoke-RestMethod 的 Headers 参数。Swagger /docs 中点击
+Authorize，输入 Token 后调用 API。公开路径及错误契约见 [API 参考](api.md)。
+控制台静态壳不含业务数据；/docs、/redoc、/openapi.json 是公开文档路由，
+需要隐藏接口结构时在反向代理限制。
 
-```python
-import httpx
+## 六、身份与错误
 
-response = httpx.get(
-    "http://127.0.0.1:8000/sessions",
-    headers={"Authorization": "Bearer <密钥>"},
-)
-```
+会话和聊天按服务端 Token 身份归属，不能在请求体自报身份。自己且仍有主机访问权的会话可读改删，
+他人的会话和范围外审批返回 404。缺少或无效 Token 返回 401；
+有身份但无管理/webhook 权限返回 403。身份不选择模型或任意 SSH 目标。
 
-### Swagger
+审批对象和 checkpoint 在进程内，重启不能续跑旧申请；会话与审批决策可持久化。
+撤销身份 Token 后历史仍在，重新给同名身份创建 Token，并恢复对应主机授权后，可继续访问保留期内会话。
 
-打开：
+## 七、轮换和吊销
 
-```text
-http://127.0.0.1:8000/docs
-```
+页面 Token 使用轮换/撤销入口，即时影响后续请求，明文仍只显示一次。
+部署管理员轮换需同时更新映射与 AIOPS_USER_TOKEN，保持其映射到管理员名单身份，
+重建后验证新 Token 再移除旧值。操作前保留受限备份。
 
-点击右上角 Authorize，填入密钥。
+Alertmanager 使用部署映射中第一个 alertmanager Token；轮换时把替代值放在旧值之前，
+重建、验证真实告警投递后移除旧值。Grafana 已初始化密码在 Grafana 中修改，
+改初始化密码文件不会重置 Grafana 数据库。
 
-不要把密钥放到 URL 查询参数中。
+当前 API Token、模型 key、SSH 密码及额外脱敏值在写入/输出边界被遮蔽；
+不会自动改写历史数据库和日志。短公共字符串、空值不应加入额外脱敏列表。
+模型/SSH 凭据不是本服务用户登录 Token，不能互换。
 
-## 六、身份会影响哪些行为
-
-下表适用于 `auth.enabled=true`；系统管理接口始终要求管理员身份。
-
-| 接口/行为 | 身份规则 |
-|---|---|
-| `POST /sessions` | 新会话记录为当前身份 |
-| `GET /sessions` | 只返回自己的会话 |
-| `GET/PATCH/DELETE /sessions/{id}` | 只能操作自己的会话；越权返回 404 |
-| `POST /chat` | 只能使用自己的会话 |
-| `GET /approvals` | 只看得到可见范围内的：`owner` = 自己触发的；`approvers_only` = 审批人看到全部 |
-| `POST /approvals/{id}` | 同上；范围外返回 404（与「未知 id」同形） |
-| `POST /alert` | 身份必须匹配 `auth.alert_identity` |
-| `GET/PUT /admin/config` | 必须是 `admin_identities` 中且有 Token 映射的身份；与审批人名单独立 |
-
-身份名只用于归属和授权，不用于选择模型、主机或命令。
-
-## 七、认证与授权错误
-
-缺少或无效 Token 返回 401；有效身份没有管理/webhook 权限返回 403。
-别人的会话或审批范围外的申请返回 404，避免暴露其存在。
-完整端点、公开路由和错误语义统一见 [API 参考](api.md)，不在此维护第二份状态码表。
-
-公开探针、控制台资源和自动生成的文档路由列表见 [API 端点总览](api.md#端点总览)。
-控制台公开资源不嵌入业务数据；系统管理 API 始终要求管理员 Token，普通业务 API 的
-鉴权受 `auth.enabled` 控制。FastAPI 自动生成的 `/docs`、`/redoc` 和 `/openapi.json`
-不经过业务 router 的 `require_auth`，需要隐藏接口结构时应在反向代理限制这些路径。
-
-## 八、Alertmanager webhook 配置
-
-### 1. 准备专用 Token
-
-在 `OPS_API_TOKENS` 中增加 Alertmanager 身份：
-
-```json
-{"k-am-随机值":"alertmanager"}
-```
-
-### 2. 写入凭据文件
-
-Bash：
-
-```bash
-printf '%s' '<k-am-随机值>' > /path/to/aiops_assistant_token
-```
-
-PowerShell：
-
-```powershell
-Set-Content -NoNewline -Path <路径> -Value '<k-am-随机值>'
-```
-
-凭据文件中只放密钥本身：
-
-- 不要写 `Bearer`
-- 不要加引号
-- 不要写身份名
-
-### 3. 配置 Alertmanager
-
-```yaml
-receivers:
-  - name: aiops-assistant
-    webhook_configs:
-      - url: http://127.0.0.1:8000/alert
-        send_resolved: true
-        http_config:
-          authorization:
-            type: Bearer
-            credentials_file: /path/to/aiops_assistant_token
-```
-
-推荐使用 `credentials_file`，避免把密钥直接写入 Alertmanager 配置。
-
-### 4. 验证
-
-不要只检查 Alertmanager 进程是否启动。启动成功不代表 webhook 能发送。
-
-1. 重启 Alertmanager。
-2. 手工推送一条测试告警。
-3. 查询 `GET /alerts/recent` 或 `GET /alerts/history`。
-4. 确认测试告警已入库。
-
-如果服务端没有收到，优先查看 Alertmanager 自己的日志。
-
-## 九、轮换和吊销
-
-Compose 轮换时编辑 `.runtime/compose.env` 的持久化字段，保留现有引号格式；
-管理员 Token 更换后同时更新 `AIOPS_USER_TOKEN`，且它必须映射到管理员身份。
-然后执行 `docker compose up -d --force-recreate --wait --wait-timeout 180`，
-初始化会重新生成各服务凭据。仅 `restart` 不会更新派生文件；不要直接修改派生文件。
-Alertmanager 采用映射中第一个 `alertmanager` 身份的 Token；新增替代 Token 后需把它排在旧值前面，
-完成重建及推送验证后再删除旧值。Grafana 已初始化的密码需要在 Grafana 中修改，修改初始化文件不会重置数据库密码。
-
-本地 Python 的推荐顺序：
-
-1. 新增一条密钥到 `OPS_API_TOKENS`。
-2. 重启服务。
-3. 客户端切换到新密钥。
-4. 确认业务正常。
-5. 删除旧密钥。
-6. 再次重启。
-
-以上为环境变量密钥轮换流程；页面管理的 Token 可热轮换或撤销，无需重启。
-
-应用会在写入和输出边界遮蔽当前 API Token、DeepSeek key、SSH 密码以及
-`OPS_REDACTION_SECRETS` 中长度足够的值，但不会自动改写已有数据库和历史日志。轮换曾经使用
-过的密钥，并按保留策略安全处理旧文件；不要把空值或短公共字符串加入额外脱敏列表。
-
-## 十、历史会话和身份
-
-开启鉴权后，会话只对 `sessions.user` 与身份相同的用户可见。
-
-如果历史会话的 `user` 没有对应 Token，会表现为：
-
-- 会话列表里看不到
-- 按 id 查询返回 404
-
-需要保留历史会话时，把某个 Token 映射到原来的身份名。
-
-查询现有身份名：
-
-```bash
-sqlite3 data/aiops_assistant.db   "SELECT DISTINCT user, COUNT(*) FROM sessions GROUP BY user;"
-```
-
-## 十一、常见问题
+## 八、验证与常见问题
 
 | 现象 | 检查 |
 |---|---|
-| 启动失败，提示鉴权配置错误 | `auth.enabled=true` 但 Token 为空或 JSON 非法 |
-| 请求返回 401 | 缺少 Token、Token 写错或不是 Bearer |
-| `/alert` 返回 403 | Token 身份与 `auth.alert_identity` 不一致 |
-| Alertmanager 没有任何告警入库 | webhook URL、凭据文件、Alertmanager 日志 |
-| 开启鉴权后会话看不到 | 当前身份与历史 `sessions.user` 不一致 |
-| 修改 `.env` 不生效 | 没有重启服务 |
-| 系统管理入口不显示 | 当前 Token 未映射到 `admin_identities`；检查管理 API 的 401/403 |
+| 401 | 对应栈的 Token、撤销/轮换状态、Authorization Bearer 格式 |
+| 管理页 403 | 身份是否在管理员名单 |
+| 审批看不到 | owner / approvers_only 模式及审批名单 |
+| webhook 403 | Token 映射是否与 alert_identity 相同 |
+| 修改部署凭据未生效 | 是否重建 init/assistant，是否误改派生文件 |
+| 失去管理员入口 | 恢复受限部署凭据备份，不能删除运行目录重新初始化 |
 
-## 十二、安全检查清单
+验收使用独立栈，验证管理员权限、明文一次性、撤销和重建恢复、旧管理员及 webhook
+继续有效。真实模型/SSH 只由显式测试按钮或有授权的业务触发。
+完整步骤见 [容器测试与验收](testing.md)，配置字段见 [配置指南](configuration.md)。
 
-- 使用 `secrets.token_urlsafe(32)` 生成密钥
-- 每个调用方使用独立 Token
-- Alertmanager 使用专用 Token
-- 多人环境使用 `approvers_only`
-- 至少保留一个可映射到有效 Token 的管理员身份，轮换管理员 Token 前先验证新身份
-- 不把密钥写入 URL、日志、截图或工单
-- `.env` 和凭据文件不进入 Git
-- 定期轮换和吊销密钥
-- 不在没有鉴权的情况下监听 `0.0.0.0`
+## 九、用户主机访问权限与会话隔离
 
-## 相关文档
+管理员先在“用户 Token”创建身份，再到“用户主机授权”勾选主机，点击顶部“保存并生效”。
+权限使用稳定身份名，不使用 Token 字符串。普通用户默认无主机权限；管理员隐式可访问所有已登记主机，
+但不能读取、使用、改名或删除其他用户的会话。审批角色与管理员角色分别授权。
 
-- [quickstart.md](quickstart.md)：首次运行
-- [guide.md](guide.md)：日常使用
-- [configuration.md](configuration.md)：配置字段
-- [database.md](database.md)：会话身份和数据库维护
-- [console.md](console.md)：控制台与管理员操作
-- [api.md](api.md)：接口权限及错误语义
+磁盘字段示例（JSON 字符串，主机 ID 必须已登记，不支持通配符）：
 
-## 页面用户 Token
+```yaml
+auth:
+  host_access: '{"alice":["node-a"],"bob":["node-b"]}'
+```
 
-管理员可在“系统管理 → 用户 Token”按身份名生成随机 Token。创建或轮换成功时明文
-只输出一次，禁止缓存；客户端不要把该响应写入浏览器持久化存储或日志。GET 只返回身份
-与管理状态，不返回密钥。页面 Token 与原部署映射合并，管理员/审批人角色仍由现有名单
-决定。不能创建 Webhook 身份 Token，部署管理员和 Alertmanager Token 保持只读。
-撤销或轮换立即影响后续请求，已绑定旧快照的请求可完成，身份历史会话不删除。
-接口即使 `auth.enabled=false` 也始终要求管理员，revision 或运行冲突返回 409。
-操作说明见 [控制台](console.md#管理员配置操作)，存储与恢复见 [部署说明](deployment.md)。
+主机列表、即时/趋势指标、实时/历史告警、巡检、执行记录都在后端过滤；无 host_id 的查询也只合并授权主机。
+无法解析到已登记主机的历史告警仅管理员可见。会话列表同时按用户和主机权限过滤，聊天锁定会话主机。
+访问权限不会授予 SSH 凭据、诊断白名单、写命令白名单、自动执行或审批能力。
+
+撤销某主机授权后，后续请求不能继续使用该主机的旧会话，历史数据保留；重新授权可恢复。
+令牌撤销后身份认证失败；同名身份恢复时保留原 ACL。撤销管理员角色时其显式 ACL 才开始决定主机范围。
+审批列表与决策同时校验决策人和申请人的当前主机权限。存在未决审批或正在执行的写业务时，
+配置/凭据保存返回 409：先处理、取消会话审批或等申请过期，再撤权。不要把 409 当作撤权成功。
+已绑定旧快照的读取请求可完成，保存成功后新请求使用新快照；单 worker 边界不变。
+
+旧容器曾因 auth.enabled=false 跳过 Token 解析，令所有请求 user=None，造成会话隔离失效。
+现在 HTTP 始终解析身份，已删除旧开关。已有匿名会话不能可靠推断原创建者，因此默认不可访问，
+不提供自动认领。本次维护经用户明确授权，备份后仅清除了确认的 3 个匿名会话及关联消息/决策，
+未清空其他业务历史。备份含敏感数据，只保存在受限运行目录，不提交仓库。
+
+
+身份与角色名称按大小写精确匹配，例如 Alice 与 alice 不共享会话、主机授权或审批角色。
+管理配置保存允许保留原有失效审批身份，避免撤销 Token 后或旧名单残留时阻塞其他配置；
+新增审批身份仍需匹配有效 Token，管理员身份校验保持严格。
+控制台显示失效角色项供管理员显式移除，系统不会自动改写大小写或转移角色。

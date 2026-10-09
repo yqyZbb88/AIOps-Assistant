@@ -1,49 +1,45 @@
-# 环境与依赖
-.env
-.runtime/
-.env.compose
-.venv/
-__pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
-.pytest_tmp*/
-.patch.tmp
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
+# 本地环境与配置；公开环境变量样例正常提交。
+.env*
+!/.env.example
+compose.env
+compose.override.yaml
+compose.override.yml
+*.local.*
 
-# 配置中可能产生的本地覆盖
-*.local.yaml
+# 当前部署数据目录，以及 CI 和隔离验收使用的临时目录。
+/.runtime/
+/.pytest_tmp*/
 
-# 编辑器
-.vscode/
-.idea/
+# 当前项目的本机编辑器设置。
+/.vscode/
 
-# 本机工具配置（含本机命令白名单，不入库）
-.claude/settings.local.json
-
-# 本地参考资料（仅本地保留，不入库）
-参考/
-
-# 其它
-logs/
-*.log
-
-# SQLite 持久化产物（storage.db_path 默认落在 data/）
-# 务必连 -wal / -shm 一起排除：`*.db` 匹配不到这两个旁文件，而它们同样含会话原文
-data/
+# 数据库及旁文件、日志、私钥和凭据文件。
 *.db
-*.db-wal
-*.db-shm
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+known_hosts
+known_hosts.*
 
-# 仅本地保留、不提交的规划与维护文档
-docs/_local/
-PROJECT_HANDOVER.md
-ARCHITECTURE.md
-roadmap.md
+# Python 编译产物、临时文件和本地备份。
+*.py[cod]
+*.tmp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
 
-# 仅本地保留、不提交的压测脚本
-scripts/load_gen.sh
-scripts/load_mem.sh
+# 源码、测试、文档、CI、依赖锁文件和 deploy/ 下的公共模板正常提交。

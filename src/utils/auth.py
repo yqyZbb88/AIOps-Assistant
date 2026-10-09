@@ -5,7 +5,7 @@
 - 无第三方依赖的降级部署也要能照常 import（见 tests/test_no_langchain_import.py）。
 
 密钥 → 身份 的映射来自 config/settings.yaml 的 `auth.tokens`（JSON 字符串原文），
-YAML 应保存环境占位符，真实值由 `.env` 或部署环境提供。插值后的映射与缓存
+YAML 应保存环境占位符，真实值由页面凭据或容器部署环境提供。插值后的映射与缓存
 在进程内包含明文密钥，不应打印或返回给客户端。
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from functools import lru_cache
 
 
 class AuthConfigError(Exception):
-    """鉴权配置不可用：JSON 非法 / 不是映射 / 空键空值 / 启用了却没配任何密钥。"""
+    """鉴权配置不可用：JSON 非法 / 不是映射 / 空键空值 / 没配任何密钥。"""
 
 
 @lru_cache(maxsize=8)
@@ -99,7 +99,6 @@ def resolve_identity(
 
 
 def ensure_usable(
-    enabled: bool,
     raw: str | None,
     *,
     approval_mode: str = "owner",
@@ -111,12 +110,10 @@ def ensure_usable(
             "auth.approval_mode 只支持 owner / approvers_only，"
             f"得到: {approval_mode!r}"
         )
-    if not enabled:
-        return
     if not parse_tokens(raw):
         raise AuthConfigError(
-            "auth.enabled 为 true，但 auth.tokens 解析不出任何密钥。"
-            "请把密钥映射写进 .env 的 OPS_API_TOKENS，或把 auth.enabled 改回 false。"
+            "auth.tokens 解析不出任何密钥。"
+            "请恢复容器部署凭据中的 OPS_API_TOKENS，并重新初始化和重建服务。"
         )
     if approval_mode == "approvers_only" and not parse_approvers(approvers_raw):
         raise AuthConfigError(

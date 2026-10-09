@@ -28,7 +28,7 @@ from src.utils.config_loader import ROOT_DIR, parse_yaml
 
 logger = logging.getLogger("aiops_assistant.agent_actions.catalog")
 
-# 默认配置文件：<仓库根>/config/agent_actions.yaml（可用 OPS_AGENT_ACTIONS_FILE 覆盖）
+# 默认配置文件：/app/config/agent_actions.yaml（可用 OPS_AGENT_ACTIONS_FILE 覆盖）
 DEFAULT_AGENT_ACTIONS_FILE: Path = ROOT_DIR / "config" / "agent_actions.yaml"
 
 #: 统一指标目录可能生成的 Agent 工具名；无论当前是否启用，写命令一律不得重名。
@@ -107,7 +107,7 @@ def _parse_target(data: Any) -> AgentActionsTarget:
         raise AgentActionsConfigError("target 必须是映射（host/port/username/password 等）")
     host = _as_str(data.get("host"), "target.host")
     if not host:
-        raise AgentActionsConfigError("target.host 不能为空（需与 .env 中 SSH 密码变量对应的主机）")
+        raise AgentActionsConfigError("target.host 不能为空（需与 SSH 凭据对应的主机）")
     password = data.get("password", "") or ""
     key_filename = data.get("key_filename", "") or ""
     known_hosts = data.get("known_hosts", "") or ""

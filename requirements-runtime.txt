@@ -1,5 +1,5 @@
 # AIOps-Assistant 依赖清单：核心 + 可选两块。
-# 推荐在独立虚拟环境安装（本项目开发于 conda 环境 `langchain1.2`）。
+# 由 Dockerfile 在容器构建阶段安装并使用 requirements-lock.txt 约束。
 # 可选依赖全部惰性加载：未安装时对应能力自动降级，服务照常启动。
 
 # ---------- 核心（服务必需） ----------
@@ -11,7 +11,7 @@ pyyaml>=6.0
 ruamel.yaml>=0.18,<0.19
 
 # ---------- 可选 ① 聊天 Agent 与告警 AI 分析（agent/、plugins/llm_clients/） ----------
-#   模型统一复用根目录 init.py 的 init_chat_model（需 python-dotenv 读 .env）。
+#   模型统一复用init.py 的惰性 build_model 工厂；python-dotenv 仅解析部署凭据文件。
 langchain>=1.0,<2.0
 langgraph>=1.0,<2.0
 langchain-core>=1.0,<2.0

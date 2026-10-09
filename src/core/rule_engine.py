@@ -35,7 +35,7 @@ INSTANCE_MISMATCH_MARK = "instance_mismatch"
 HOST_UNRESOLVED_MARK = "host_unresolved"
 HOST_UNAUTHORIZED_MARK = "host_action_unauthorized"
 
-# 默认规则文件：<仓库根>/config/rules.yaml
+# 默认规则文件：/app/config/rules.yaml
 DEFAULT_RULES_FILE: Path = ROOT_DIR / "config" / "rules.yaml"
 
 

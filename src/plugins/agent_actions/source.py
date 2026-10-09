@@ -6,7 +6,7 @@
 - 写（本模块）：sudo 按目录逐条声明；远端非零退出码**就是失败** → 抛 AgentActionError。
 
 安全要点（与只读诊断一致的部分）：
-- 连接凭据只在构造时注入的 AgentActionsConfig.target 里（密码为 .env 占位插值），
+- 连接凭据只在构造时注入的 AgentActionsConfig.target 里（密码由容器环境插值或主机凭据注入），
   **模型上下文与工具参数里永无 host/密码/私钥**；
 - run() 只接受「命令名 + 语义参数」；params 里若出现任何连接字段（host/port/…）一律拒绝
   （工具层本就不会生成这些字段，这里是纵深防御）；

@@ -90,7 +90,7 @@ function setup() {
   const source = fs.readFileSync(path.join(__dirname, "../src/web/console.js"), "utf8")
     .replace(/\ninitialize\(\);\s*$/, "\n");
   const context = {document, getComputedStyle: () => ({marginTop: "16px"}), localStorage: {getItem: () => null}, console};
-  vm.runInNewContext(source + "\nglobalThis.uiTest = {renderCredentials, changeCredential, createTrendPlot, trendStep, clearCredentialInputs, loadFavoriteTrends, createSummarySvg, trendCard, appendSnapshot, appendRecordDetail, activateAdminSection, activateAdminCatalog, bindAdminTablist, clearAdminView, formatValue, loadHostStatus, loadConversation, loadRecords, loadSessions, request, bindEvents, prepareDiagnostic, sendChat, refreshAll, loadSelectedTrend, METRIC_MAP, state};", context);
+  vm.runInNewContext(source + "\nglobalThis.uiTest = {renderAdminHostAccess, renderAdminSecurity, loadHosts, renderCredentials, changeCredential, createTrendPlot, trendStep, clearCredentialInputs, loadFavoriteTrends, createSummarySvg, trendCard, appendSnapshot, appendRecordDetail, activateAdminSection, activateAdminCatalog, bindAdminTablist, clearAdminView, formatValue, loadHostStatus, loadConversation, loadRecords, loadSessions, request, bindEvents, prepareDiagnostic, sendChat, refreshAll, loadSelectedTrend, METRIC_MAP, state};", context);
   return {ui: context.uiTest, tabs, panes, catalogTabs, catalogPanes, elements, context};
 }
 
@@ -192,6 +192,7 @@ test("late host status is stored under the host that was requested", async () =>
   context.testRequest = () => new Promise((done) => { resolve = done; });
   vm.runInNewContext("request = testRequest; renderHosts = () => {}; renderHostDetail = () => {};", context);
   ui.state.selectedHostId = "node-a";
+  ui.state.hosts = [{host_id: "node-a"}, {host_id: "node-b"}];
   const pending = ui.loadHostStatus();
   ui.state.selectedHostId = "node-b";
   resolve({host: {host_id: "node-a"}, metrics: {}});
@@ -622,4 +623,117 @@ test("notice retains the original content slot and ignores its scrolling vertica
   assert.equal(anchor.style.height, "40px");
   context.hideNotice();
   assert.equal(anchor.hidden, true);
+});
+
+
+test("host access editor binds identity grants, keeps admin all-host controls read-only", () => {
+  const {ui, elements} = setup();
+  elements.set("admin-host-access", new Element("div"));
+  ui.state.admin = {revision: "a".repeat(64), available_identities: ["admin", "alice", "bob"], config: {
+    settings: {admin_identities: ["admin"], host_access: {alice: ["node-a"]}},
+    hosts: [{host_id: "node-a", name: "A", enabled: true}, {host_id: "node-b", name: "B", enabled: true}]
+  }};
+  ui.renderAdminHostAccess();
+  const cards = elements.get("admin-host-access").children;
+  const adminInputs = all(cards[0], (e) => e.tagName === "input");
+  assert.equal(adminInputs.length, 2);
+  assert.ok(adminInputs.every((e) => e.checked && e.disabled && e.dataset.roleReadonly === "true"));
+  const aliceInputs = all(cards[1], (e) => e.tagName === "input");
+  assert.ok(aliceInputs[0].checked);
+  assert.equal(aliceInputs[1].checked, false);
+  aliceInputs[1].checked = true; aliceInputs[1].listeners.change();
+  assert.deepEqual(Array.from(ui.state.admin.config.settings.host_access.alice), ["node-a", "node-b"]);
+  assert.ok(ui.state.adminDirty);
+  const bobInputs = all(cards[2], (e) => e.tagName === "input");
+  assert.ok(bobInputs.every((e) => !e.checked));
+  const revoke = all(cards[1], (e) => e.tagName === "button")[0];
+  revoke.listeners.click();
+  assert.equal(ui.state.admin.config.settings.host_access.alice.length, 0);
+});
+
+test("host access panel is cleared when administrator access is lost", () => {
+  const {ui, elements} = setup();
+  elements.set("admin-host-access", new Element("div"));
+  elements.get("admin-host-access").append(new Element("input"));
+  ui.clearAdminView();
+  assert.equal(elements.get("admin-host-access").children.length, 0);
+});
+
+test("revoked host refresh removes cached data and selected conversation", async () => {
+  const {ui, context, elements} = setup();
+  elements.set("chat-log", new Element("div")); elements.get("chat-log").append(new Element("p"));
+  ui.state.selectedHostId = "node-a"; ui.state.selectedSessionId = "private";
+  ui.state.hosts = [{host_id: "node-a", enabled: true}];
+  ui.state.sessions = [{session_id: "private", host_id: "node-a"}];
+  ui.state.hostStatuses.set("node-a", {metrics: {cpu: 99}});
+  ui.state.history.alerts = [{host_id: "node-a"}];
+  context.testRequest = async () => [];
+  vm.runInNewContext("request = testRequest; renderHostSelectors = () => {};", context);
+  await ui.loadHosts();
+  assert.equal(ui.state.selectedHostId, "");
+  assert.equal(ui.state.selectedSessionId, "");
+  assert.equal(ui.state.hostStatuses.size, 0);
+  assert.equal(ui.state.sessions.length, 0);
+  assert.equal(ui.state.history.alerts.length, 0);
+  assert.equal(elements.get("chat-log").children.length, 0);
+});
+
+test("late status response cannot restore a revoked host cache", async () => {
+  const {ui, context} = setup();
+  let resolve;
+  context.testRequest = () => new Promise((done) => { resolve = done; });
+  vm.runInNewContext("request = testRequest;", context);
+  ui.state.selectedHostId = "node-a"; ui.state.hosts = [{host_id: "node-a"}];
+  const pending = ui.loadHostStatus();
+  ui.state.hosts = []; ui.state.selectedHostId = "";
+  resolve({host: {host_id: "node-a"}, metrics: {cpu: 99}});
+  await pending;
+  assert.equal(ui.state.hostStatuses.has("node-a"), false);
+});
+
+
+test("stale approver is visible and removable without merging Alice and alice", () => {
+  const {ui, elements, context} = setup();
+  ui.state.admin = {revision: "a".repeat(64), available_identities: ["admin", "Alice"], config: {
+    settings: {admin_identities: ["admin"], approver_identities: ["admin", "alice"],
+      approval_mode: "approvers_only", alert_identity: "", host_access: {}}, hosts: []
+  }};
+  context.Option = function (label, value) {
+    const option = new Element("option"); option.textContent = label; option.value = value; return option;
+  };
+  vm.runInNewContext("showNotice = text => { globalThis.lastNotice = text; };", context);
+  ui.renderAdminSecurity();
+  const container = elements.get("admin-security");
+  const stale = all(container, (e) => e.tagName === "label" &&
+    e.children.some((c) => c.textContent.startsWith("alice（")))[0];
+  assert.ok(stale);
+  assert.ok(stale.children[0].textContent.includes("Alice"));
+  const input = all(stale, (e) => e.tagName === "input")[0];
+  assert.equal(input.checked, true);
+  const active = all(container, (e) => e.tagName === "label" &&
+    e.children.some((c) => c.textContent === "Alice"))[0];
+  assert.equal(all(active, (e) => e.tagName === "input")[0].checked, false);
+  assert.deepEqual(Array.from(ui.state.admin.config.settings.approver_identities), ["admin", "alice"]);
+  input.checked = false; input.listeners.change();
+  assert.deepEqual(Array.from(ui.state.admin.config.settings.approver_identities), ["admin"]);
+  input.checked = true; input.listeners.change();
+  assert.equal(input.checked, false);
+  assert.ok(context.lastNotice.includes("区分大小写"));
+  assert.deepEqual(Array.from(ui.state.admin.config.settings.approver_identities), ["admin"]);
+});
+
+test("host grants for Alice and alice remain separate exact identities", () => {
+  const {ui, elements} = setup();
+  elements.set("admin-host-access", new Element("div"));
+  ui.state.admin = {revision: "a".repeat(64), available_identities: ["admin", "Alice", "alice"], config: {
+    settings: {admin_identities: ["admin"], host_access: {alice: []}},
+    hosts: [{host_id: "node-a", name: "A", enabled: true}]
+  }};
+  ui.renderAdminHostAccess();
+  const card = elements.get("admin-host-access").children.find((e) =>
+    e.children.some((c) => c.textContent === "Alice"));
+  const input = all(card, (e) => e.tagName === "input")[0];
+  input.checked = true; input.listeners.change();
+  assert.deepEqual(Array.from(ui.state.admin.config.settings.host_access.Alice), ["node-a"]);
+  assert.deepEqual(Array.from(ui.state.admin.config.settings.host_access.alice), []);
 });

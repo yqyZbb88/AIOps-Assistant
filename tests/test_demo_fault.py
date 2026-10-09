@@ -3,9 +3,8 @@ from scripts import demo_fault
 
 def test_textfile_uses_lf_and_is_complete(tmp_path, monkeypatch):
     target = tmp_path / "aiops_demo_fault.prom"
-    monkeypatch.setattr(demo_fault, "TARGET", target)
 
-    demo_fault.write({"cpu": 95, "memory": 0, "disk": 0})
+    demo_fault.write({"cpu": 95, "memory": 0, "disk": 0}, target)
 
     payload = target.read_bytes()
     assert b"\r" not in payload

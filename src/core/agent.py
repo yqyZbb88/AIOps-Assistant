@@ -81,7 +81,7 @@ class OpsAgent:
     ) -> ChatReply:
         """带会话的一轮：返回回答文本 + 会话 id / 会话名（`/chat` 走这里）。
 
-        `user` 是调用者身份，由 API 层从密钥推出（鉴权关闭时为 `None`）。
+        `user` 是调用者身份，由 API 层从有效密钥推出（None 仅供可信内部旧入口）。
         `session_id` 未知**或不属于 `user`** 一律抛 SessionNotFoundError（api 层转 404，
         不静默重建、也不区分「不存在」与「不是你的」）。
         """

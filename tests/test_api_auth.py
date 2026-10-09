@@ -30,7 +30,7 @@ def _as(token: str) -> dict[str, str]:
 
 
 def _make_app(
-    *, enabled: bool = True, tokens: str = _TOKENS, db_path=None, alert_identity: str = ""
+    *, tokens: str = _TOKENS, db_path=None, alert_identity: str = ""
 ) -> FastAPI:
     """默认不落盘（测试不写真实 db）；给了 `db_path` 才打开持久化。
 
@@ -47,7 +47,8 @@ def _make_app(
             llm=LLMSettings(enabled=False),
             storage=storage,
             auth=AuthSettings(
-                enabled=enabled, tokens=tokens, alert_identity=alert_identity
+                tokens=tokens, alert_identity=alert_identity,
+                host_access='{"alice":["legacy-default"],"bob":["legacy-default"],"legacy-user":["legacy-default"]}'
             ),
         )
     )
@@ -76,7 +77,7 @@ def test_json_response_redacts_registered_api_token(client, monkeypatch):
     monkeypatch.setattr(
         client.app.state.agent,
         "active_alerts",
-        lambda: [{"alertname": "Leak", "summary": "token=k-alice"}],
+        lambda **kwargs: [{"alertname": "Leak", "summary": "token=k-alice"}],
     )
 
     response = client.get("/alerts/active", headers=_as("k-bob"))
@@ -156,35 +157,34 @@ def test_exempt_routes_do_not_require_credentials():
 
 
 # -- 启动期校验 -------------------------------------------------------------
-def test_enabled_without_tokens_refuses_to_start():
-    """绝不接受「空密钥 = 放行」：一次配置漏填就会让服务全开。"""
-    with pytest.raises(RuntimeError, match="拒绝启动"):
-        _make_app(tokens="")
+def test_production_startup_requires_tokens():
+    from src.main import _check_auth
+    with pytest.raises(RuntimeError):
+        _check_auth(Settings(auth=AuthSettings(tokens="")))
 
 
-def test_enabled_with_invalid_tokens_refuses_to_start():
+
+def test_invalid_tokens_refuses_to_start():
     with pytest.raises(RuntimeError, match="拒绝启动"):
         _make_app(tokens="{not json")
 
 
-def test_configured_but_disabled_logs_a_warning(caplog):
-    """配了密钥却没启用：不影响安全，但用户很可能**以为自己受保护了**。"""
-    with caplog.at_level(logging.WARNING, logger="aiops_assistant.main"):
-        app = _make_app(enabled=False)
-
-    assert any("无鉴权" in r.getMessage() for r in caplog.records)
-
+def test_all_business_requests_require_identity():
+    app = _make_app()
     with TestClient(app) as c:
-        assert c.get("/sessions").status_code == 200, "确实没在鉴权"
+        assert c.get("/sessions").status_code == 401
+        assert c.get("/sessions", headers=_as("k-alice")).status_code == 200
 
 
-# -- 关闭时行为与改造前一致 --------------------------------------------------
-def test_disabled_auth_needs_no_credentials():
-    """出厂默认（enabled=false）：既有调用方无需任何改动。"""
-    app = _make_app(enabled=False, tokens="")
+
+
+# -- 内部空凭据装配仍拒绝业务访问 --------------------------------------------------
+def test_injected_empty_identity_fixture_fails_closed():
+    app = _make_app(tokens="")
     with TestClient(app) as c:
-        assert c.get("/sessions").status_code == 200
-        assert c.get("/approvals").status_code == 200
+        assert c.get("/sessions").status_code == 503
+        assert c.get("/approvals").status_code == 503
+
 
 
 # -- /alert 的身份白名单（授权，区别于上面的「认证」） ------------------------
@@ -232,11 +232,13 @@ def test_alert_identity_empty_keeps_the_old_behaviour():
         assert c.post("/alert", json=_alert_payload(), headers=_as("k-alice")).status_code == 200
 
 
-def test_alert_identity_is_not_enforced_when_auth_is_off():
-    """鉴权关着时也没有身份可言，不校验（行为与改造前一致）。"""
-    app = _make_app(enabled=False, tokens="", alert_identity="alertmanager")
+def test_alert_identity_is_always_enforced():
+    app = _make_app(alert_identity="alertmanager")
     with TestClient(app) as c:
-        assert c.post("/alert", json=_alert_payload()).status_code == 200
+        assert c.post("/alert", json=_alert_payload()).status_code == 401
+        assert c.post("/alert", json=_alert_payload(), headers=_as("k-alice")).status_code == 403
+        assert c.post("/alert", json=_alert_payload(), headers=_as("k-am")).status_code == 200
+
 
 
 @pytest.mark.parametrize("path", ["/alerts/recent", "/alerts/history"])
@@ -357,13 +359,13 @@ def test_delete_by_non_owner_does_not_cancel_pending_approvals(owned):
 
 
 def test_legacy_row_is_invisible_until_a_key_maps_to_its_user(owned):
-    """**升级须知**：开启鉴权后，存量会话的 `user` 若不在密钥映射里，就访问不到了。
+    """**升级须知**：存量会话的 `user` 若不在密钥映射里，就访问不到了。
 
     库里实测有 `user='legacy-user'` 与 `user='string'`（Swagger 示例值留下的垃圾）两类。
     要保住某段对话，把一条密钥映射到它原本的 `user` 值上即可——这条用例把那个
     逃生通道钉死，免得用户以为老数据「被删了」。
     """
-    legacy = owned.store.create(user="legacy-user").session_id
+    legacy = owned.store.create(user="legacy-user", host_id="legacy-default").session_id
 
     for token in ("k-alice", "k-bob"):
         assert owned.get(f"/sessions/{legacy}", headers=_as(token)).status_code == 404
@@ -384,11 +386,11 @@ def test_unowned_legacy_row_is_invisible_to_every_identity(owned):
         assert owned.get(f"/sessions/{unowned}", headers=_as(token)).status_code == 404
 
 
-def test_auth_off_sees_everything_again(owned):
-    """关掉鉴权 → 无身份 → 不校验归属，行为与改造前一致（残余风险也一并回来）。"""
+def test_identity_check_does_not_bypass_session_ownership(owned):
     sid = _alice_session(owned)
-
-    app2 = _make_app(enabled=False, tokens="", db_path=owned.app.state.settings.storage.db_path)
+    app2 = _make_app(db_path=owned.app.state.settings.storage.db_path)
     with TestClient(app2) as c2:
-        assert c2.get(f"/sessions/{sid}").status_code == 200
-        assert len(c2.get("/sessions").json()) == 1
+        assert c2.get(f"/sessions/{sid}").status_code == 401
+        assert c2.get(f"/sessions/{sid}", headers=_as("k-bob")).status_code == 404
+        assert c2.get("/sessions", headers=_as("k-bob")).json() == []
+        assert c2.get(f"/sessions/{sid}", headers=_as("k-alice")).status_code == 200

@@ -1,23 +1,22 @@
 # HTTP API 参考与错误语义
 
-本文按当前 `0.6.1` 代码描述公开接口及 `/console` 使用的契约。精确字段、枚举和交互式
+本文按当前 `0.6.2` 代码描述公开接口及 `/console` 使用的契约。精确字段、枚举和交互式
 schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档路由当前公开，部署到
 不可信网络时需在反向代理限制。本文示例中的 `node-a`、Token 和告警值是占位符，
 不代表真实环境。不要把实际 Token、SSH 目标、数据库内容或审批理由贴进工单。
 
 ## 通用规则
 
-- 基址默认是 `http://127.0.0.1:8000`。`auth.enabled=true` 时，普通业务接口需带
+- 基址默认是 `http://127.0.0.1:8000`。所有普通业务接口始终需带
   `Authorization: Bearer <Token>`；管理接口始终要求管理员 Token。身份由服务端
   Token 映射决定，请求体中的用户名不可信。
-- JSON 响应经过统一敏感信息脱敏。主机 API 会返回 Prometheus `job`/`instance` 以解释
+- 普通 JSON 响应经过统一敏感信息脱敏；成功创建/轮换用户 Token 的专用响应仅当次返回明文并禁止缓存。主机 API 会返回 Prometheus `job`/`instance` 以解释
   监控目标，但不会返回 SSH 地址、用户名、密码或密钥路径。
 - 多主机模式中的操作目标必须是登记的 `host_id`；请求不能提交自由 SSH 地址、PromQL
   或 Shell。会话一旦创建，其 `host_id` 不可修改。
 - HTTP 成功只说明请求处理完毕，不代表 Exporter 或 Prometheus 可达；应同时看返回体的
   `state`、`exporter.state`、`storage` 和执行 `status`。
-- 管理配置保存成功后立即切换运行快照。管理员 API 始终要求 Token，不受普通业务
-  `auth.enabled=false` 的影响。
+- 管理配置保存成功后立即切换运行快照。管理员 API 始终要求管理员 Token。
 
 ## 端点总览
 
@@ -44,8 +43,8 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 | POST | `/admin/hosts/preview`、`/admin/hosts/ssh-check`、`/admin/hosts/add` | 新主机预览、只认证 SSH 测试与登记 | 始终管理员 Bearer |
 
 `/status` 与 `/status-assets/*` 已删除，访问返回 404；不设置重定向。
-表中的“普通 Bearer”和身份权限以 `auth.enabled=true` 为前提；关闭时普通接口
-不校验 Token，也不按身份隔离。管理员接口不受该开关影响。
+业务 API 始终校验身份，鉴权开关已删除。缺少/无效 Token 返回 401，无可用身份配置返回 503。
+主机列表仅含授权主机；直接访问未授权主机或其会话统一返回 404。
 
 ## 主机、指标和健康状态
 
@@ -102,8 +101,8 @@ Content-Type: application/json
 ```
 
 创建成功返回 201 与会话元信息，其中 `session_id` 是后续唯一定位键。多主机时必须显式
-提供 `host_id`；只有一台启用主机时可省略。`GET /sessions?limit=50` 按最后活动时间
-倒序列出当前身份的会话；`GET /sessions/{id}` 返回元信息及最近 100 条消息的状态。
+提供 `host_id`；只有一台获授权且启用的主机时可省略。`GET /sessions?limit=50` 按最后活动时间
+倒序列出当前身份仍有主机访问权的会话；`GET /sessions/{id}` 返回元信息及最近 100 条消息的状态。
 `PATCH /sessions/{id}` 的 `{"name":"新名称"}` 改标签，空白名清除标签；
 `DELETE /sessions/{id}` 删除消息并取消未决审批。删除/越权/未知会话统一 404；
 改名后的返回读取若遇到并发删除，同样返回 404。
@@ -118,8 +117,7 @@ Content-Type: application/json
 
 `/chat` 响应包含 `reply`、`session_id`、`session_name`。当前是完整 JSON 响应，
 **不是流式输出**；控制台会先在本地回显用户输入并显示加载动画。消息超过
-`chat.max_message_chars` 返回 413。存储关闭时聊天可降级回答，但不会保留多轮历史；
-具体降级条件见 [数据库说明](database.md)。启用会话存储时，如果会话在回答期间被删除，
+`chat.max_message_chars` 返回 413。存储关闭或无法验证会话时返回 503，避免无主机范围的聊天回退。启用会话存储时，如果会话在回答期间被删除，
 返回 404，不重新创建会话。待审批轮次写入失败会取消本次申请并返回 503；
 不能用未保存的审批申请继续执行。普通最终回答遇到其它历史写入失败时仍可返回，历史可能缺失。
 
@@ -145,7 +143,7 @@ Content-Type: application/json
 `alerts[]`；每条告警常用 `labels.alertname`、`labels.job`、`labels.instance`、
 `startsAt`、`fingerprint`）。返回 `received`、逐条 `alerts`、规则 `remediation`
 和未匹配告警的 `ai_advice`。`/alert` 可能触发不经审批的规则自动处置。
-`auth.enabled=true` 时只允许专用 `alert_identity` 身份投递；自动执行总开关默认关闭。
+始终要求有效 Token，并按 `alert_identity` 限定投递身份；自动执行总开关默认关闭。
 归档写入失败返回 503，告警发送方可据此重试；重复写操作由幂等记录保护。
 
 三个告警查询不要混淆：

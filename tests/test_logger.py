@@ -21,7 +21,7 @@ from src.utils.logger import (
 def _isolate_audit_handlers():
     """logger 的 handler 是**全局状态**，必须逐用例隔离。
 
-    关键：`import src.main` 会执行模块级的 `app = create_app()`，用**仓库真实配置**
+    关键：`import src.main` 会执行模块级的 `app = create_app()`，用容器模板配置
     给 audit logger 挂上一个文件 handler。它会跨用例残留，让「只剩自己挂的那一个」
     这类断言全部失效（本文件单独跑能过、全量跑就红，就是它在作祟）。
     故用例前摘掉所有文件 handler，用例后恢复原状。
@@ -145,14 +145,21 @@ def test_inspection_file_is_separate_and_written(tmp_path):
     assert _inspection_file_handlers()
 
 
-def test_inspection_does_not_print_to_console(tmp_path, caplog):
+def test_inspection_does_not_print_to_console(tmp_path):
+    from io import StringIO
+
     target = tmp_path / "inspection.log"
     configure_logging(level="INFO", audit=True, inspection_file=str(target))
-
-    with caplog.at_level(logging.INFO):
+    output = StringIO()
+    console = logging.StreamHandler(output)
+    root = logging.getLogger()
+    root.addHandler(console)
+    try:
         logging.getLogger(INSPECTION_LOGGER_NAME).warning("只写文件，不进 console")
-
-    assert not any("只写文件，不进 console" in record.getMessage() for record in caplog.records)
+    finally:
+        root.removeHandler(console)
+        console.close()
+    assert "只写文件，不进 console" not in output.getvalue()
     assert "只写文件，不进 console" in target.read_text(encoding="utf-8")
 
 

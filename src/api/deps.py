@@ -31,22 +31,12 @@ _bearer = HTTPBearer(auto_error=False, description="形如 `Bearer <密钥>`")
 def require_auth(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> str | None:
-    """校验 Bearer 密钥并返回身份；鉴权未启用时返回 `None`。
-
-    返回值的两种含义（`None` 是「**无身份**」，不是「认证失败」）：
-
-    - 鉴权关闭 → `None`：调用方据此**跳过**所有者校验，行为与改造前完全一致；
-    - 鉴权开启 → 配置里映射的身份字符串，是**服务端事实**，调用方直接采信。
-
-    注意 `credentials` 为 `None` 覆盖了两种情况：没带 Authorization 头、或带了但
-    scheme 不是 Bearer —— `HTTPBearer(auto_error=False)` 两种都回 `None`。
-    """
-    # 防御式取用：照 health.py 的先例。裸 FastAPI 实例（测试里可能有）不该 500。
+) -> str:
+    """业务接口始终校验 Token，并按身份执行归属和权限校验。"""
     settings = getattr(request.app.state, "settings", None)
     auth = getattr(settings, "auth", None)
-    if auth is None or not auth.enabled:
-        return None
+    if auth is None:
+        raise HTTPException(status_code=503, detail="身份配置不可用")
 
     try:
         tokens = parse_tokens(auth.tokens)
@@ -55,7 +45,7 @@ def require_auth(
         # 万一有人绕过 create_app 直接挂路由，也不能退化成「放行」。
         raise HTTPException(status_code=500, detail=f"鉴权配置无效: {exc}") from exc
     if not tokens:
-        raise HTTPException(status_code=500, detail="auth.enabled 为真但未配置任何密钥")
+        raise HTTPException(status_code=503, detail="未配置业务身份，请恢复部署凭据")
 
     if credentials is None:
         raise HTTPException(
@@ -70,6 +60,7 @@ def require_auth(
             detail="凭据无效",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    request.state.identity = identity
     return identity
 
 
@@ -77,7 +68,7 @@ def require_admin(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> str:
-    """始终要求管理员 Token；不受普通接口 ``auth.enabled`` 开关影响。"""
+    """始终要求管理员 Token。"""
     if credentials is None:
         raise HTTPException(
             status_code=401,
@@ -115,7 +106,6 @@ def require_alert_identity(
 
     三种放行/拒绝：
 
-    - 鉴权关闭（`identity is None`）→ 放行（也谈不上身份，行为与改造前一致）；
     - `alert_identity` **留空** → 放行（有意的 fail-open，保持既有部署不变；
       启动时会有 WARNING 提醒）；
     - 否则身份必须**精确匹配**，不匹配 → **403**。
@@ -125,7 +115,7 @@ def require_alert_identity(
     """
     auth = getattr(getattr(request.app.state, "settings", None), "auth", None)
     allowed = (getattr(auth, "alert_identity", "") or "").strip()
-    if identity is None or not allowed or identity == allowed:
+    if not allowed or identity == allowed:
         return identity
     raise HTTPException(
         status_code=403,

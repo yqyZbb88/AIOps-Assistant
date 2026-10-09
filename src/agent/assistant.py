@@ -640,7 +640,7 @@ class OpsAssistant:
             kwargs = {
                 "session_id": record.get("session_id"),
                 "action": action,
-                # API 调用必须使用已认证的审批人；None 仅用于旧入口/鉴权关闭，
+                # API 调用必须使用已认证的审批人；None 仅用于可信内部旧入口，
                 # 此时沿用申请人以保持既有直接调用语义。
                 "decided_by": (
                     decided_by

@@ -74,8 +74,8 @@ def configure_logging(
     - level：根日志级别（DEBUG/INFO/WARNING/ERROR），basicConfig 未配置时才生效；
     - audit=False：把 aiops_assistant.audit 提到 WARNING，仅失败/异常进审计，静默成功执行
       （**语义不变**：这不是「关闭审计」）；
-    - audit_file：审计日志落盘路径（相对仓库根）；空串 = 只进 console，不落文件。
-    - inspection_file：巡检全量汇总日志路径；空串 = 只进 console。
+    - audit_file：审计日志落盘路径（相对容器 /app）；空串 = 只进 console，不落文件。
+    - inspection_file：巡检全量汇总日志路径；空串 = 丢弃，不进 console。
     """
     logging.basicConfig(
         level=getattr(logging, str(level).upper(), logging.INFO),

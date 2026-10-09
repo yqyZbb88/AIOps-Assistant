@@ -1,9 +1,6 @@
 # Compose 首次初始化模板；生效副本位于 .runtime/config/。
 app:
   name: AIOps-Assistant
-server:
-  host: 127.0.0.1
-  port: 8000
 prometheus:
   base_url: ${PROMETHEUS_URL:-http://prometheus:9090}
   timeout: 5
@@ -28,7 +25,6 @@ hosts:
 alert:
   recent_limit: 100
   trend_minutes: 60
-  trend_step: 5m
 inspection:
   enabled: true
   interval_seconds: 300
@@ -47,7 +43,9 @@ logging:
   audit_file: logs/audit.log
   inspection_file: logs/inspection.log
 auth:
-  enabled: true
+  # Stable identity -> registered host IDs; normal users default to no hosts.
+  # Administrators can access all hosts; session ownership still applies.
+  host_access: '{}'
   tokens: '${OPS_API_TOKENS}'
   approval_mode: approvers_only
   approver_identities: '${OPS_APPROVER_IDENTITIES}'

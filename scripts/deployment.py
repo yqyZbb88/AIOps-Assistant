@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import secrets
@@ -87,39 +88,54 @@ def initialization_lock(runtime: Path):
         yield
 
 
-def initialize(runtime: Path, *, templates: Path, legacy_config: Path,
+def initialize(runtime: Path, *, templates: Path,
                environment: dict[str, str] | None = None) -> str:
     with initialization_lock(runtime):
-        return _initialize(runtime, templates=templates, legacy_config=legacy_config, environment=environment)
+        return _initialize(runtime, templates=templates, environment=environment)
 
 
-def _initialize(runtime: Path, *, templates: Path, legacy_config: Path,
+def _initialize(runtime: Path, *, templates: Path,
                environment: dict[str, str] | None = None) -> str:
-    """幂等初始化。新部署使用独立模板；旧部署复制配置，后续不覆盖管理员修改。"""
+    """幂等初始化容器目录；保留已保存的配置、凭据和演示状态。"""
     environment = os.environ if environment is None else environment
     runtime.mkdir(parents=True, exist_ok=True)
     if os.name == "posix":
         runtime.chmod(0o700)
     marker = runtime / "deployment.json"
+    existing_credentials = (runtime / "compose.env").is_file()
+    metadata = {}
     if marker.exists():
         try:
             metadata = json.loads(marker.read_text(encoding="utf-8"))
-            source = metadata["config_source"]
-            if metadata.get("version") != 1 or source not in {"bundled", "legacy"}:
+            if (metadata.get("version") not in {1, 2}
+                    or metadata.get("config_source") not in {"bundled", "legacy", "container"}):
                 raise ValueError
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, AttributeError):
             raise DeploymentError("deployment.json 无效；请恢复部署元数据后重试。") from None
-    else:
-        metadata = {}
-        source = "legacy" if (runtime / "compose.env").exists() else "bundled"
-        # 先记录来源，确保首次初始化被中断后不会把新部署误认成旧部署。
-        atomic_write(marker, json.dumps({"version": 1, "config_source": source}) + "\n")
+    # 完整部署绝不补默认文件；升级必须使用已经同步好的持久化配置。
+    existing_deployment = bool(metadata.get("initialized") or
+                               metadata.get("config_source") == "legacy" or
+                               (existing_credentials and not metadata))
+    if existing_deployment:
+        if not existing_credentials:
+            raise DeploymentError("已有部署的 compose.env 丢失；请从备份恢复，拒绝重新生成凭据。")
+        for name in CONFIG_FILES:
+            if not (runtime / "config" / name).is_file():
+                if not marker.exists():
+                    atomic_write(marker, json.dumps({"version": 2, "config_source": "container", "credentials_initialized": True}) + "\n")
+                raise DeploymentError(f"缺少初始化配置 {name}；已有部署必须从备份恢复，拒绝覆盖为默认配置。")
+    source = "container"
+    checkpoint = {"version": 2, "config_source": source}
+    if metadata.get("initialized"):
+        checkpoint["initialized"] = True
+    if not marker.exists():
+        atomic_write(marker, json.dumps(checkpoint) + "\n")
 
     if (runtime / "compose.env").exists():
         values = read_credentials(runtime)
     else:
         if (metadata.get("initialized") or metadata.get("credentials_initialized")
-                or source == "legacy"
+                or existing_deployment
                 or (bool(metadata) and any((runtime / "config" / name).is_file()
                                           for name in CONFIG_FILES))
                 or (runtime / "secrets" / "assistant.json").exists()):
@@ -146,20 +162,18 @@ def _initialize(runtime: Path, *, templates: Path, legacy_config: Path,
     ))
 
     # 凭据写入成功即记录，不等配置和派生文件全部完成；中断后禁止静默轮换。
-    atomic_write(marker, json.dumps({
-        "version": 1, "config_source": source, "credentials_initialized": True,
-    }) + "\n")
+    atomic_write(marker, json.dumps({**checkpoint, "credentials_initialized": True}) + "\n")
 
-    config_source = legacy_config if source == "legacy" else templates
     config_dir = runtime / "config"
     config_dir.mkdir(exist_ok=True)
     for name in CONFIG_FILES:
         target = config_dir / name
         if not target.exists():
-            original = config_source / name
+            original = templates / name
             if not original.is_file():
                 raise DeploymentError(f"缺少初始化配置 {name}；请恢复配置来源后重试。")
             atomic_write(target, original.read_text(encoding="utf-8"))
+    migrate_container_settings(runtime)
     for name in ("assistant-data", "assistant-logs", "prometheus-targets", "textfile", "ssh"):
         (runtime / name).mkdir(exist_ok=True)
     target_file = runtime / "prometheus-targets" / "assistant.yml"
@@ -189,8 +203,44 @@ def _initialize(runtime: Path, *, templates: Path, legacy_config: Path,
             (runtime / name).chmod(0o755)
     if os.name == "posix":
         target_file.chmod(0o644)
-    atomic_write(marker, json.dumps({"version": 1, "config_source": source, "initialized": True}) + "\n")
+    atomic_write(marker, json.dumps({"version": 2, "config_source": source, "initialized": True}) + "\n")
     return source
+
+
+def migrate_container_settings(runtime: Path) -> None:
+    """移除明确废弃的配置；先备份，保留有效配置、身份、ACL 与密钥。"""
+    import io
+    from ruamel.yaml import YAML
+
+    path = runtime / "config" / "settings.yaml"
+    original = path.read_text(encoding="utf-8")
+    try:
+        parser = YAML()
+        parser.preserve_quotes = True
+        document = parser.load(original)
+        if not isinstance(document, dict):
+            return
+        obsolete = []
+        if "server" in document:
+            obsolete.append((document, "server"))
+        for section, key in (("auth", "enabled"), ("alert", "trend_step"), ("app", "version")):
+            values = document.get(section)
+            if isinstance(values, dict) and key in values:
+                obsolete.append((values, key))
+        if not obsolete:
+            return
+        fingerprint = hashlib.sha256(original.encode("utf-8")).hexdigest()[:16]
+        backup = runtime / "assistant-data" / "config-backups" / ("obsolete-settings-" + fingerprint + ".yaml")
+        if not backup.exists():
+            atomic_write(backup, original)
+        for values, key in obsolete:
+            del values[key]
+        stream = io.StringIO()
+        parser.dump(document, stream)
+        atomic_write(path, stream.getvalue())
+    except Exception:
+        # 迁移失败时不输出原文或解析器的敏感上下文。
+        raise DeploymentError("容器配置迁移失败；原 settings.yaml 保留，请核对格式与目录权限。") from None
 
 
 def serve(secret_file: Path) -> None:
@@ -214,10 +264,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command == "init":
-            source = initialize(args.runtime, templates=ROOT / "deploy" / "config", legacy_config=Path("/legacy-config"))
+            source = initialize(args.runtime, templates=ROOT / "deploy" / "config")
             print("部署初始化完成；配置来源=" + source + "；已有配置与密钥已保留。")
-            if source == "legacy":
-                print("旧部署已迁移至 .runtime/config；鉴权与功能开关保持原值，请核对 auth.enabled。")
         elif args.command == "serve":
             serve(Path("/run/assistant-secrets/assistant.json"))
         else:

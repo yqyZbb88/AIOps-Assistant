@@ -158,6 +158,7 @@
               <button id="admin-tab-rules" class="admin-tab" type="button" role="tab" data-admin-section="rules" aria-controls="admin-pane-rules" aria-selected="false" tabindex="-1">告警规则</button>
               <button id="admin-tab-commands" class="admin-tab" type="button" role="tab" data-admin-section="commands" aria-controls="admin-pane-commands" aria-selected="false" tabindex="-1">命令目录</button>
               <button id="admin-tab-hosts" class="admin-tab" type="button" role="tab" data-admin-section="hosts" aria-controls="admin-pane-hosts" aria-selected="false" tabindex="-1">主机授权</button>
+              <button id="admin-tab-access" class="admin-tab" type="button" role="tab" data-admin-section="access" aria-controls="admin-pane-access" aria-selected="false" tabindex="-1">用户主机授权</button>
               <button id="admin-tab-monitor" class="admin-tab" type="button" role="tab" data-admin-section="monitor" aria-controls="admin-pane-monitor" aria-selected="false" tabindex="-1">监控主机</button>
               <button class="admin-tab" type="button" role="tab" data-admin-section="ssh" aria-controls="admin-pane-ssh" aria-selected="false" tabindex="-1">SSH 凭据</button>
               <button class="admin-tab" type="button" role="tab" data-admin-section="tokens" aria-controls="admin-pane-tokens" aria-selected="false" tabindex="-1">用户 Token</button>
@@ -179,6 +180,7 @@
               <section id="admin-catalog-pane-diagnostics" class="panel admin-section admin-catalog-pane" role="tabpanel" aria-labelledby="admin-command-tab-diagnostics" data-admin-catalog-pane="diagnostics" hidden><div class="panel-head"><div><p class="panel-kicker">DIAGNOSTICS</p><h2>只读诊断命令</h2></div><button class="secondary admin-add-command" data-catalog="diagnostics" type="button">新增命令</button></div><div id="admin-catalog-diagnostics" class="admin-list"></div></section>
             </div>
             <section id="admin-pane-hosts" class="panel admin-section admin-pane" role="tabpanel" aria-labelledby="admin-tab-hosts" data-admin-pane="hosts" hidden><div class="panel-head"><div><p class="panel-kicker">HOST AUTHORIZATION</p><h2>逐主机授权</h2></div><span class="subtle">只修改白名单，不显示 SSH 或监控地址</span></div><div id="admin-hosts" class="admin-list"></div></section>
+            <section id="admin-pane-access" class="panel admin-pane" role="tabpanel" aria-labelledby="admin-tab-access" data-admin-pane="access" hidden><div class="panel-head"><h2>用户主机授权</h2></div><p class="admin-help">权限绑定身份，Token 轮换后保留。身份名区分大小写，Alice 与 alice 是不同身份。普通用户默认无主机权限；管理员可访问全部主机，但只能访问自己的会话。保存配置后生效。访问权限不会授予诊断或执行命令权限；有写操作或未决审批时保存返回冲突。</p><div id="admin-host-access" class="admin-list"></div></section>
             <section id="admin-pane-monitor" class="panel admin-section admin-pane" role="tabpanel" aria-labelledby="admin-tab-monitor" data-admin-pane="monitor" hidden>
               <div class="panel-head"><div><p class="panel-kicker">MONITORING HOSTS</p><h2>新增监控主机</h2></div><button id="admin-host-refresh" class="secondary" type="button">刷新目标</button></div>
               <p class="admin-help">只登记目标；不安装或启动远程 Exporter。</p>

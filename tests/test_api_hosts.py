@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from src.main import create_app
-from src.utils.config_loader import HostsSettings, Settings
+from src.utils.config_loader import AuthSettings, HostsSettings, Settings
 
 
 def _host_config(tmp_path: Path) -> str:
@@ -34,8 +34,8 @@ hosts:
 
 
 def test_hosts_api_is_redacted(tmp_path):
-    app = create_app(settings=Settings(hosts=HostsSettings(file=_host_config(tmp_path))))
-    with TestClient(app) as client:
+    app = create_app(settings=Settings(auth=AuthSettings(tokens='{"test-ops":"ops"}', admin_identities='["ops"]'), hosts=HostsSettings(file=_host_config(tmp_path))))
+    with TestClient(app, headers={"Authorization": "Bearer test-ops"}) as client:
         response = client.get("/hosts")
     assert response.status_code == 200
     item = response.json()[0]
@@ -44,7 +44,7 @@ def test_hosts_api_is_redacted(tmp_path):
 
 
 def test_unknown_host_returns_404(tmp_path):
-    app = create_app(settings=Settings(hosts=HostsSettings(file=_host_config(tmp_path))))
-    with TestClient(app) as client:
+    app = create_app(settings=Settings(auth=AuthSettings(tokens='{"test-ops":"ops"}', admin_identities='["ops"]'), hosts=HostsSettings(file=_host_config(tmp_path))))
+    with TestClient(app, headers={"Authorization": "Bearer test-ops"}) as client:
         response = client.get("/hosts/missing")
     assert response.status_code == 404

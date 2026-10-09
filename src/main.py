@@ -1,17 +1,14 @@
 """FastAPI 应用入口：装配依赖容器、生命周期与 HTTP 路由。
 
-启动方式（仓库根执行）：
-    uvicorn src.main:app --host 127.0.0.1 --port 8000              （普通运行）
-    uvicorn src.main:app --reload --host 127.0.0.1 --port 8000     （仅本地开发）
-    python src/main.py                                             （读取 settings.server）
+容器由 scripts/deployment.py serve 装配环境后，以单 worker Uvicorn 启动。
 
 鉴权（config/settings.yaml 的 auth 段）：
-    启用后所有含运维数据或写操作的 API 都要求 `Authorization: Bearer <密钥>`；
+    所有含运维数据或写操作的 API 始终要求 `Authorization: Bearer <密钥>`；
     /health、/ready，以及无数据的 /console 静态壳公开；/admin/config 即使普通
-    鉴权关闭也始终要求映射到管理员身份的 Token。
+    始终要求映射到管理员身份的 Token。
     FastAPI 自带的 /docs、/redoc、/openapi.json 是应用级文档路由，当前公开。
     身份由密钥推断（服务端事实），请求体不能自报用户身份。
-    `auth.enabled: true` 却没有任何可用密钥时会**拒绝启动**，绝不静默地无鉴权运行。
+    文件启动时没有任何可用密钥会拒绝启动，业务 API 始终验证身份。
 
 对外路由：
     GET  /health            进程存活与缓存健康状态
@@ -41,17 +38,11 @@
 from __future__ import annotations
 
 import logging
-import sys
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-
-# 兼容直接运行（python src/main.py）：__package__ 为空时把仓库根加入 sys.path
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.api import admin as admin_api
 from src.api import alert as alert_api
@@ -66,6 +57,7 @@ from src.api.deps import require_auth
 from src.api.response import RedactingJSONResponse
 from src.container import Container
 from src.utils.auth import AuthConfigError, ensure_usable, parse_admins, parse_tokens
+from src.utils.host_access import parse_host_access
 from src.utils.admin_config import AdminConfigManager
 from src.utils.config_loader import Settings, load_settings
 from src.utils.logger import configure_logging
@@ -135,7 +127,10 @@ def create_app(
         inspection_backup_count=settings_.logging.inspection_backup_count,
     )
     agent = container.aiops_assistant()
-    _check_auth(settings_)
+    _check_auth(settings_, require_tokens=settings is None or admin_config_manager is not None)
+    known_hosts = {host.host_id for host in container.hosts().all()}
+    if any(set(ids) - known_hosts for ids in parse_host_access(settings_.auth.host_access).values()):
+        raise RuntimeError("用户主机授权包含未登记主机，拒绝启动")
 
     app = FastAPI(
         title=settings_.app.name,
@@ -211,21 +206,18 @@ def create_app(
     return app
 
 
-def _check_auth(settings: Settings) -> None:
-    """鉴权配置的启动期校验：**宁可拒绝启动，也不静默地无鉴权运行**。
-
-    - `enabled: true` 却解析不出任何密钥 → 抛异常。绝不接受「空密钥 = 放行」：
-      一次配置漏填就会让服务全开，而失败方向恰好是最坏的那一侧。
-    - 反向情况（配了密钥但 `enabled: false`）→ 只 WARNING。这不影响安全性，
-      但用户很可能**以为自己受保护了**，值得在启动日志里说一句。
-    """
+def _check_auth(settings: Settings, *, require_tokens: bool = True) -> None:
+    """校验身份映射与角色；业务 HTTP 始终强制鉴权。
+    内部直接构造的空 Token 配置允许装配，但所有业务接口返回 503。"""
     try:
-        ensure_usable(
-            settings.auth.enabled,
-            settings.auth.tokens,
-            approval_mode=settings.auth.approval_mode,
-            approvers_raw=settings.auth.approver_identities,
-        )
+        # Explicit injected Settings may omit credentials for internal health-only tests.
+        # File-based startup and injected deployment managers must have usable identities.
+        if require_tokens or (settings.auth.tokens or "").strip():
+            ensure_usable(
+                settings.auth.tokens,
+                approval_mode=settings.auth.approval_mode,
+                approvers_raw=settings.auth.approver_identities,
+            )
     except AuthConfigError as exc:
         raise RuntimeError(f"鉴权配置有误，拒绝启动：{exc}") from exc
 
@@ -240,13 +232,7 @@ def _check_auth(settings: Settings) -> None:
             "管理员身份没有对应 Token，拒绝启动：" + ", ".join(sorted(unknown_admins))
         )
 
-    if not settings.auth.enabled and (settings.auth.tokens or "").strip():
-        logger.warning(
-            "已提供 OPS_API_TOKENS，但 auth.enabled 为 false —— "
-            "服务仍在**无鉴权**运行，所有接口对能访问该端口的人开放。"
-        )
-
-    if settings.auth.enabled and not (settings.auth.alert_identity or "").strip():
+    if identities and not (settings.auth.alert_identity or "").strip():
         logger.warning(
             "auth.alert_identity 为空 —— POST /alert 对**任何**有效密钥开放。"
             "而它会喂给规则引擎（auto_execute: true 的规则直接执行写命令、不经审批），"
@@ -256,10 +242,3 @@ def _check_auth(settings: Settings) -> None:
 
 # 模块级实例：uvicorn src.main:app 直接引用的对象
 app = create_app()
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    settings = app.state.settings
-    uvicorn.run(app, host=settings.server.host, port=settings.server.port)

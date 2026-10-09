@@ -306,7 +306,7 @@ function updateControls() {
     $("admin-reload").disabled = !state.isAdmin || state.busy.has("admin");
     $("admin-apply").disabled = !state.isAdmin || state.adminDirty || !state.admin || !state.admin.restart_required || state.busy.has("admin");
     document.querySelectorAll("#admin-content input, #admin-content select, #admin-content textarea, #admin-content button").forEach(function (control) {
-      control.disabled = state.busy.has("admin");
+      control.disabled = state.busy.has("admin") || control.dataset.roleReadonly === "true";
     });
   }
   document.querySelectorAll(".diagnostic-prompt").forEach(function (button) {
@@ -328,12 +328,32 @@ async function loadHealth() {
 }
 
 async function loadHosts() {
+  const previousHost = state.selectedHostId;
   state.hosts = await request("/hosts?include_disabled=true");
+  const visible = new Set(state.hosts.map(function (host) { return host.host_id; }));
+  state.hostStatuses.forEach(function (_, id) { if (!visible.has(id)) state.hostStatuses.delete(id); });
+  state.sessions = state.sessions.filter(function (item) { return visible.has(item.host_id); });
+  state.approvals = state.approvals.filter(function (item) { return visible.has(item.host_id); });
+  ["alerts", "remediations", "advice"].forEach(function (key) {
+    state.history[key] = state.history[key].filter(function (item) { return visible.has(item.host_id); });
+  });
+  state.inspections = state.inspections.filter(function (item) { return visible.has(item.host_id); });
+  state.executions = state.executions.filter(function (item) { return visible.has(item.host_id); });
   const enabled = state.hosts.filter(function (host) { return host.enabled; });
   const candidates = [state.selectedHostId, state.prefs.defaultHost, enabled[0] && enabled[0].host_id];
   state.selectedHostId = candidates.find(function (id) {
     return id && enabled.some(function (host) { return host.host_id === id; });
   }) || "";
+  if (previousHost && previousHost !== state.selectedHostId) {
+    state.selectedSessionId = "";
+    state.trendGeneration++; state.favoriteGeneration++;
+    ["chat-log", "host-metrics", "host-active-alerts", "host-detail-badges",
+     "host-trend", "favorite-trends", "host-current-metric"].forEach(function (id) {
+      if ($(id)) $(id).replaceChildren();
+    });
+    if ($("chat-message")) $("chat-message").value = "";
+    if ($("conversation-title")) $("conversation-title").textContent = "\u8bf7\u9009\u62e9\u6216\u65b0\u5efa\u4f1a\u8bdd";
+  }
   renderHostSelectors();
 }
 
@@ -385,7 +405,7 @@ function clearAdminView() {
   if ($("host-current-metric")) $("host-current-metric").replaceChildren();
   state.trendGeneration++; state.favoriteGeneration++; state.credentialGeneration++;
   clearCredentialInputs(); state.adminCredentials = null;
-  ["admin-ssh", "admin-tokens", "admin-model"].forEach(function (id) { if ($(id)) $(id).replaceChildren(); });
+  ["admin-ssh", "admin-tokens", "admin-model", "admin-host-access"].forEach(function (id) { if ($(id)) $(id).replaceChildren(); });
   state.hostOptions = null; state.hostVerification = "";
   $("admin-content").classList.add("hidden");
   $("admin-restart-banner").classList.add("hidden");
@@ -405,6 +425,7 @@ async function loadHostStatus() {
   if (!hostId) return;
   try {
     const status = await request("/hosts/" + encodeURIComponent(hostId) + "/status");
+    if (!state.hosts.some(function (host) { return host.host_id === hostId; })) return;
     state.hostStatuses.set(hostId, status);
   } catch (error) {
     if (error.connectionChanged) return;
@@ -1341,18 +1362,27 @@ function renderIdentityGroup(container, title, key, required) {
   group.append(node("strong", "", title));
   const checks = node("div", "admin-checks");
   const settings = state.admin.config.settings;
-  state.admin.available_identities.forEach(function (identity) {
+  const available = state.admin.available_identities;
+  const identities = Array.from(new Set(available.concat(settings[key] || [])));
+  identities.forEach(function (identity) {
+    const active = available.includes(identity);
     const label = node("label", "admin-check");
     const input = document.createElement("input");
     input.type = "checkbox"; input.checked = (settings[key] || []).includes(identity);
     input.addEventListener("change", function () {
+      if (input.checked && !active) {
+        input.checked = false;
+        return showNotice("该身份无有效 Token，请先配置同名 Token。身份名区分大小写。", "error");
+      }
       const next = (settings[key] || []).filter(function (item) { return item !== identity; });
       if (input.checked) next.push(identity);
       if (required && !next.length) { input.checked = true; return showNotice("至少保留一名管理员", "error"); }
       settings[key] = next;
-      markAdminDirty();
+      markAdminDirty(); renderAdminHostAccess();
     });
-    label.append(node("span", "", identity), input); checks.append(label);
+    const matches = active ? [] : available.filter(function (name) { return name.toLowerCase() === identity.toLowerCase(); });
+    const description = active ? identity : identity + "（无有效 Token；身份名区分大小写" + (matches.length ? "，当前可用：" + matches.join("、") : "") + "）";
+    label.append(node("span", "", description), input); checks.append(label);
   });
   if (!state.admin.available_identities.length) checks.append(empty("当前 Token 映射中没有可用身份"));
   group.append(checks); container.append(group);
@@ -1363,7 +1393,7 @@ function renderAdminSecurity() {
   container.replaceChildren();
   const settings = state.admin.config.settings;
   container.append(
-    adminToggle("普通接口鉴权", "关闭后普通业务接口匿名开放；管理接口仍强制 Token。", settings.auth_enabled, function (value) { settings.auth_enabled = value; }),
+    node("p", "admin-help", "业务接口始终验证 Token 身份，会话仅归创建者所有。"),
     adminToggle("LLM 分析", "控制告警 AI 分析。", settings.llm_enabled, function (value) { settings.llm_enabled = value; }),
     adminToggle("聊天 Agent", "关闭后聊天使用关键词降级能力。", settings.agent_enabled, function (value) { settings.agent_enabled = value; }),
     adminToggle("周期巡检", "重启后启动或停止巡检调度。", settings.inspection_enabled, function (value) { settings.inspection_enabled = value; })
@@ -1529,6 +1559,42 @@ function renderAdminHosts() {
   });
 }
 
+function renderAdminHostAccess() {
+  const container = $("admin-host-access");
+  if (!container || !state.admin) return;
+  container.replaceChildren();
+  const settings = state.admin.config.settings;
+  const access = settings.host_access || (settings.host_access = {});
+  const identities = Array.from(new Set(state.admin.available_identities.concat(Object.keys(access)))).sort();
+  identities.forEach(function (identity) {
+    const card = node("article", "admin-card");
+    const admin = settings.admin_identities.includes(identity);
+    card.append(node("strong", "", identity + (admin ? " · 管理员（全部主机）" : "")));
+    if (!state.admin.available_identities.includes(identity)) card.append(node("p", "admin-help", "当前无有效 Token；保留授权，恢复同名身份后生效。"));
+    const checks = node("div", "admin-checks");
+    state.admin.config.hosts.forEach(function (host) {
+      const label = node("label", "admin-check");
+      const input = document.createElement("input");
+      input.type = "checkbox"; input.disabled = admin; input.dataset.roleReadonly = String(admin);
+      input.checked = admin || (access[identity] || []).includes(host.host_id);
+      input.addEventListener("change", function () {
+        const ids = access[identity] || [];
+        access[identity] = input.checked ? Array.from(new Set(ids.concat(host.host_id))) : ids.filter(function (id) { return id !== host.host_id; });
+        markAdminDirty();
+      });
+      label.append(node("span", "", host.name + " · " + host.host_id + (host.enabled ? "" : "（已禁用）")), input);
+      checks.append(label);
+    });
+    if (!admin) {
+      const revoke = node("button", "secondary danger-outline", "撤销全部主机授权");
+      revoke.type = "button";
+      revoke.addEventListener("click", function () { access[identity] = []; markAdminDirty(); renderAdminHostAccess(); });
+      card.append(revoke);
+    }
+    card.append(checks); container.append(card);
+  });
+}
+
 function renderAdmin() {
   // 草稿始终在 state.admin.config 中；分区切换仅切换可见 DOM，不单独保存某个分区。
   if (!state.isAdmin || !state.admin) return;
@@ -1541,7 +1607,7 @@ function renderAdmin() {
   $("admin-summary").textContent = (state.adminDirty ? "有未保存修改 · " : "配置已加载 · ") + "revision " + state.admin.revision.slice(0, 12) + " · " + state.admin.available_identities.length + " 个可用身份";
   renderAdminSecurity(); renderAdminAutomation(); renderAdminRules();
   ["rule_actions", "agent_actions", "diagnostics"].forEach(renderAdminCatalog);
-  renderAdminHosts();
+  renderAdminHosts(); renderAdminHostAccess();
   activateAdminSection(state.adminSection);
   activateAdminCatalog(state.adminCatalog);
 }
@@ -1661,7 +1727,7 @@ function activateAdminSection(section, moveFocus) {
     return;
   }
   if (state.adminSection !== section) clearCredentialInputs();
-  state.adminSection = ["general", "rules", "commands", "hosts", "monitor", "ssh", "tokens", "model"].includes(section) ? section : "general";
+  state.adminSection = ["general", "rules", "commands", "hosts", "access", "monitor", "ssh", "tokens", "model"].includes(section) ? section : "general";
   document.querySelectorAll("[data-admin-section]").forEach(function (tab) {
     const active = tab.dataset.adminSection === state.adminSection;
     tab.classList.toggle("active", active);

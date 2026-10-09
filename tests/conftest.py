@@ -1,6 +1,7 @@
 """测试公共：FakeMonitor / FakeLLM / 告警构造工具 + 确保仓库根在 sys.path。"""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,12 @@ import pytest  # noqa: E402
 
 # 保证在任意 pytest 调用方式下都能 `import src`
 ROOT = Path(__file__).resolve().parent.parent
+os.environ["OPS_SETTINGS_FILE"] = str(ROOT / "deploy/config/settings.yaml")
+os.environ.setdefault("OPS_API_TOKENS", '{"test-admin":"admin","test-webhook":"alertmanager"}')
+os.environ.setdefault("OPS_ADMIN_IDENTITIES", '["admin"]')
+os.environ.setdefault("OPS_APPROVER_IDENTITIES", '["admin"]')
+os.environ["OPS_LLM_ENABLED"] = "false"
+os.environ["OPS_AGENT_ENABLED"] = "false"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -18,17 +25,9 @@ if str(ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 # 堵住仓库里那个**真实**数据库：测试绝不允许碰它
 # ---------------------------------------------------------------------------
-# 为什么需要：`import src.main` 会执行模块级的 `app = create_app()`，而它用**仓库真实配置**
-# （config/settings.yaml 的 storage.enabled: true）装配容器 → `container.sessions()` →
-# `open_database(ROOT_DIR/"data/aiops_assistant.db")`。**开库会跑迁移、也会写数据**，
-# 于是跑一次测试就可能改动——甚至迁移坏——用户的真实库。实测确认过：
-# 只 `import src.main` 就能让那个文件的 mtime 变化。
-#
-# **必须写在模块级、不能写成 fixture**：`import src.main` 发生在 pytest 的**收集阶段**
-# （导入各测试模块时），比任何 fixture 都早——fixture 挂上去时库已经被打开了。
-#
-# 做法：把 `open_database` 换成「只接受仓库外路径」的版本。测试自己用 tmp_path 开库照常，
-# 唯独指向仓库 data/ 的那次拿到 None —— 正是「持久化不可用」的既有语义（降级、服务照常）。
+# 模块级 app 在 pytest 收集阶段装配，必须在导入前隔离真实数据。
+# 测试使用 deploy/config 模板与合成身份；仓库 data/ 下的默认存储被拦截，
+# 注入 tmp_path 的数据库正常开库。真实容器运行目录不得挂入测试镜像。
 def _block_real_database() -> None:
     import src.storage.db as dbmod
 
@@ -384,12 +383,7 @@ def _no_audit_file_in_tests():
 def _no_real_model_in_tests(monkeypatch):
     """把模型入口换成「一调用就炸」，任何漏注入假模型的用例立刻失败。
 
-    为什么需要：聊天 Agent 的构建**没有任何开关**——`llm.enabled=false` 只让容器跳过
-    告警 AI 分析，聊天走的 `container._assistant_factory()` → `OpsAssistant` →
-    `utils/model_loader.get_model()` → 根 `init.py` 的 `init_chat_model`，配了
-    `.env` 的 key 就**真的会发请求**。而失败形态是**成功**（返回一段看起来正常的回答），
-    不是报错——所以只能靠这道闸门拦。
-
+    测试默认关闭 AI，仍显式阻止模型工厂联网；需要模型行为的用例注入脚本化对象。
     注意必须在**两个**地方打补丁：`model_loader.get_model` 是对模块的调用；
     而 `agent/assistant.py` 在**模块顶层**做了 `from ... import get_model`，
     已导入的话得打它自己那份引用。测试若自己 `monkeypatch.setattr(assistant_mod,
@@ -474,3 +468,13 @@ def pytest_sessionfinish(session, exitstatus) -> None:
             print("   ", item)
         print("=" * 60)
         session.exitstatus = 1
+
+
+@pytest.fixture
+def enabled_catalogs(tmp_path, monkeypatch):
+    """按用例显式启用模板命令，不改变容器出厂安全开关。"""
+    for name, variable in (("actions", "OPS_ACTIONS_FILE"), ("diagnostics", "OPS_DIAGNOSTICS_FILE")):
+        path = tmp_path / (name + ".yaml")
+        text = (ROOT / "deploy/config" / (name + ".yaml")).read_text(encoding="utf-8")
+        path.write_text(text.replace("enabled: false", "enabled: true"), encoding="utf-8")
+        monkeypatch.setenv(variable, str(path))

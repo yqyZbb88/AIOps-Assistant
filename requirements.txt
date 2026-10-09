@@ -1,3 +1,3 @@
-# 开发依赖；容器只安装 requirements-runtime.txt。
+# 容器回归依赖；仅 Dockerfile 的 test 目标安装，生产镜像使用 requirements-runtime.txt。
 -r requirements-runtime.txt
 pytest>=8.0,<10.0

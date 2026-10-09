@@ -6,7 +6,7 @@
 - 解析成嵌套的 `Settings` dataclass，各层代码按需取用；
 - 严格校验：配置文件缺失、pyyaml 未安装、未知字段或类型错误时抛 ConfigError，拒绝不确定启动。
 
-敏感信息约束：YAML 应保留环境占位符；密钥由 .env、部署凭据或运行环境提供。
+敏感信息约束：YAML 应保留环境占位符；密钥由页面凭据、部署凭据或容器环境提供。
 插值后的 Settings 在内存中包含明文值，不应完整打印或直接返回给客户端。
 """
 from __future__ import annotations
@@ -25,11 +25,11 @@ from src import __app_name__, __version__
 logger = logging.getLogger("aiops_assistant.config")
 
 # ---------------------------------------------------------------------------
-# 项目根目录（= 仓库根，init.py / config / .env 所在处）
+# 应用根目录（容器内为 /app）
 # ---------------------------------------------------------------------------
 ROOT_DIR: Path = Path(__file__).resolve().parent.parent.parent
 
-# 默认配置文件：<仓库根>/config/settings.yaml（可用 OPS_SETTINGS_FILE 覆盖）
+# 默认配置文件：/app/config/settings.yaml（可用 OPS_SETTINGS_FILE 覆盖）
 DEFAULT_SETTINGS_FILE: Path = ROOT_DIR / "config" / "settings.yaml"
 
 # 匹配 ${VAR} 或 ${VAR:-default}
@@ -46,13 +46,10 @@ class ConfigError(Exception):
 @dataclass(frozen=True)
 class AppSettings:
     name: str = __app_name__
-    version: str = __version__
-
-
-@dataclass(frozen=True)
-class ServerSettings:
-    host: str = "127.0.0.1"
-    port: int = 8000
+    @property
+    def version(self) -> str:
+        """Read-only application metadata, excluded from configurable dataclass fields."""
+        return __version__
 
 
 @dataclass(frozen=True)
@@ -93,7 +90,6 @@ class ChatSettings:
 class AlertSettings:
     recent_limit: int = 100
     trend_minutes: int = 60
-    trend_step: str = "5m"
 
 
 @dataclass(frozen=True)
@@ -144,19 +140,13 @@ class StorageSettings:
 
 @dataclass(frozen=True)
 class AuthSettings:
-    """共享密钥鉴权配置。
+    """Token 到稳定身份的映射及角色、主机授权配置。
+    直接构造无 Token 的 Settings 只供内部装配，业务请求返回 503。
+    tokens 与 host_access 使用 JSON 字符串，避免 YAML 插值产生歧义。"""
 
-    直接构造 `Settings()` 时默认关闭普通接口鉴权；从文件启动时使用
-    `config/settings.yaml` 的 `auth.enabled` 值。
-
-    `tokens` 是「密钥 → 身份」的 **JSON 字符串原文**，解析在 `utils/auth.py`。
-    这里保持成字符串，是因为 yaml 的插值结果本就是字符串，而本模块只做类型规约
-    （见 `_as_scalar`）——不放 dict 字段，避免 `dict(value)` 那条路径把
-    单引号 repr 当成合法 JSON。
-    """
-
-    enabled: bool = False
     tokens: str = ""
+    # 身份到可见主机 ID 数组的 JSON；管理员可管理所有主机，普通身份默认无权限。
+    host_access: str = "{}"
 
     #: 审批模式：owner = 触发者本人可批准；approvers_only = 只有显式审批人可批准。
     approval_mode: str = "owner"
@@ -174,7 +164,7 @@ class AuthSettings:
     #: 就把「人」的密钥与「机器入口」的密钥分开了。
     #:
     #: 默认空串是**有意的 fail-open**（保持既有部署不变），但 `main.create_app` 会在
-    #: `enabled` 为真而这里为空时打一条 WARNING——不能让它悄悄失效。
+    #: 配置了有效身份而这里为空时打一条 WARNING——不能让它悄悄失效。
     alert_identity: str = ""
 
 
@@ -196,7 +186,6 @@ class Settings:
     """全局配置集合（对应 config/settings.yaml 顶层各节）。"""
 
     app: AppSettings = AppSettings()
-    server: ServerSettings = ServerSettings()
     prometheus: PrometheusSettings = PrometheusSettings()
     monitor: MonitorSettings = MonitorSettings()
     llm: LLMSettings = LLMSettings()
@@ -209,25 +198,6 @@ class Settings:
     storage: StorageSettings = StorageSettings()
     logging: LoggingSettings = LoggingSettings()
     auth: AuthSettings = AuthSettings()
-
-
-# 顶层字段 → 子 dataclass 的映射
-_SUB_MODELS: dict[str, type] = {
-    "app": AppSettings,
-    "server": ServerSettings,
-    "prometheus": PrometheusSettings,
-    "monitor": MonitorSettings,
-    "llm": LLMSettings,
-    "agent": AgentSettings,
-    "alert": AlertSettings,
-    "chat": ChatSettings,
-    "metrics": MetricsSettings,
-    "hosts": HostsSettings,
-    "inspection": InspectionSettings,
-    "storage": StorageSettings,
-    "logging": LoggingSettings,
-    "auth": AuthSettings,
-}
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +274,7 @@ def _as_scalar(value: Any, typ: type, *, what: str) -> Any:
     """把 YAML 值严格规约到目标标量类型；非法值抛 ConfigError。
 
     安全相关配置不能走 ``bool("tru") == True`` 那类宽松转换，更不能把无法识别的
-    字符串静默当成 False。例如 ``auth.enabled: tru`` 过去会关闭鉴权，属于 fail-open。
+    字符串静默当成 False；例如命令执行开关拼错时必须拒绝配置。
     """
     if typ is bool:
         if isinstance(value, bool):
@@ -370,12 +340,12 @@ def _build_dataclass(model_type: type, data: Any, *, prefix: str) -> Any:
 
 def _validate_settings(settings: Settings) -> None:
     """跨字段配置约束；只在服务启动加载时执行。"""
-    if settings.app.version != __version__:
-        raise ConfigError(
-            "app.version 由 src/__init__.py 的 __version__ 统一管理，"
-            "请从 settings.yaml 删除该字段"
-        )
-
+    from src.utils.auth import AuthConfigError
+    from src.utils.host_access import parse_host_access
+    try:
+        parse_host_access(settings.auth.host_access)
+    except AuthConfigError as exc:
+        raise ConfigError(str(exc)) from exc
     if settings.prometheus.target_mode not in {"external", "managed"}:
         raise ConfigError("prometheus.target_mode 只支持 external / managed")
     if settings.prometheus.target_mode == "managed" and not settings.prometheus.file_sd_path:
@@ -415,11 +385,9 @@ def _build_settings(data: dict[str, Any]) -> Settings:
 def load_settings(path: str | Path | None = None) -> Settings:
     """读取并解析 config/settings.yaml，返回 Settings。
 
-    - 解析前先尽力加载根目录 .env（python-dotenv 可选，失败忽略）；
+    - 环境变量由容器启动入口注入，不自动加载宿主机 .env；
     - 文件缺失 / pyyaml 未装 / 解析失败 → 抛 ConfigError，拒绝带着不确定配置启动。
     """
-    _load_dotenv_if_available()
-
     file_path = Path(path) if path else Path(os.getenv("OPS_SETTINGS_FILE", DEFAULT_SETTINGS_FILE))
     if not file_path.is_file():
         raise ConfigError(f"配置文件不存在: {file_path}")
@@ -445,13 +413,3 @@ def load_settings(path: str | Path | None = None) -> Settings:
 
     logger.info("已加载配置: %s（app=%s v%s）", file_path, settings.app.name, settings.app.version)
     return settings
-
-
-def _load_dotenv_if_available() -> None:
-    """尝试加载根目录 .env（python-dotenv 可选）；失败静默交给调用方。"""
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv(ROOT_DIR / ".env", override=False)
-    except Exception:  # 未安装 python-dotenv / 其它异常均忽略
-        pass

@@ -6,7 +6,7 @@ from src.utils.config_loader import AuthSettings, Settings
 
 
 def test_console_shell_is_public_but_operational_data_stays_protected():
-    settings = Settings(auth=AuthSettings(enabled=True, tokens='{"secret-token":"admin"}'))
+    settings = Settings(auth=AuthSettings(tokens='{"secret-token":"admin"}'))
     with TestClient(create_app(settings=settings)) as client:
         page = client.get("/console")
         hosts = client.get("/hosts")
@@ -15,6 +15,7 @@ def test_console_shell_is_public_but_operational_data_stays_protected():
     assert page.status_code == 200
     assert "AIOps Assistant 控制台" in page.text
     assert "secret-token" not in page.text
+    assert "\\n" not in page.text
     assert hosts.status_code == 401
     assert approvals.status_code == 401
     assert page.headers["cache-control"] == "no-store"

@@ -29,7 +29,8 @@ from src.plugins.common.cmddef import parse_command_def, validated_params
 from src.plugins.common.endpoint import CONNECTION_FIELDS
 from src.plugins.diagnostics.commands import DEFAULT_DIAGNOSTICS_FILE, parse_diagnostics
 from src.storage.models import RulesFile
-from src.utils.auth import parse_admins, parse_approvers, parse_tokens
+from src.utils.auth import AuthConfigError, parse_admins, parse_approvers, parse_tokens
+from src.utils.host_access import parse_host_access
 from src.utils.config_loader import (
     parse_yaml,
     DEFAULT_SETTINGS_FILE,
@@ -310,7 +311,7 @@ class AdminConfigManager:
             "available_identities": identities,
             "config": {
                 "settings": {
-                    "auth_enabled": effective.auth.enabled,
+                    "host_access": {name: list(ids) for name, ids in parse_host_access(effective.auth.host_access).items()},
                     "approval_mode": effective.auth.approval_mode,
                     "approver_identities": list(parse_approvers(effective.auth.approver_identities)),
                     "admin_identities": list(parse_admins(effective.auth.admin_identities)),
@@ -348,12 +349,17 @@ class AdminConfigManager:
         }
 
     @staticmethod
-    def _identity_list(value: Any, what: str, available: set[str], *, required: bool) -> list[str]:
+    def _identity_list(value: Any, what: str, available: set[str], *, required: bool,
+                       retained: tuple[str, ...] = ()) -> list[str]:
         result: list[str] = []
         for raw in _list(value, what):
             identity = _text(raw, f"{what}[]", required=True, maximum=128)
-            if identity not in available:
-                raise AdminConfigError(f"{what} 包含没有 Token 映射的身份: {identity}")
+            if identity not in available and identity not in retained:
+                matches = sorted(name for name in available if name.casefold() == identity.casefold())
+                hint = "；身份名区分大小写"
+                if matches:
+                    hint += "，当前有效身份: " + ", ".join(matches)
+                raise AdminConfigError(f"{what} 包含没有 Token 映射的身份: {identity}" + hint)
             if identity not in result:
                 result.append(identity)
         if required and not result:
@@ -363,6 +369,12 @@ class AdminConfigManager:
     def _apply_settings(self, document: Any, config: Mapping[str, Any]) -> None:
         """只写公开开关与身份名；值未变化时保留原 YAML 环境变量表达式。"""
         section = _mapping(config.get("settings"), "config.settings")
+        allowed = {"host_access", "approval_mode", "approver_identities", "admin_identities",
+                   "alert_identity", "llm_enabled", "agent_enabled", "inspection_enabled"}
+        unknown = set(section) - allowed
+        if unknown:
+            raise AdminConfigError("config.settings contains unknown fields: " + ", ".join(sorted(unknown)))
+
         auth = document["auth"]
         tokens = parse_tokens(interpolate(str(auth.get("tokens") or "")))
         available = {identity for _, identity in tokens}
@@ -371,16 +383,22 @@ class AdminConfigManager:
             section.get("admin_identities"), "admin_identities", available, required=True
         )
         approvers = self._identity_list(
-            section.get("approver_identities"), "approver_identities", available, required=False
+            section.get("approver_identities"), "approver_identities", available, required=False,
+            # Revoked or old identities may remain dormant; preserving them grants no new role.
+            # Do not block unrelated host ACL edits or reinterpret their spelling/case.
+            retained=parse_approvers(interpolate(str(auth.get("approver_identities") or ""))),
         )
         mode = _text(section.get("approval_mode"), "approval_mode", required=True, maximum=32)
         if mode not in {"owner", "approvers_only"}:
             raise AdminConfigError("approval_mode 只支持 owner / approvers_only")
         if mode == "approvers_only" and not approvers:
             raise AdminConfigError("approvers_only 模式至少需要一个审批人")
-        auth_enabled = _bool(section.get("auth_enabled"), "auth_enabled")
-        if bool(auth.get("enabled")) != auth_enabled:
-            auth["enabled"] = auth_enabled
+        if "host_access" in section:
+            try:
+                access = parse_host_access(json.dumps(section["host_access"], ensure_ascii=False))
+            except AuthConfigError as exc:
+                raise AdminConfigError(str(exc)) from exc
+            auth["host_access"] = json.dumps(access, ensure_ascii=False)
         if str(auth.get("approval_mode") or "") != mode:
             auth["approval_mode"] = mode
         if tuple(approvers) != parse_approvers(interpolate(str(auth.get("approver_identities") or ""))):
@@ -527,6 +545,9 @@ class AdminConfigManager:
             raise AdminConfigError("管理员身份必须非空且全部存在于 Token 身份映射")
         parse_approvers(settings.auth.approver_identities)
         registry = self.host_registry(docs, credential_state)
+        known = {host.host_id for host in registry.all()}
+        if any(set(ids) - known for ids in parse_host_access(settings.auth.host_access).values()):
+            raise AdminConfigError("用户主机授权包含未登记主机")
         parse_actions(self._dump(docs["actions"]))
         parse_agent_actions(self._dump(docs["agent_actions"]))
         parse_diagnostics(self._dump(docs["diagnostics"]))
@@ -590,12 +611,12 @@ class AdminConfigManager:
         before = asdict(old.settings)
         after = asdict(settings)
         hot_fields = {
-            "auth.tokens", "auth.enabled", "auth.approval_mode", "auth.approver_identities",
+            "auth.tokens", "auth.host_access", "auth.approval_mode", "auth.approver_identities",
             "auth.admin_identities", "auth.alert_identity",
             "prometheus.base_url", "prometheus.timeout", "monitor.provider",
             "llm.enabled", "llm.provider", "agent.enabled", "agent.name",
             "agent.debug", "agent.recursion_limit", "chat.max_message_chars",
-            "alert.trend_minutes", "alert.trend_step",
+            "alert.trend_minutes",
             "inspection.enabled", "inspection.interval_seconds",
             "inspection.run_on_start", "inspection.max_hosts_per_run",
             "inspection.max_queries_per_run", "inspection.round_timeout_seconds",

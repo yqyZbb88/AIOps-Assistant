@@ -35,9 +35,6 @@ def test_load_settings_parses_types_and_env(tmp_path, monkeypatch):
             [
                 "app:",
                 "  name: ops-test",
-                "server:",
-                "  host: 0.0.0.0",
-                "  port: 9999",
                 "prometheus:",
                 "  base_url: ${PROM_URL_TEST:-http://localhost:9090}",
                 "  timeout: 8",
@@ -46,7 +43,7 @@ def test_load_settings_parses_types_and_env(tmp_path, monkeypatch):
                 "logging:",
                 "  level: DEBUG",
                 "auth:",
-                "  enabled: false",
+                "  tokens: \"{}\"",
                 "",
             ]
         ),
@@ -54,7 +51,6 @@ def test_load_settings_parses_types_and_env(tmp_path, monkeypatch):
     )
     settings = load_settings(cfg)
     assert settings.app.name == "ops-test"
-    assert settings.server.port == 9999
     assert settings.prometheus.base_url == "http://my-prom:9999"
     assert settings.prometheus.timeout == 8
     assert settings.llm.enabled is False
@@ -65,7 +61,7 @@ def test_load_settings_parses_types_and_env(tmp_path, monkeypatch):
 
 
 def test_load_settings_missing_file_is_rejected(tmp_path, monkeypatch):
-    """配置缺失不能静默回退到 auth.enabled=false 的默认值。"""
+    """配置缺失不能静默回退到未配置身份的默认值。"""
     import pytest
 
     with pytest.raises(ConfigError, match="配置文件不存在"):
@@ -89,7 +85,6 @@ def test_load_settings_rejects_unknown_fields(tmp_path):
 
     cfg = tmp_path / "settings.yaml"
     cfg.write_text("""auth:
-  enabled: true
   enabledd: false
 """, encoding="utf-8")
 
@@ -97,16 +92,12 @@ def test_load_settings_rejects_unknown_fields(tmp_path):
         load_settings(cfg)
 
 
-def test_load_settings_rejects_invalid_bool_instead_of_disabling(tmp_path):
-    import pytest
-
+def test_load_settings_rejects_removed_auth_switch(tmp_path):
     cfg = tmp_path / "settings.yaml"
-    cfg.write_text("""auth:
-  enabled: tru
-""", encoding="utf-8")
-
-    with pytest.raises(ConfigError, match="auth.enabled 必须是布尔值"):
+    cfg.write_text("auth:\n  enabled: false\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="enabled"):
         load_settings(cfg)
+
 
 
 def test_load_settings_rejects_malformed_yaml(tmp_path):
@@ -122,8 +113,7 @@ def test_load_settings_rejects_malformed_yaml(tmp_path):
 
 def test_runtime_controls_are_parsed(tmp_path):
     cfg = tmp_path / "settings.yaml"
-    cfg.write_text("""auth:
-  enabled: false
+    cfg.write_text("""auth: {}
 agent:
   enabled: false
   recursion_limit: 7
@@ -144,7 +134,7 @@ metrics:
 def test_app_name_and_version_have_single_source():
     settings = Settings()
     assert settings.app.name == __app_name__ == "AIOps-Assistant"
-    assert settings.app.version == __version__ == "0.6.1"
+    assert settings.app.version == __version__ == "0.6.2"
 
 
 def test_settings_dataclass_defaults():
@@ -154,15 +144,16 @@ def test_settings_dataclass_defaults():
     `load_settings` 没有兜底，文件缺失一律 ConfigError（见其模块注释）。
     """
     s = Settings()
-    assert s.server.port == 8000
-    assert s.alert.trend_step == "5m"
+    assert s.chat.max_message_chars == 8000
+    assert s.alert.trend_minutes == 60
 
 
-def test_auth_is_disabled_by_default():
-    """裸 Settings 默认关鉴权；文件启动使用其配置，新 Compose 模板默认开启。"""
+def test_auth_settings_has_no_authentication_switch():
+    from dataclasses import fields
     s = Settings()
-    assert s.auth.enabled is False
+    assert "enabled" not in {f.name for f in fields(type(s.auth))}
     assert s.auth.tokens == ""
+
 
 
 def test_auth_section_is_parsed_from_yaml(tmp_path, monkeypatch):
@@ -170,13 +161,12 @@ def test_auth_section_is_parsed_from_yaml(tmp_path, monkeypatch):
     monkeypatch.setenv("OPS_API_TOKENS_TEST", '{"k-alice": "alice"}')
     cfg = tmp_path / "settings.yaml"
     cfg.write_text(
-        "\n".join(["auth:", "  enabled: true", "  tokens: '${OPS_API_TOKENS_TEST:-}'", ""]),
+        "\n".join(["auth:", "  tokens: '${OPS_API_TOKENS_TEST:-}'", ""]),
         encoding="utf-8",
     )
 
     settings = load_settings(cfg)
 
-    assert settings.auth.enabled is True
     assert settings.auth.tokens == '{"k-alice": "alice"}'
     # 关键：拿到的是**字符串**而不是被 YAML 解出来的 dict
     assert isinstance(settings.auth.tokens, str)
@@ -202,7 +192,7 @@ def test_quoted_auth_json_accepts_apostrophe_in_token(tmp_path, monkeypatch):
     import json
     monkeypatch.setenv("TEST_TOKEN_JSON", json.dumps({"test'token": "test-user"}))
     path = tmp_path / "settings.yaml"
-    path.write_text("auth:\n  enabled: true\n  tokens: '${TEST_TOKEN_JSON}'\n", encoding="utf-8")
+    path.write_text("auth:\n  tokens: '${TEST_TOKEN_JSON}'\n", encoding="utf-8")
     settings = load_settings(path)
     assert json.loads(settings.auth.tokens) == {"test'token": "test-user"}
 
@@ -218,7 +208,7 @@ def test_yaml_syntax_error_does_not_expose_interpolated_credentials(tmp_path, mo
     from src.core.rule_engine import RuleEngine
 
     monkeypatch.setenv("TEST_YAML_SECRET", 'fake"key\\z')
-    text = "auth:\n  enabled: true\n  tokens: '${TEST_YAML_SECRET}' trailing\n"
+    text = "auth:\n  tokens: '${TEST_YAML_SECRET}' trailing\n"
     path = tmp_path / "settings.yaml"
     path.write_text(text, encoding="utf-8")
     parsers = {
@@ -234,13 +224,13 @@ def test_yaml_syntax_error_does_not_expose_interpolated_credentials(tmp_path, mo
         parsers[kind]()
     diagnostic = "".join(traceback.format_exception(caught.value))
     assert "fake" not in diagnostic
-    assert "第 3 行" in diagnostic
+    assert "第 2 行" in diagnostic
 
 
 @pytest.mark.parametrize("text", [
     "auth:\n  tokens: ${TEST_TOKEN_MAPPING}\n",
     "auth: [${TEST_TOKEN_MAPPING}]\n",
-    "auth:\n  enabled: false\nserver:\n  port: '${TEST_TOKEN_MAPPING}'\n",
+    "auth: {}\nprometheus:\n  timeout: '${TEST_TOKEN_MAPPING}'\n",
 ])
 def test_settings_type_error_does_not_echo_credentials(tmp_path, monkeypatch, text):
     import json
@@ -252,4 +242,23 @@ def test_settings_type_error_does_not_echo_credentials(tmp_path, monkeypatch, te
     with pytest.raises(ConfigError) as caught:
         load_settings(path)
     assert "fake-credential" not in "".join(traceback.format_exception(caught.value))
-    assert "auth" in str(caught.value) or "server.port" in str(caught.value)
+    assert "auth" in str(caught.value) or "prometheus.timeout" in str(caught.value)
+
+
+@pytest.mark.parametrize("section,key,value", [("app", "version", "0.0.0"), ("alert", "trend_step", "5m"), ("auth", "enabled", True)])
+def test_removed_fields_rejected_by_strict_loader(tmp_path, section, key, value):
+    import yaml
+    path = tmp_path / "settings.yaml"
+    doc = {"auth": {}}
+    doc.setdefault(section, {})[key] = value
+    path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(ConfigError, match=key):
+        load_settings(path)
+
+
+def test_version_is_read_only_metadata():
+    from dataclasses import fields, FrozenInstanceError
+    settings = Settings()
+    assert "version" not in {field.name for field in fields(type(settings.app))}
+    with pytest.raises(FrozenInstanceError):
+        settings.app.version = "invalid"

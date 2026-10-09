@@ -1,7 +1,7 @@
 # AIOps-Assistant YAML 配置指南
 
-本文覆盖七个运行时 YAML 文件。本地 Python 使用根 `config/`；Compose 使用
-`.runtime/config/`，首次从 `deploy/config/` 复制，升级不覆盖已有值。下文 `config/`
+本文覆盖七个运行时 YAML 文件。容器使用 `.runtime/config/`，首次从
+`deploy/config/` 复制，升级保留已有值。下文 `config/`
 是相对于应用工作目录的路径，在容器内为 `/app/config/`。部署入口见 [deployment.md](deployment.md)。
 
 配置文件包括：
@@ -35,7 +35,6 @@ value: ${VAR:-default}
 
 - `${VAR}`：读取环境变量；变量缺失时替换为空字符串并记录 WARNING。
 - `${VAR:-default}`：变量存在时取变量值，否则取 default。
-- 本地 Python 启动时优先使用系统环境变量，再用根目录 `.env` 补充未设置值。
 - Compose 的根 `.env` 提供可选模型/SSH 参数与发布端口；身份由初始化服务生成。
   初始化将凭据保存至 `.runtime/compose.env`，Assistant 入口导入其派生 JSON 后启动。
   新模板的 `OPS_LLM_ENABLED` / `OPS_AGENT_ENABLED` 随模型密钥是否存在赋值；管理页保存固定开关后以配置为准。
@@ -53,7 +52,7 @@ value: ${VAR:-default}
   主机 `enabled`、命令项 `enabled/sudo` 和参数 `required` 要使用实际 YAML 布尔值；不能用字符串 `"false"` 代替。
 - 类型不合法、阈值顺序错误、未知指标等会拒绝启动或在启动时关闭对应能力。
 - 管理页面可编辑字段保存后热生效；手工修改 YAML 需管理员显式调用
-  `POST /admin/config/apply`。监听、SQLite/日志路径和环境密钥仍需重启。
+  `POST /admin/config/apply`。Compose 发布端口、SQLite/日志路径和部署环境密钥仍需重建。
 
 ### 3. 配置文件关系
 
@@ -71,8 +70,7 @@ settings.yaml
 
 ### 4. 配置文件路径
 
-默认从仓库根目录下的 `config/` 读取。以下环境变量可替换加载路径，适合测试、容器挂载或
-多套环境配置：
+默认从容器 /app/config/ 读取，宿主机挂载来源为运行目录 config/。以下环境变量可替换容器加载路径：
 
 | 环境变量 | 默认文件 |
 |---|---|
@@ -85,13 +83,13 @@ settings.yaml
 
 `metrics.yaml` 没有单独的路径环境变量；它由 `settings.yaml` 的 `metrics.file` 指定。
 `hosts.yaml` 通常由 `hosts.file` 指定；该值为空时才读取 `OPS_HOSTS_FILE`，两者都为空则启用
-`legacy-default` 单主机兼容方式。相对路径按仓库根目录解析。
+`legacy-default` 单主机兼容方式。相对路径按容器应用根目录 /app 解析。
 
 ## 二、settings.yaml
 
-下列表格的“默认值”指仓库自带 `config/settings.yaml` 的值；环境变量占位符
+下列表格的“默认值”指 deploy/config/settings.yaml 模板及其未覆盖的程序默认值；环境变量占位符
 按启动进程的环境求值。启动时读取该 YAML，未配置的字段使用程序内置默认值。
-Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `node-exporter:9100`、
+Compose 首次部署使用独立模板：强制身份校验、`local-node` 指向 `node-exporter:9100`、
 没有 SSH 授权和处置规则，命令目录关闭；不提供模型密钥时 AI 关闭。模板不会改变旧部署设置。
 
 ### app
@@ -102,23 +100,16 @@ Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `nod
 
 应用版本不在 YAML 中配置，由程序内置版本号统一提供。
 
-### server
-
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---:|---:|---|
-| `server.host` | string | `127.0.0.1` | 监听地址。`0.0.0.0` 会开放到网络 |
-| `server.port` | int | `8000` | HTTP 端口 |
-
-仅在 `python src/main.py` 直接运行时由应用读取；`uvicorn` 命令行参数会覆盖。
+容器入口固定单 worker、监听 0.0.0.0:8000，发布端口由 Compose 控制。旧 server 段由 init 迁移移除。
 
 ### prometheus
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `prometheus.base_url` | string | `http://localhost:9090` | Prometheus 地址，建议用 `${PROMETHEUS_URL:-http://localhost:9090}` |
+| `prometheus.base_url` | string | `http://prometheus:9090` | Prometheus 地址，模板读取 PROMETHEUS_URL |
 | `prometheus.timeout` | int | `5` | HTTP 查询超时秒数 |
-| `prometheus.target_mode` | string | `external` | `external` 仅登记已发现目标；`managed` 使用文件发现 |
-| `prometheus.file_sd_path` | string | 空 | `managed` 模式下的 Prometheus 目标文件路径 |
+| `prometheus.target_mode` | string | `managed` | `external` 仅登记已发现目标；`managed` 使用文件发现 |
+| `prometheus.file_sd_path` | string | `/app/prometheus-targets/assistant.yml` | `managed` 模式下的 Prometheus 目标文件路径 |
 
 所有指标即时查询和范围查询共用该超时。
 
@@ -133,7 +124,7 @@ Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `nod
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `llm.provider` | string | `deepseek` | LLM 插件名 |
-| `llm.enabled` | bool | `true` | `false` 时跳过告警 AI 分析；不控制聊天 Agent |
+| `llm.enabled` | bool | 随部署模型密钥 | `false` 时跳过告警 AI 分析；不控制聊天 Agent |
 
 聊天 Agent 的总开关是 `agent.enabled`。
 
@@ -141,7 +132,7 @@ Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `nod
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `agent.enabled` | bool | `true` | `false` 时聊天只走关键词兜底，不构建 LLM Agent |
+| `agent.enabled` | bool | 随部署模型密钥 | `false` 时聊天只走关键词兜底，不构建 LLM Agent |
 | `agent.name` | string | `ops_assistant` | Agent 名称，用于 trace 和日志归因 |
 | `agent.debug` | bool | `false` | LangChain Agent 调试输出 |
 | `agent.recursion_limit` | int | `25` | 单轮 Agent 图步骤上限，防止工具调用无限循环 |
@@ -172,8 +163,7 @@ Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `nod
 |---|---:|---:|---|
 | `alert.recent_limit` | int | `100` | 内存中最近告警条数，重启即清空 |
 | `alert.trend_minutes` | int | `60` | 告警 AI 分析趋势窗口（分钟） |
-| `alert.trend_step` | string | `5m` | 范围查询步长 |
-
+|
 ### inspection
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -235,8 +225,8 @@ Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `nod
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `auth.enabled` | bool | `true` | 是否启用 Bearer 鉴权 |
-| `auth.tokens` | JSON string | 空 | 密钥到身份的 JSON 映射，建议用 `${OPS_API_TOKENS}` |
+|| `auth.host_access` | JSON object string | `{}` | 身份名到已登记主机 ID 数组；普通用户无显式授权时拒绝，管理员可访问全部主机 |
+| `auth.tokens` | JSON string | 初始化生成 | 密钥到身份的 JSON 映射，建议用 `${OPS_API_TOKENS}` |
 | `auth.approval_mode` | string | `approvers_only` | `owner` 或 `approvers_only` |
 | `auth.approver_identities` | JSON array string | `["admin"]` | `approvers_only` 模式下允许审批的身份 |
 | `auth.admin_identities` | JSON array string | `["admin"]` | 可访问系统管理 API 的最高权限身份 |
@@ -246,7 +236,6 @@ Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `nod
 
 ```yaml
 auth:
-  enabled: true
   tokens: '${OPS_API_TOKENS:-}'
   approval_mode: approvers_only
   approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
@@ -254,11 +243,11 @@ auth:
   alert_identity: alertmanager
 ```
 
-管理员身份必须存在于 `auth.tokens` 的身份值中。它与审批人互不继承；管理 API 即使在
-`auth.enabled=false` 时也始终要求管理员 Token。
+管理员身份必须存在于 `auth.tokens` 的身份值中。它与审批人互不继承；管理 API
+始终要求管理员 Token，业务 API 始终校验身份。
 
 系统管理页面不是 YAML 编辑器：它只提交 `settings` 的安全/功能字段、规则、命令目录
-和主机 `allow` 白名单。服务端保留 Token、SSH/Prometheus 连接信息等非页面字段，并
+、用户主机授权和主机 `allow` 白名单。服务端保留 Token、SSH/Prometheus 连接信息等非页面字段，并
 复用现有解析器验证整个候选配置。保存前比较配置文件（含已指定的 `metrics.yaml`，
 自管模式还含目标文件）的磁盘 revision；不一致返回 409，
 字段或跨文件引用错误返回 422。仅有变化的文件会先备份到
@@ -484,7 +473,7 @@ commands:
 
 | 字段 | 类型 | 必填 | 含义 |
 |---|---:|---:|---|
-| `enabled` | bool | 否 | 文件总开关，默认 true |
+| `enabled` | bool | 否 | 文件总开关；省略时 true，出厂模板显式 false |
 | `output_limit` | int | 否 | stdout/stderr 共享输出上限，默认 4000 字符 |
 | `commands` | map | 是 | 命令 key 到命令定义的映射 |
 | 命令项 `enabled` | bool | 否 | false 时保留定义但不注册为可调用命令，默认 true |
@@ -568,7 +557,7 @@ SSH 目标，并要求该命令出现在主机的 `allow.agent_actions`；审批
 
 ## 八、diagnostics.yaml
 
-这是 Agent 的 SSH 只读诊断白名单，不绑定 `metrics.yaml` 指标。
+这是 Agent 的 SSH 只读诊断白名单，不绑定 `metrics.yaml` 指标。出厂模板关闭，以下为显式启用示例。
 
 ```yaml
 enabled: true
@@ -676,7 +665,7 @@ metrics:
 
 | 配置 | 生效方式 |
 |---|---|
-| `settings.yaml` | 页面可编辑的鉴权、身份、LLM/Agent/巡检开关热生效；监听、SQLite/日志路径与环境密钥需重启 |
+| `settings.yaml` | 页面身份、用户主机授权、LLM/Agent/巡检开关热生效；监听、SQLite/日志路径与环境密钥需重启 |
 | `hosts.yaml` | 管理员新增主机或修改授权后立即切换主机注册表；手改后显式应用 |
 | `metrics.yaml` | 纳入 revision；手改后显式应用 |
 | `rules.yaml` | 页面保存或手动应用后热生效 |
@@ -685,8 +674,8 @@ metrics:
 | `diagnostics.yaml` | 页面保存或手动应用后热生效 |
 
 热应用前若有未决审批或正在执行的业务请求会返回 409，旧运行快照与 checkpoint
-保持不变；巡检只保留一个进程内调度线程，每轮读取完整运行快照。普通 Token 明文
-仍只能从启动环境获取，不由管理页面显示或修改。
+保持不变；巡检只保留一个进程内调度线程，每轮读取完整运行快照。部署 Token 明文仍通过 init 的显式查看命令获取；页面管理的 Token 可创建、轮换和撤销，
+成功创建/轮换时仅显示一次，普通配置快照不回显。
 
 ### Prometheus 目标模式
 
@@ -766,7 +755,7 @@ Prometheus 容器里的 `localhost:9100` 指向该容器自身，远程 Exporter
 ## 页面管理的 SSH、Token 与模型
 
 管理员控制台的三个凭据分区使用独立持久化存储，配置值不加入 YAML。
-默认本地为 `data/admin-credentials/`，Compose 为 `.runtime/assistant-data/admin-credentials/`；
+容器内为 `/app/data/admin-credentials/`，宿主机为 `.runtime/assistant-data/admin-credentials/`；
 采用与普通配置相同的锁、revision 和运行快照，成功立即生效，失败保留旧配置。
 详细字段、长度和错误码见 [管理员凭据 API](api.md#管理员凭据-api)，操作见
 [控制台](console.md#管理员配置操作)。环境变量与旧部署凭据仍保留且页面只读；SSH/模型
@@ -777,7 +766,8 @@ Prometheus 容器里的 `localhost:9100` 指向该容器自身，远程 Exporter
 时复用即时表达式，活动告警采用历史 ALERTS。磁盘按挂载点/设备/文件系统、I/O 和网络
 按设备返回；无 Swap 为“不适用”。缺少采集器、标签不匹配、rate 采样不足按 no_data。
 告警补零的 up 探测内嵌同一查询，不增加巡检请求数，原每主机预算仍含独立 Exporter 查询。
-趋势接口默认自动步长；告警分析的 `alert.trend_step=5m` 仍是显式设置，保留兼容。
+趋势接口与告警分析统一使用自动步长 `max(15 秒, ceil(窗口秒数 / 240))`；
+未被使用的 `alert.trend_step` 已删除，趋势窗口继续使用 `alert.trend_minutes`。
 
 ## 主机告警 PromQL 编写约束
 
@@ -828,3 +818,11 @@ docker compose kill -s SIGHUP prometheus
 ```
 
 重新加载前已产生的无 job 告警不会被补写标签；以新规则完成评估后的告警为准。
+
+## 已移除的配置与升级
+
+`auth.enabled` 和管理 API 的 `auth_enabled` 已删除，不能关闭身份验证。
+`alert.trend_step` 已没有调用方；`app.version` 改为只读代码元信息；
+`server` 段随本机服务入口删除。容器 init 先备份旧 settings，再移除上述 YAML 字段。
+业务加载器直接读取残留旧字段会拒绝启动，管理 API 提交未知 settings 字段返回 422。
+备份位置与恢复边界见 [部署指南](deployment.md)。其他有效配置保持。

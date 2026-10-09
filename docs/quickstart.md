@@ -103,7 +103,7 @@ ssh -N -L 8000:127.0.0.1:8000 user@server.example
 ## 6. 理解数据放在哪里
 
 首次初始化自动建立 `.runtime/`。Compose 实际配置在 `.runtime/config/`；
-根 `config/` 是本地 Python 模式的配置，修改它不会更新新 Compose 部署。
+deploy/config/ 是首次部署模板，修改模板不会覆盖已有运行配置。
 管理员保存配置使用“系统管理”；字段、生效时机和热应用见 [配置指南](configuration.md)。
 
 SQLite、日志、凭据和监控数据都持久化在部署目录或命名卷里。
@@ -128,6 +128,5 @@ docker compose up -d --wait --wait-timeout 180
 | 日常看告警、巡检、审批与记录 | [使用指南](guide.md) |
 | 配置模型密钥、修改端口或准备 SSH | [部署与升级](deployment.md#可选配置模型端口与-ssh) |
 | 理解页面与管理员保存 | [控制台说明](console.md) |
-| 在独立环境练习告警与故障恢复 | [本机测试与验收](testing.md) |
-| 用本地 Python 开发 | [本地 Python 启动](deployment.md#本地-python-启动) |
+| 在独立环境练习告警与故障恢复 | [容器测试与验收](testing.md) |
 | 找其它文档 | [文档导航](README.md) |

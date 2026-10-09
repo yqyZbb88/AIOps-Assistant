@@ -111,7 +111,7 @@ class TestParse:
         with pytest.raises(DiagnosticsConfigError, match="命令名"):
             parse_diagnostics(text)
 
-    def test_repo_default_config_loads_five_commands(self):
+    def test_enabled_template_loads_five_commands(self, enabled_catalogs):
         cfg = load_diagnostics_config()  # config/diagnostics.yaml
         assert cfg is not None
         keys = [c.key for c in cfg.commands]

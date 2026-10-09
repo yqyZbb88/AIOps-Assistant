@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from src.api.deps import require_alert_identity
 from src.core.agent import OpsAgent
 from src.interfaces.history import HistoryError
-from src.interfaces.host import HostError
+from src.api.access import require_host, recent_records, visible_host_ids
 from src.interfaces.monitor import MonitorError
 from src.storage.models import AlertAck, AlertmanagerPayload
 
@@ -71,7 +71,7 @@ def alert(
 @router.get("/alerts/recent", response_model=list[dict[str, Any]])
 def alerts_recent(
     request: Request,
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=500),
     host_id: str | None = Query(None, description="按主机 ID 筛选"),
 ) -> list[dict[str, Any]]:
     """最近接收的告警记录（**内存热缓冲**，进程重启后清空）。
@@ -80,12 +80,7 @@ def alerts_recent(
     不落盘、容量小）；history 是落盘归档（可跨重启查、可关联处置与 AI 建议）。
     两者数据源不同，**不是一个东西的两种读法**。
     """
-    if host_id is not None:
-        try:
-            request.app.state.container.hosts().require(host_id)
-        except HostError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return _agent(request).recent(limit, host_id=host_id)
+    return recent_records(request, _agent(request).recent, limit=limit, host_id=host_id, timestamp="received_at")
 
 
 @router.get("/alerts/history", response_model=dict[str, Any])
@@ -99,22 +94,20 @@ def alerts_history(
     持久化未启用时三者均为**空列表**（沿用「能力缺失 = 空而非报错」的约定）；
     存储故障则 503——那是故障，不该伪装成「没有记录」。
     """
+    if host_id is not None:
+        require_host(request, host_id)
     store = request.app.state.container.history()
     if store is None:
         return {"alerts": [], "remediations": [], "advice": [], "storage": "off"}
     try:
-        if host_id is not None:
-            request.app.state.container.hosts().require(host_id)
         return {
-            "alerts": [r.to_dict() for r in store.recent_alerts(limit=limit, host_id=host_id)],
+            "alerts": [r.to_dict() for r in recent_records(request, store.recent_alerts, limit=limit, host_id=host_id, timestamp="received_at")],
             "remediations": [
-                r.to_dict() for r in store.recent_remediations(limit=limit, host_id=host_id)
+                r.to_dict() for r in recent_records(request, store.recent_remediations, limit=limit, host_id=host_id, timestamp="executed_at")
             ],
-            "advice": [r.to_dict() for r in store.recent_advice(limit=limit, host_id=host_id)],
+            "advice": [r.to_dict() for r in recent_records(request, store.recent_advice, limit=limit, host_id=host_id, timestamp="analyzed_at")],
             "storage": "ok" if store.healthy else "degraded",
         }
-    except HostError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except HistoryError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -130,13 +123,11 @@ def alerts_active(
     active 是实时向监控源 /api/v1/alerts 要当前规则状态。
     """
     try:
-        return (
-            _agent(request).active_alerts()
-            if host_id is None
-            else _agent(request).active_alerts(host_id=host_id)
-        )
-    except HostError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if host_id is not None:
+            require_host(request, host_id)
+            return _agent(request).active_alerts(host_id=host_id)
+        return [alert for current in sorted(visible_host_ids(request, include_disabled=False))
+                for alert in _agent(request).active_alerts(host_id=current)]
     except MonitorError as exc:
         logger.warning("查询监控源告警状态失败: %s", exc)
         raise HTTPException(status_code=502, detail=f"监控源查询失败: {exc}") from exc

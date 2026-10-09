@@ -40,7 +40,7 @@ active operation，配置应用遇到进行中的写请求、未决审批或无�
 2. 聊天：会话固定 `host_id` 与所有者；`src/core/chat.py` 调用关键词兜底或 Agent。
    Agent 工具只从受控指标、告警、巡检与该主机获授权的诊断目录构建。诊断目标和
    SSH 凭据由服务端注册表解析，不由模型或浏览器提交。
-3. 告警：普通鉴权开启且设置 `alert_identity` 时，`POST /alert` 要求该 webhook 身份；
+3. 告警：设置 `alert_identity` 时，`POST /alert` 要求该 webhook 身份；
    `src/core/rule_engine.py` 按告警名与唯一
    主机目标匹配。全局自动处置、单规则自动执行、命令启用及主机授权共同决定能否
    走规则写路径；它不经过 Agent 人工审批，必须保留幂等和审计。
@@ -88,11 +88,11 @@ active operation，配置应用遇到进行中的写请求、未决审批或无�
 ## 部署初始化与持久化
 
 Compose 使用同一应用镜像运行一次性 `init` 和单 worker 的 Assistant。`init` 先生成或恢复
-持久化凭据，再补齐运行配置和服务专用凭据；Prometheus 健康后启动 Assistant，
+持久化凭据；新部署复制模板，已有部署校验运行配置，再生成服务专用凭据；Prometheus 健康后启动 Assistant，
 Assistant 就绪后启动 Alertmanager。启动命令通过 `--wait` 等待常驻服务健康。
 
-`deploy/config/` 仅作为新部署模板，`.runtime/config/` 为实际可写配置。旧部署首次迁移
-从根 `config/` 复制，后续不会覆盖管理员变更。`compose.env` 是凭据来源，
+`deploy/config/` 仅作为新部署模板，`.runtime/config/` 为实际可写配置。升级保留管理员变更；
+已完成部署缺少 YAML 时要求恢复备份，不再从根目录复制本机配置。`compose.env` 是凭据来源，
 `deployment.json` 记录来源、凭据写入检查点与完成状态；凭据写入后即使初始化中断，
 丢失源凭据也会拒绝生成新密钥。
 Linux 初始化使用文件锁和原子替换；不同实例必须使用不同运行目录、项目名和端口。

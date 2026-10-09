@@ -1,28 +1,56 @@
-.git
-.github
-.runtime
-.env
-.env.compose
-__pycache__
-*.pyc
-.pytest_cache
-.pytest_tmp*
-.venv
-data
-logs
-参考
-PROJECT_HANDOVER.md
-docs/_local
-ARCHITECTURE.md
-docs/roadmap.md
-roadmap.md
+# 默认不发送文件，只开放当前 Dockerfile 使用的构建输入。
+# 测试目标需要 tests/ 和 requirements.txt，不能遗漏。
+**
+!Dockerfile
+!.dockerignore
+!init.py
+!requirements.txt
+!requirements-runtime.txt
+!requirements-lock.txt
+!src/
+!src/**
+!scripts/
+!scripts/**
+!deploy/
+!deploy/**
+!tests/
+!tests/**
 
-.env*
-config
-tests
-docs
-.claude
-.codex
-.agents
-.vscode
-*.local.yaml
+# 即使位于上述目录中，本地环境、覆盖配置和部署凭据仍不发送。
+**/.env*
+**/compose.env
+**/compose.override.yaml
+**/compose.override.yml
+**/*.local.*
+
+# 排除数据库及旁文件、日志、私钥和主机密钥记录。
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.log
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa
+**/id_dsa
+**/id_ecdsa
+**/id_ed25519
+**/known_hosts
+**/known_hosts.*
+
+# 排除 Python 编译产物、临时文件和本地备份。
+**/*.py[cod]
+**/*.tmp
+**/*.bak
+**/*.orig
+**/*.rej
+**/*.swp
+**/*.swo
+**/*~
+
+# .env.example 由宿主机 Compose 使用，可提交但不需要进入构建上下文。
+# 文档、CI、本地运行目录等未在上方开放，因此不会发送给 Docker。

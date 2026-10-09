@@ -75,7 +75,7 @@ class TestCatalogParse:
         cfg = parse_actions(SAMPLE.replace("  restart_service:\n", "  restart_service:\n    enabled: false\n"))
         assert [command.key for command in cfg.commands] == ["cleanup_disk"]
 
-    def test_repo_default_catalog_loads_recommended_commands(self):
+    def test_enabled_template_loads_recommended_commands(self, enabled_catalogs):
         cfg = load_actions_catalog()  # config/actions.yaml
         assert cfg is not None
         assert [c.key for c in cfg.commands] == [
