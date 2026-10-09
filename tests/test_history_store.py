@@ -302,3 +302,25 @@ def test_health_recovers_after_a_successful_operation(tmp_path, monkeypatch):
     store.record_batch(alerts=[_alert()])
     assert store.healthy is True, "成功一次就该恢复"
     assert store.last_error is None
+
+
+@pytest.mark.parametrize("reason", ["ttl", "capacity"])
+def test_cleanup_preserves_decisions_needed_by_pending_recovery(store, reason):
+    from src.interfaces.session import STATUS_PENDING_APPROVAL, STATUS_UNKNOWN
+    from src.storage.session import SqliteSessionStore
+    sessions = SqliteSessionStore(store.db, clock=store._clock, ttl_seconds=86400,
+                                  purge_interval_seconds=float("inf"))
+    info = sessions.create()
+    sessions.append_turn(info.session_id, user_content="test-write", assistant_content="test-pending",
+                         status=STATUS_PENDING_APPROVAL, approval_id="ap-recovery")
+    sessions.record_decision("ap-recovery", session_id=info.session_id, action="approve")
+    if reason == "ttl":
+        store._clock.advance(3601)
+    else:
+        for i in range(5):
+            _decide(store, f"ap-other-{i}", decided_at=f"2026-01-01T00:00:0{i}+00:00")
+    store.purge_expired()
+    assert sessions.reconcile_pending(set()) == (0, 1)
+    assert sessions.messages(info.session_id)[1].status == STATUS_UNKNOWN
+    store.purge_expired()
+    assert store.db.query("SELECT 1 FROM approval_decisions WHERE approval_id = ?", ("ap-recovery",)) == []

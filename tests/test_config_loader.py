@@ -1,6 +1,8 @@
 """config_loader：${VAR} / ${VAR:-default} 插值与 dataclass 解析。"""
 from __future__ import annotations
 
+import pytest
+
 from src import __app_name__, __version__
 from src.utils.config_loader import (
     ConfigError,
@@ -21,7 +23,7 @@ def test_interpolate_with_default(tmp_path, monkeypatch):
 
 def test_interpolate_required_missing_is_empty(tmp_path, monkeypatch):
     monkeypatch.delenv("MY_REQUIRED_VAR", raising=False)
-    # 无默认值的变量缺失 → 空字符串（保证启动/加载不失败）
+    # 缺失变量在插值阶段变为空串；后续字段校验仍可能拒绝该值。
     assert interpolate("pre${MY_REQUIRED_VAR}post") == "prepost"
 
 
@@ -157,17 +159,14 @@ def test_settings_dataclass_defaults():
 
 
 def test_auth_is_disabled_by_default():
-    """鉴权必须默认关：`create_app(settings=Settings())` 在测试里被调多次，
-    默认打开会让既有用例集体 401。出厂是否打开只由 config/settings.yaml 决定
-    （与 storage.enabled 同一条纪律）。"""
+    """裸 Settings 默认关鉴权；文件启动使用其配置，新 Compose 模板默认开启。"""
     s = Settings()
     assert s.auth.enabled is False
     assert s.auth.tokens == ""
 
 
 def test_auth_section_is_parsed_from_yaml(tmp_path, monkeypatch):
-    """yaml 里的占位符**必须用单引号包住**，否则变量有值时会被 YAML 解析成流式映射
-    （dict），`_as_scalar` 再 `str()` 一下就成了单引号 repr，JSON 解析必炸。"""
+    """带引号的 JSON 占位保持字符串类型；未加引号的映射不符合 tokens 类型。"""
     monkeypatch.setenv("OPS_API_TOKENS_TEST", '{"k-alice": "alice"}')
     cfg = tmp_path / "settings.yaml"
     cfg.write_text(
@@ -181,3 +180,76 @@ def test_auth_section_is_parsed_from_yaml(tmp_path, monkeypatch):
     assert settings.auth.tokens == '{"k-alice": "alice"}'
     # 关键：拿到的是**字符串**而不是被 YAML 解出来的 dict
     assert isinstance(settings.auth.tokens, str)
+
+
+
+def test_yaml_interpolation_preserves_quoted_values_and_unquoted_types(monkeypatch):
+    import yaml
+    from src.utils.config_loader import interpolate_yaml
+    values = ['test"quote', "test'apostrophe", "test\\path", "test\nline", "Ｔｅｓｔ①", "  test  "]
+    for value in values:
+        monkeypatch.setenv("TEST_QUOTED_VALUE", value)
+        for quote in ["'", '"']:
+            text = "value: " + quote + "prefix${TEST_QUOTED_VALUE}suffix" + quote + "\n"
+            assert yaml.safe_load(interpolate_yaml(text))["value"] == "prefix" + value + "suffix"
+    monkeypatch.setenv("TEST_NUMBER", "22")
+    monkeypatch.setenv("TEST_BOOL", "false")
+    parsed = yaml.safe_load(interpolate_yaml("port: ${TEST_NUMBER}\nenabled: ${TEST_BOOL}\n"))
+    assert parsed == {"port": 22, "enabled": False}
+
+
+def test_quoted_auth_json_accepts_apostrophe_in_token(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv("TEST_TOKEN_JSON", json.dumps({"test'token": "test-user"}))
+    path = tmp_path / "settings.yaml"
+    path.write_text("auth:\n  enabled: true\n  tokens: '${TEST_TOKEN_JSON}'\n", encoding="utf-8")
+    settings = load_settings(path)
+    assert json.loads(settings.auth.tokens) == {"test'token": "test-user"}
+
+
+@pytest.mark.parametrize("kind", ["settings", "hosts", "metrics", "actions", "agent_actions", "diagnostics", "rules"])
+def test_yaml_syntax_error_does_not_expose_interpolated_credentials(tmp_path, monkeypatch, kind):
+    import traceback
+    from src.utils.hosts_config import parse_hosts
+    from src.utils.metrics_config import parse_metrics_config
+    from src.plugins.actions.catalog import parse_actions
+    from src.plugins.agent_actions.catalog import parse_agent_actions
+    from src.plugins.diagnostics.commands import parse_diagnostics
+    from src.core.rule_engine import RuleEngine
+
+    monkeypatch.setenv("TEST_YAML_SECRET", 'fake"key\\z')
+    text = "auth:\n  enabled: true\n  tokens: '${TEST_YAML_SECRET}' trailing\n"
+    path = tmp_path / "settings.yaml"
+    path.write_text(text, encoding="utf-8")
+    parsers = {
+        "settings": lambda: load_settings(path),
+        "hosts": lambda: parse_hosts(text),
+        "metrics": lambda: parse_metrics_config(text),
+        "actions": lambda: parse_actions(text),
+        "agent_actions": lambda: parse_agent_actions(text),
+        "diagnostics": lambda: parse_diagnostics(text),
+        "rules": lambda: RuleEngine(rules_text=text),
+    }
+    with pytest.raises(Exception) as caught:
+        parsers[kind]()
+    diagnostic = "".join(traceback.format_exception(caught.value))
+    assert "fake" not in diagnostic
+    assert "第 3 行" in diagnostic
+
+
+@pytest.mark.parametrize("text", [
+    "auth:\n  tokens: ${TEST_TOKEN_MAPPING}\n",
+    "auth: [${TEST_TOKEN_MAPPING}]\n",
+    "auth:\n  enabled: false\nserver:\n  port: '${TEST_TOKEN_MAPPING}'\n",
+])
+def test_settings_type_error_does_not_echo_credentials(tmp_path, monkeypatch, text):
+    import json
+    import traceback
+
+    monkeypatch.setenv("TEST_TOKEN_MAPPING", json.dumps({"fake-credential": "admin"}))
+    path = tmp_path / "settings.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError) as caught:
+        load_settings(path)
+    assert "fake-credential" not in "".join(traceback.format_exception(caught.value))
+    assert "auth" in str(caught.value) or "server.port" in str(caught.value)

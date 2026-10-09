@@ -72,3 +72,25 @@ def test_legacy_registry_has_stable_id(monkeypatch):
     assert host.legacy is True
     assert host.monitor.instance == "legacy:9100"
     assert host.ssh.host == "legacy.example"
+
+
+@pytest.mark.parametrize("password", ["  test-password  ", "Ｔｅｓｔ①", "  "])
+def test_password_is_preserved_exactly(password, monkeypatch):
+    monkeypatch.setenv("TEST_SSH_PASSWORD", password)
+    text = SAMPLE.replace("password: secret", 'password: "${TEST_SSH_PASSWORD}"')
+    assert parse_hosts(text).require("host-a").ssh.password == password
+
+
+@pytest.mark.parametrize("password", ["", None])
+def test_empty_password_is_unset(password):
+    import yaml
+    data = yaml.safe_load(SAMPLE)
+    data["credentials"]["ops"]["password"] = password
+    assert parse_hosts(yaml.safe_dump(data)).require("host-a").ssh.password is None
+
+
+@pytest.mark.parametrize("password", ['test"quote', 'test\\path', "test\nline"])
+def test_environment_password_with_yaml_syntax_is_preserved(password, monkeypatch):
+    monkeypatch.setenv("TEST_SSH_PASSWORD", password)
+    text = SAMPLE.replace("password: secret", 'password: "${TEST_SSH_PASSWORD}"')
+    assert parse_hosts(text).require("host-a").ssh.password == password

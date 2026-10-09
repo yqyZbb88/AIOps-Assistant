@@ -267,7 +267,7 @@ class ChatService:
     def _resolve_session(
         self, session_id: str | None, user: str | None
     ) -> tuple[str | None, str, str]:
-        """确定本轮用哪个会话，返回 (session_id, session_name)；存储不可用 → (None, "")。
+        """确定本轮用哪个会话，返回 (session_id, session_name, host_id)；存储不可用 → (None, "", "")。
 
         **给了 `session_id`：必须已存在且属于调用者。**
 
@@ -319,9 +319,8 @@ class ChatService:
     def _record_turn(self, session_id: str | None, message: str, turn: TurnResult) -> None:
         """把一轮写进会话表（user + assistant 同事务）。
 
-        失败**只记日志不抛**：聊天已经答完了，不能因为落库失败就让用户拿不到回答。
-        代价是「历史表是唯一真相」在失败时会缺一块——所以必须记 ERROR 并让
-        `/health` 能反映出 degraded，不能静默。
+        普通回复写失败只记日志并保留回答；会话已删除时返回不存在。
+        待审批轮次必须保存：失败时作废申请并上抛，不能留下无会话记录的可执行申请。
         """
         if self._sessions is None or session_id is None:
             return
@@ -336,6 +335,12 @@ class ChatService:
             )
         except SessionError as exc:
             logger.error("写入会话历史失败（本轮未落库，历史将缺一块）: %s", exc)
+            if pending:
+                if turn.approval_id and not self.cancel_pending(turn.approval_id):
+                    logger.error("未能作废未落库的审批 id=%s，需核对审批队列", turn.approval_id)
+                raise
+            if isinstance(exc, SessionNotFoundError):
+                raise
 
     @property
     def storage_healthy(self) -> bool:
@@ -383,14 +388,28 @@ class ChatService:
             for candidate in self._all_assistants()
             if isinstance(candidate, ApprovalCapable)
         ]
-        assistant = next(
-            (
-                candidate
-                for candidate in candidates
-                if any(p.approval_id == approval_id for p in candidate.pending_approvals())
-            ),
+        match = next(
+            ((candidate, pending)
+             for candidate in candidates
+             for pending in candidate.pending_approvals()
+             if pending.approval_id == approval_id),
             None,
         )
+        assistant = match[0] if match is not None else None
+        if match is not None and self._sessions is not None and match[1].session_id:
+            try:
+                session = self._sessions.get(match[1].session_id)
+            except SessionError as exc:
+                raise ApprovalUnavailableError("无法核对审批所属会话，请稍后重试") from exc
+            if session is None:
+                self.cancel_pending(approval_id)
+                raise ApprovalError("审批所属会话不存在，已拒绝续跑")
+            try:
+                saved = self._sessions.has_pending_approval(match[1].session_id, approval_id)
+            except SessionError as exc:
+                raise ApprovalUnavailableError("无法核对已保存的审批轮次，请稍后重试") from exc
+            if not saved:
+                raise ApprovalUnavailableError("审批轮次尚未保存或已失效，拒绝续跑")
         # 队列项可能刚过期/被容量淘汰；仍交给一个已启用审批能力的 Agent
         # 产生标准 ApprovalError，随后把会话里的 pending 轮收敛为 abandoned。
         if assistant is None and candidates:
@@ -457,14 +476,26 @@ class ChatService:
             return
         chained = outcome.status == "pending_approval"
         try:
-            self._sessions.update_pending(
+            updated = self._sessions.update_pending(
                 approval_id,
                 content=redact_text(outcome.reply),
                 status=STATUS_PENDING_APPROVAL if chained else STATUS_FINAL,
                 next_approval_id=outcome.next_approval_id,
             )
+            if chained and not updated:
+                raise SessionError("链式审批的原会话轮次已不存在")
         except SessionError as exc:
             logger.error("回填审批结果失败（历史里该轮将停在待审批态）: %s", exc)
+            if chained:
+                # 原决策已消费，不能把未持久化的下一条申请交给审批人继续执行。
+                if outcome.next_approval_id and not self.cancel_pending(outcome.next_approval_id):
+                    logger.error("未保存的链式审批取消失败 id=%s", outcome.next_approval_id)
+                self._mark_unknown(approval_id)
+                raise ApprovalOutcomeUnknownError(
+                    "Approval was consumed, but the next approval could not be saved. "
+                    "The next approval cannot be resumed without a saved turn; "
+                    "verify execution records before starting again."
+                ) from exc
 
     def _mark_unknown(self, approval_id: str) -> None:
         if self._sessions is None:

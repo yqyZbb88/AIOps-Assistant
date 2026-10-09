@@ -91,6 +91,8 @@ def parse_param(name: str, spec: Any) -> CmdParam:
     required = spec.get("required")
     if required is None:
         required = not has_default  # 无默认值 → 视为必填
+    if not isinstance(required, bool):
+        raise CmdDefError(f"命令参数 {name}.required 必须是布尔值")
 
     description = str(spec.get("description", "") or "")
 
@@ -129,7 +131,7 @@ def parse_command_def(key: str, spec: Any, *, allow_sudo: bool = True) -> CmdDef
     """
     if not isinstance(spec, Mapping):
         raise CmdDefError(f"命令 {key} 必须是映射（summary/template/params）")
-    if _COMMAND_KEY.match(key) is None:
+    if _COMMAND_KEY.fullmatch(key) is None:
         raise CmdDefError(f"命令名 {key!r} 不合法（须小写字母开头，仅 a-z0-9_）")
 
     enabled = spec.get("enabled", True)
@@ -157,7 +159,9 @@ def parse_command_def(key: str, spec: Any, *, allow_sudo: bool = True) -> CmdDef
             f"命令 {key} 声明了参数但 template 未使用（多余）: {', '.join(sorted(unused))}"
         )
 
-    sudo = bool(spec.get("sudo", False))
+    sudo = spec.get("sudo", False)
+    if not isinstance(sudo, bool):
+        raise CmdDefError(f"命令 {key}.sudo 必须是布尔值")
     if sudo and not allow_sudo:
         raise CmdDefError(f"命令 {key} 声明了 sudo: true，但该目录不允许提权（只读）")
 

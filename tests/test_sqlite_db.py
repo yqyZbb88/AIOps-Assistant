@@ -506,3 +506,19 @@ def test_execute_retries_transient_lock(tmp_path, no_retry_delay, monkeypatch):
     )
 
     assert len(db.query("SELECT 1 FROM sessions")) == 1
+
+
+
+def test_executemany_rolls_back_whole_batch_on_constraint_failure(tmp_path):
+    db = open_database(tmp_path / "batch.db")
+    db.execute("CREATE TABLE maintenance_batch (id INTEGER PRIMARY KEY)")
+    with pytest.raises(sqlite3.IntegrityError):
+        db.executemany("INSERT INTO maintenance_batch(id) VALUES (?)", [(1,), (1,)])
+    assert db.query("SELECT id FROM maintenance_batch") == []
+
+
+
+def test_connection_respects_explicit_busy_timeout(tmp_path):
+    db = Database(tmp_path / "timeout.db", timeout=0.25)
+    with db.connect() as conn:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 250

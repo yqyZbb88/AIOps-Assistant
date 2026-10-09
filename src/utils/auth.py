@@ -5,7 +5,8 @@
 - 无第三方依赖的降级部署也要能照常 import（见 tests/test_no_langchain_import.py）。
 
 密钥 → 身份 的映射来自 config/settings.yaml 的 `auth.tokens`（JSON 字符串原文），
-真实值由环境变量 `OPS_API_TOKENS` 注入 .env，config/ 下不落任何明文。
+YAML 应保存环境占位符，真实值由 `.env` 或部署环境提供。插值后的映射与缓存
+在进程内包含明文密钥，不应打印或返回给客户端。
 """
 from __future__ import annotations
 
@@ -83,9 +84,8 @@ def resolve_identity(
 ) -> str | None:
     """按密钥解析身份；不匹配返回 `None`。
 
-    **常数时间比对，且遍历全部密钥、不提前返回。** 提前 `return` 会让响应时间泄露
-    「第几个密钥匹配上了」，也就泄露了「猜的密钥前缀对不对」。密钥数量是个位数，
-    全遍历的代价可以忽略。
+    对每个密钥使用常数时间比较，并遍历全部条目，避免提前返回暴露匹配位置。
+    这不承诺整个 HTTP 请求耗时恒定；密钥长度、条目数量和其它请求处理仍影响耗时。
 
     `.encode()` 不能省：`hmac.compare_digest` 收到 `str` 时，**任一侧含非 ASCII 会
     直接抛 `TypeError`** —— 那会变成一个 500，而不是本该有的 401（已实测）。

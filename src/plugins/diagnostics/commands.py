@@ -23,7 +23,7 @@ from src.interfaces.diagnostic import CommandSpec, DiagnosticError, ParamSpec
 from src.plugins.common import cmddef as _cmddef
 from src.plugins.common.cmddef import CmdDef, CmdDefError, ParamError
 from src.plugins.common.endpoint import DEFAULT_CONNECT_TIMEOUT
-from src.utils.config_loader import ROOT_DIR, interpolate
+from src.utils.config_loader import ROOT_DIR, parse_yaml
 
 logger = logging.getLogger("aiops_assistant.diagnostics.config")
 
@@ -149,7 +149,7 @@ def parse_diagnostics(text: str) -> DiagnosticsConfig:
     except ImportError as exc:  # pragma: no cover - 核心依赖缺失路径
         raise DiagnosticsConfigError("缺少可选依赖 pyyaml，无法解析诊断配置") from exc
     # 先做环境变量插值（target.password 的 ${SSH_PASSWORD_...} 在解析前替换，规则同 rules.yaml）
-    data = yaml.safe_load(interpolate(text)) or {}
+    data = parse_yaml(text) or {}
     return build_config(data)
 
 

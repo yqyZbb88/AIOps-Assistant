@@ -48,6 +48,39 @@ def _block_real_database() -> None:
 
 _block_real_database()
 
+
+# 与数据库相同，模块级应用装配不得读取/物化开发机页面凭据。
+def _block_real_admin_credentials() -> None:
+    from src.utils.admin_credentials import CredentialStore
+    original_init = CredentialStore.__init__
+    original_read, original_save, original_specs = CredentialStore.read, CredentialStore.save, CredentialStore.ssh_specs
+    real_data = (ROOT / "data").resolve()
+    def guarded_init(self, directory):
+        original_init(self, directory)
+        self._test_real_source = self.directory.resolve().is_relative_to(real_data)
+        if self._test_real_source:
+            # revision 也不能读取真实 state.json；这个哨兵路径从不允许写入。
+            self.path = ROOT / ".pytest_tmp_disabled_credentials" / "state.json"
+    def read(self):
+        if self._test_real_source:
+            return {"version": 1, "tokens": {}, "ssh": {}, "model": None}
+        return original_read(self)
+    def save(self, state):
+        if self._test_real_source:
+            raise AssertionError("测试不得写入开发机管理员凭据；请注入临时 AdminConfigManager")
+        return original_save(self, state)
+    def specs(self, state):
+        if self._test_real_source:
+            if state["ssh"]:
+                raise AssertionError("测试不得物化开发机 SSH 资产")
+            return {}
+        return original_specs(self, state)
+    CredentialStore.__init__, CredentialStore.read = guarded_init, read
+    CredentialStore.save, CredentialStore.ssh_specs = save, specs
+
+
+_block_real_admin_credentials()
+
 from src.interfaces.agent_action import AgentActionError, AgentActionSource  # noqa: E402
 from src.interfaces.diagnostic import (
     CommandSpec,

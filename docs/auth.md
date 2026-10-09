@@ -191,30 +191,16 @@ http://127.0.0.1:8000/docs
 
 身份名只用于归属和授权，不用于选择模型、主机或命令。
 
-## 七、认证与授权状态码
+## 七、认证与授权错误
 
-| 情况 | 状态码 |
-|---|---|
-| 缺少 Bearer Token | 401 |
-| Token 无效 | 401 |
-| Token 有效但无权调用 `/alert` | 403 |
-| 未带 Token 或 Token 无效访问 `/admin/config` | 401，即使普通鉴权关闭 |
-| Token 有效但身份不在管理员名单 | 403 |
-| 管理配置 revision 已变化 | 409，必须重载并检查差异 |
-| Token 有效但访问别人的会话 | 404 |
-| Token 有效但审批范围外的申请 | 404（`owner` 下批别人的，或 `approvers_only` 下不在 `approver_identities` 里） |
-| 鉴权配置启用但没有有效 Token | 服务拒绝启动 |
+缺少或无效 Token 返回 401；有效身份没有管理/webhook 权限返回 403。
+别人的会话或审批范围外的申请返回 404，避免暴露其存在。
+完整端点、公开路由和错误语义统一见 [API 参考](api.md)，不在此维护第二份状态码表。
 
-`GET /health`、`GET /ready`、`GET /console`、`GET /console-assets/console.css`、
-`GET /console-assets/console.js`，以及 `/docs`、`/redoc`、`/openapi.json` 不需要 Bearer
-Token。前两项只返回无敏感信息的探针；控制台公开的 HTML/CSS/JS 不嵌入业务数据，调用
-`/hosts`、`/alerts/*`、`/inspections/recent`、`/approvals` 等 API 时，
-只有开启普通鉴权才强制校验 Token；系统管理接口始终要求管理员 Token。
-旧 `/status` 与 `/status-assets/*` 已删除，直接返回 404。
-
-这里的“应用路由”特指 FastAPI 自动生成的文档/OpenAPI 路由；它们不属于项目挂载的
-业务 router，因此不会经过 `require_auth`。如需隐藏接口结构，应在反向代理层限制
-`/docs`、`/redoc` 和 `/openapi.json`。
+公开探针、控制台资源和自动生成的文档路由列表见 [API 端点总览](api.md#端点总览)。
+控制台公开资源不嵌入业务数据；系统管理 API 始终要求管理员 Token，普通业务 API 的
+鉴权受 `auth.enabled` 控制。FastAPI 自动生成的 `/docs`、`/redoc` 和 `/openapi.json`
+不经过业务 router 的 `require_auth`，需要隐藏接口结构时应在反向代理限制这些路径。
 
 ## 八、Alertmanager webhook 配置
 
@@ -291,7 +277,7 @@ Alertmanager 采用映射中第一个 `alertmanager` 身份的 Token；新增替
 5. 删除旧密钥。
 6. 再次重启。
 
-修改密钥后没有热更新，必须重启。
+以上为环境变量密钥轮换流程；页面管理的 Token 可热轮换或撤销，无需重启。
 
 应用会在写入和输出边界遮蔽当前 API Token、DeepSeek key、SSH 密码以及
 `OPS_REDACTION_SECRETS` 中长度足够的值，但不会自动改写已有数据库和历史日志。轮换曾经使用
@@ -340,8 +326,19 @@ sqlite3 data/aiops_assistant.db   "SELECT DISTINCT user, COUNT(*) FROM sessions 
 
 ## 相关文档
 
-- [guide.md](guide.md)：快速开始和日常使用
+- [quickstart.md](quickstart.md)：首次运行
+- [guide.md](guide.md)：日常使用
 - [configuration.md](configuration.md)：配置字段
 - [database.md](database.md)：会话身份和数据库维护
 - [console.md](console.md)：控制台与管理员操作
 - [api.md](api.md)：接口权限及错误语义
+
+## 页面用户 Token
+
+管理员可在“系统管理 → 用户 Token”按身份名生成随机 Token。创建或轮换成功时明文
+只输出一次，禁止缓存；客户端不要把该响应写入浏览器持久化存储或日志。GET 只返回身份
+与管理状态，不返回密钥。页面 Token 与原部署映射合并，管理员/审批人角色仍由现有名单
+决定。不能创建 Webhook 身份 Token，部署管理员和 Alertmanager Token 保持只读。
+撤销或轮换立即影响后续请求，已绑定旧快照的请求可完成，身份历史会话不删除。
+接口即使 `auth.enabled=false` 也始终要求管理员，revision 或运行冲突返回 409。
+操作说明见 [控制台](console.md#管理员配置操作)，存储与恢复见 [部署说明](deployment.md)。

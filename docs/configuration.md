@@ -12,13 +12,13 @@
 
 | 文件 | 作用 |
 |---|---|
-| `settings.yaml` | 应用、服务、存储、日志、鉴权、巡检调度等全局配置 |
-| `hosts.yaml` | 稳定主机 ID、Prometheus 目标、SSH 凭据引用和逐主机能力授权 |
-| `metrics.yaml` | 统一 Prometheus 指标目录的启用范围、阈值、实例和 selector |
-| `rules.yaml` | Alertmanager 告警到写命令的规则映射 |
-| `actions.yaml` | 规则自动处置可执行的写命令白名单 |
-| `agent_actions.yaml` | 聊天 Agent 可申请执行的写命令白名单，强制人工审批 |
-| `diagnostics.yaml` | 聊天 Agent 的 SSH 只读诊断命令白名单 |
+| [`settings.yaml`](#二settingsyaml) | 应用、服务、存储、日志、鉴权、巡检调度等全局配置 |
+| [`hosts.yaml`](#三hostsyaml) | 稳定主机 ID、Prometheus 目标、SSH 凭据引用和逐主机能力授权 |
+| [`metrics.yaml`](#四metricsyaml) | 统一 Prometheus 指标目录的启用范围、阈值、实例和 selector |
+| [`rules.yaml`](#五rulesyaml) | Alertmanager 告警到写命令的规则映射 |
+| [`actions.yaml`](#六actionsyaml) | 规则自动处置可执行的写命令白名单 |
+| [`agent_actions.yaml`](#七agent_actionsyaml) | 聊天 Agent 可申请执行的写命令白名单，强制人工审批 |
+| [`diagnostics.yaml`](#八diagnosticsyaml) | 聊天 Agent 的 SSH 只读诊断命令白名单 |
 
 > `.github/workflows/ci.yml` 是 CI 配置，不属于运行时配置。
 
@@ -39,13 +39,18 @@ value: ${VAR:-default}
 - Compose 的根 `.env` 提供可选模型/SSH 参数与发布端口；身份由初始化服务生成。
   初始化将凭据保存至 `.runtime/compose.env`，Assistant 入口导入其派生 JSON 后启动。
   新模板的 `OPS_LLM_ENABLED` / `OPS_AGENT_ENABLED` 随模型密钥是否存在赋值；管理页保存固定开关后以配置为准。
-- 密钥不要直接写入 YAML；使用环境变量占位。
+- 密钥不要直接写入 YAML；使用环境变量占位，并给字符串字段加引号，例如 `password: "${SSH_PASSWORD:-}"`。
+  引号内插值会保留环境值中的引号、反斜线、换行和 Unicode，不需要手工再做 YAML 转义。
+  未加引号字段仍按 YAML 标量解析，用于数值、布尔值等；块标量沿用原文本插值，不适合包含多行环境密钥的场景。
+  YAML 语法错误只报告行列位置，不在解析诊断中显示插值后的原文；请根据位置检查配置文件。
+  `settings.yaml` 的字段类型错误报告字段路径和类型要求，不回显字段值。
 
 ### 2. 严格校验
 
 - `settings.yaml` 与 `metrics.yaml` 严格拒绝未知字段；命令目录还会严格检查模板占位符、
   参数声明和审批段字段。可选能力配置失败时会记录错误并关闭对应能力。
-- 布尔值只接受明确的 `true/false`、`yes/no`、`on/off`、`1/0`。
+- `settings.yaml`、`metrics.yaml` 的布尔字段可识别明确的 `true/false`、`yes/no`、`on/off`、`1/0` 文本。
+  主机 `enabled`、命令项 `enabled/sudo` 和参数 `required` 要使用实际 YAML 布尔值；不能用字符串 `"false"` 代替。
 - 类型不合法、阈值顺序错误、未知指标等会拒绝启动或在启动时关闭对应能力。
 - 管理页面可编辑字段保存后热生效；手工修改 YAML 需管理员显式调用
   `POST /admin/config/apply`。监听、SQLite/日志路径和环境密钥仍需重启。
@@ -183,6 +188,8 @@ Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `nod
 | `inspection.round_timeout_seconds` | int | `120` | 整轮时限；只在主机边界停止，下一轮续接 |
 
 具体检查项、阈值和 surface 不在本段配置，统一在 `metrics.yaml` 中设置。
+查询预算按一个完整主机的“Exporter 状态 + 启用巡检指标数”折算；预算不足一台时仍检查一台，
+因此不是逐个查询的硬上限。轮次时限也只在主机之间检查，不中断当前主机查询。
 
 ### storage
 
@@ -194,7 +201,7 @@ Compose 首次部署使用独立模板：鉴权开启、`local-node` 指向 `nod
 | `storage.max_sessions` | int | `200` | 最大会话数，超出淘汰最旧会话 |
 | `storage.message_window` | int | `20` | 每轮发送给模型的历史消息上限 |
 | `storage.history_ttl_hours` | int | `168` | 告警/处置/AI 建议归档保留时间 |
-| `storage.max_history_rows` | int | `5000` | 告警/处置/建议表及幂等、审批决策表各自的容量上限 |
+| `storage.max_history_rows` | int | `5000` | 各归档与幂等表的容量上限；待审批消息引用的决策暂不淘汰，见数据库说明 |
 | `storage.purge_interval_seconds` | int | `60` | 过期清理节流间隔 |
 
 ### logging
@@ -295,7 +302,10 @@ hosts:
 - `id` 必须匹配 `^[a-z][a-z0-9-]{0,62}$`，`legacy-default` 是保留值。
 - 启用主机的 Prometheus `instance` 必须唯一；`job` 和 `instance` 都不能为空。
 - `ssh` 可省略；省略时三个 `allow` 列表必须为空，该主机仍可监控但不能 SSH。
-- `credential_ref` 必须引用 `credentials`；凭据经环境变量插值，绝不能返回给 API 或模型。
+- `ssh.connect_timeout` 默认 8 秒，分别限制 TCP、banner、认证、通道打开和命令输出等待，
+  不代表整次 SSH 调用的总时限。
+- `credential_ref` 必须引用 `credentials`；凭据经环境变量插值，不能返回给 API 或模型。
+- SSH 密码保留解析后的原始字符串，包括首尾空白和 Unicode 字符；空字符串或 null 表示未配置。
 - `allow.diagnostics`、`allow.rule_actions`、`allow.agent_actions` 分别引用三个命令目录中的 key。
 - 示例默认不授权任何写动作。启用规则自动处置还必须同时设置规则 `auto_execute: true`。
 - 多主机模式不会使用 `diagnostics.yaml`、`agent_actions.yaml` 或规则参数中的默认地址改向执行。
@@ -481,7 +491,7 @@ commands:
 | `summary` | string | 否 | 命令说明 |
 | `template` | string | 是 | 管理员可信命令模板 |
 | `sudo` | bool | 否 | 是否提权执行 |
-| `params` | map | 是 | 模板参数声明 |
+| `params` | map | 否 | 模板参数声明；无参模板可省略，默认空映射 |
 
 每个参数支持：
 
@@ -498,7 +508,8 @@ commands:
 
 - `{name}` 占位符集合必须与 `params` 完全一致。
 - 模板只能来自本文件，规则不能传自由命令。
-- sudo 由本文件声明，规则不能覆盖。
+- sudo 由本文件声明，规则不能覆盖；`sudo` 和 `required` 使用 YAML 布尔值，字符串 `"false"` 等错误类型会拒绝加载目录。
+- 命令 key 必须完整匹配 `^[a-z][a-z0-9_]*$`，不允许末尾换行。
 - 管理页面保存命令目录后立即生效；手工修改后须显式应用。
 
 ## 七、agent_actions.yaml
@@ -539,7 +550,7 @@ commands:
 | `target.password` | string | 密码，建议环境变量占位 |
 | `target.key_filename` | string | 私钥路径，与 password 二选一 |
 | `target.known_hosts` | string | known_hosts 路径；空则使用系统路径 |
-| `target.connect_timeout` | int | 连接和命令超时秒数，省略则 **8**（`≥1`，写 0 报配置错误） |
+| `target.connect_timeout` | int | TCP、banner、认证、通道及命令输出各阶段等待秒数，省略则 **8**（`≥1`，写 0 报配置错误） |
 | `output_limit` | int | 回传 Agent 的输出字符上限 |
 | `approval.timeout_seconds` | int | 待审批超时秒数 |
 | `approval.max_pending` | int | 最大待审批数量 |
@@ -687,3 +698,133 @@ metrics:
 `file_sd_configs`。首次部署该能力需更新一次**本地** Prometheus 容器配置；
 此后新增目标只原子更新目标文件，无需修改远程主机。新主机的诊断、规则动作和 Agent
 写授权默认全为空，`up=0` 可以登记但不代表 Exporter 已恢复。
+
+#### Compose 的 Prometheus 主配置与目标列表
+
+下面使用默认部署目录 `.runtime/`；设置了 `AIOPS_RUNTIME_DIR` 时，目标文件和主机登记
+路径应使用该目录。两个文件都在宿主机上编辑，但由 Prometheus 容器读取：
+
+| 宿主机文件 | Prometheus 容器内文件 | 内容与生效方式 |
+|---|---|---|
+| `deploy/prometheus/prometheus.yml` | `/etc/prometheus/prometheus.yml` | 主配置：抓取任务、间隔、规则和目标发现方式；修改后检查并重载 |
+| `.runtime/prometheus-targets/assistant.yml` | `/etc/aiops-targets/assistant.yml` | 目标列表：Exporter 地址和可选标签；保存后自动发现 |
+
+`compose.yaml` 将 `./deploy/prometheus/` 挂载到 `/etc/prometheus/`，将部署目录下的
+`prometheus-targets/` 挂载到 `/etc/aiops-targets/`。因此，虽然主配置在宿主机编辑，
+其中的文件路径仍要使用**容器内路径**。
+
+主配置的 `scrape_configs` 下已经有以下任务；这是片段，不要用它覆盖整个主配置，
+也不要重复添加顶层 `scrape_configs` 或同名任务：
+
+```yaml
+scrape_configs:
+  - job_name: aiops-hosts
+    file_sd_configs:
+      - files:
+          - /etc/aiops-targets/*.yml
+        refresh_interval: 30s
+```
+
+`job_name` 给抓取任务命名；`file_sd_configs` 表示从文件发现目标；`*.yml` 匹配目标目录
+中的所有 `.yml` 文件。`refresh_interval: 30s` 是定期重新检查目标列表的间隔，文件变化
+也会被监听；它不是指标抓取间隔。当前主配置的全局 `scrape_interval` 为 `15s`。
+
+目标文件使用 YAML 列表，示例如下；将示例地址替换为 Prometheus 容器可访问的实际
+Exporter 地址，手动追加时保留已有目标：
+
+```yaml
+- targets:
+    - "192.0.2.10:9100"
+    - "192.0.2.11:9100"
+```
+
+目标文件不写 `scrape_configs`、`file_sd_configs` 或 `job_name`；这些目标自动归属主配置
+中的 `aiops-hosts` 任务。增加第三台服务器时，在 `targets` 下追加地址即可。
+
+日常新增主机优先使用管理员控制台的新增主机入口，选择“输入新 Exporter 目标”。
+登记会同时维护 `.runtime/config/hosts.yaml` 和 `.runtime/prometheus-targets/assistant.yml`。
+单独手改目标文件只改变 Prometheus 的抓取列表，不会自动把主机登记进 Assistant；
+若还要在项目页面监控它，需要从已发现目标中登记该主机。
+
+主配置中的“首次启用”注释指：运行中的 Prometheus 尚未加载 `aiops-hosts` 任务时，
+需要先加载一次新主配置。从项目目录执行，检查成功后再发送重载信号：
+
+```bash
+docker compose exec prometheus promtool check config /etc/prometheus/prometheus.yml
+docker compose kill -s SIGHUP prometheus
+```
+
+这里明确发送 `SIGHUP`，Prometheus 会重新加载配置；修改目标文件无需执行这两条命令。
+当前 Compose 没有开启 `--web.enable-lifecycle`，不能直接调用 `/-/reload`。
+若启动时指定了 Compose 项目名或环境文件，上述命令也使用相同选项。
+
+保存后到 `http://localhost:9090/targets` 检查 `aiops-hosts` 中的目标是否为 `UP`；若配置了
+`PROMETHEUS_HOST_PORT`，使用对应端口。新增目标可能需要等待一次发现和抓取。
+Prometheus 容器里的 `localhost:9100` 指向该容器自身，远程 Exporter 应填写实际地址。
+更完整的连接检查见 [Prometheus 与 Exporter 排障](troubleshooting.md#prometheus-与-exporter只读分层检查)。
+
+## 页面管理的 SSH、Token 与模型
+
+管理员控制台的三个凭据分区使用独立持久化存储，配置值不加入 YAML。
+默认本地为 `data/admin-credentials/`，Compose 为 `.runtime/assistant-data/admin-credentials/`；
+采用与普通配置相同的锁、revision 和运行快照，成功立即生效，失败保留旧配置。
+详细字段、长度和错误码见 [管理员凭据 API](api.md#管理员凭据-api)，操作见
+[控制台](console.md#管理员配置操作)。环境变量与旧部署凭据仍保留且页面只读；SSH/模型
+页面配置优先，Token 合并身份映射。普通配置保存不能把解析到内存中的凭据写回 YAML。
+显式清除模型密钥不回退环境值；设置 API Key 后按需启用 LLM 与 Agent 开关。
+
+所有 17 项 Linux node_exporter 指标具有即时和趋势行为：数值指标缺少独立 range 表达式
+时复用即时表达式，活动告警采用历史 ALERTS。磁盘按挂载点/设备/文件系统、I/O 和网络
+按设备返回；无 Swap 为“不适用”。缺少采集器、标签不匹配、rate 采样不足按 no_data。
+告警补零的 up 探测内嵌同一查询，不增加巡检请求数，原每主机预算仍含独立 Exporter 查询。
+趋势接口默认自动步长；告警分析的 `alert.trend_step=5m` 仍是显式设置，保留兼容。
+
+## 主机告警 PromQL 编写约束
+
+Assistant 当前按告警的 `job + instance` 与主机登记进行严格匹配。所有需要在
+AI 活动告警工具、主机状态和告警计数/趋势中查询的主机告警，都必须保留这两个标签。
+仅让 webhook 成功接收不代表实时查询可以匹配；本节约束同样适用于外部规则。
+
+1. **保留主机标签。** 聚合使用 `by (job, instance)`；需要设备维度时使用
+   `by (job, instance, device)` 或增加 `mountpoint` 等标签。使用 `without (...)`
+   时不得移除 `job`、`instance`。嵌套聚合的每一层都要保留，外层无法恢复内层丢掉的标签。
+2. **保证标签真实一致。** 告警最终的 `job`、`instance` 必须与 Prometheus 实际
+   抓取标签、Assistant 主机登记完全一致，包括实例端口。不要在规则的 `labels:`、
+   recording rule 或 alert relabel 中将其移除或覆盖成统一常量。记录规则也必须保留它们。
+3. **检查所有分支和向量匹配。** `or` 的真实指标分支与演示/兜底分支都要提供
+   `job + instance`；按主机合并使用 `or on (job, instance)`，避免相同 instance、
+   不同 job 互相遮蔽。算术连接若显式使用 `on (...)`，也要保留完整主机标识；
+   多设备连接额外匹配必要设备标签，避免多对多错误。
+4. **不凭空制造正常值。** 主机告警使用实际采集指标；缺失指标不能直接视为零或正常。
+   演示指标仅用于显式验收。阈值、单位、`rate` 时间窗和 `for` 持续时间应明确；
+   当前值超过阈值并不意味着已经满足 `for` 并进入 firing。
+5. **先验证最终告警标签，再发布。** 使用 `promtool check rules` 检查语法，并用
+   `promtool test rules` 验证实际输出标签，覆盖真实/演示分支、pending/firing、
+   相同 instance 不同 job、同一目标多分支去重和健康无告警。部署后同时检查
+   Prometheus `/api/v1/alerts` 的标签，以及 Assistant 所选主机的活动告警与计数。
+
+例如 CPU 告警必须让内外两层聚合和备用分支都保留主机标识：
+
+```promql
+max by (job, instance) (
+  100 - avg by (job, instance) (
+    rate(node_cpu_seconds_total{mode="idle"}[2m])
+  ) * 100
+) > 80
+or on (job, instance) aiops_demo_cpu_percent > 80
+```
+
+本节约束的是主机告警规则。平台级、跨主机聚合告警应单独设计归属和展示，
+不能假设缺少主机标签时也能被当前主机工具查询。新增来源还需确认指标目录适配；
+保留标签本身不会将 Windows Exporter 指标转换成 Linux 指标。
+
+规则文件为 `deploy/prometheus/alerts.yml`。更新后使用当前部署对应的 Compose 项目/
+环境文件检查并重新加载 Prometheus（不是只重建 Assistant）：
+
+```bash
+docker compose exec prometheus promtool check rules /etc/prometheus/alerts.yml
+docker compose exec prometheus promtool check config /etc/prometheus/prometheus.yml
+docker compose kill -s SIGHUP prometheus
+```
+
+重新加载前已产生的无 job 告警不会被补写标签；以新规则完成评估后的告警为准。

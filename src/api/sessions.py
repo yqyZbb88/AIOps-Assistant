@@ -1,7 +1,7 @@
 """会话路由：POST /sessions 新建、GET /sessions 列表、GET/PATCH/DELETE /sessions/{id}。
 
 对话历史来自 `storage`（config/settings.yaml）控制的 SQLite；持久化未启用时
-本组路由整体不可用（详见各端点的降级说明）。
+列表返回空数组，创建、读取、改名和删除返回 503。
 
 鉴权（config/settings.yaml 的 auth 段）：
 启用后本组路由要求 `Authorization: Bearer <密钥>`，且**只能看到 / 改 / 删自己的会话**
@@ -183,7 +183,7 @@ def get_session(
 ) -> dict[str, Any]:
     """取单个会话：元信息 + 全部消息。
 
-    消息含 **全部状态**（final / pending_approval / abandoned）——这是给**人**看的口，
+    返回最近 100 条消息，含 **全部状态**（final / pending_approval / abandoned / unknown）——这是给**人**看的口，
     与给模型看的窗口不同（窗口只取 final，见 SessionStore.history 的说明）。
     """
     store = _store(request)
@@ -214,11 +214,11 @@ def rename_session(
         _owned_or_404(store, session_id, user)
         if not store.rename(session_id, name=body.name, user=user):
             raise HTTPException(status_code=404, detail=f"会话不存在: {session_id}")
-        info = store.get(session_id)
+        # 更新和读取不在同一事务；并发删除或 TTL 清理仍可能移除会话。
+        info = _owned_or_404(store, session_id, user)
     except SessionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     logger.info("会话已改名 id=%s name=%r", session_id, body.name)
-    assert info is not None  # rename 刚命中过，同一事务语义下不可能凭空消失
     return info.to_dict()
 
 

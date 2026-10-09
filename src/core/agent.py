@@ -1,6 +1,6 @@
 """OpsAgent：智能运维 Agent 主控制器（依赖注入装配）。
 
-对外能力（原 ops_bot/main.py + bot.py 的编排收敛于此，HTTP 层只做转发）：
+对外能力（HTTP 层只做校验与转发）：
 - chat(message)：聊天（Agent-first，内部 ChatService 处理回落）；
 - process_alert(payload)：Alertmanager 告警接收 → 记录 → 规则处置 → 无规则 AI 分析，
   分析失败 / LLM 不可用仅记日志不阻塞（返回 AlertAck）；

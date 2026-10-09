@@ -159,8 +159,8 @@ def _render_pending(
 def _last_ai_content(response: dict[str, Any]) -> str:
     """取**本轮**最后一条有内容的 AI 消息文本。
 
-    **反向扫必须止步于本轮的用户消息。** `response["messages"]` 是**整条线程的累积
-    state**（含历史——已实测：输入 3 条 → 返回 4 条，且首条就是输入首条），无脑扫全部
+    **反向扫必须止步于本轮的用户消息。** `response["messages"]` 是整条线程的累积
+    state（包含传入的历史），无脑扫全部
     消息时，本轮 AI 的 content 若为空（模型没给文本 / 中断轮），就会捞到**上一轮的旧回答**
     返回给用户——静默串味，比返回兜底文案更糟，因为它看起来像个正常答案。
     回归见 tests/test_agent_actions_hitl_graph.py::test_last_ai_content_ignores_history。
@@ -202,6 +202,7 @@ class OpsAssistant:
         name: str = "ops_assistant",
         system_prompt: str | None = None,
         response_format=None,
+        model_factory=None,
         debug: bool = False,
         recursion_limit: int = 25,
         host_id: str = "",
@@ -273,7 +274,7 @@ class OpsAssistant:
 
         # 惰性复用 init.py 模型入口（utils/model_loader 单例缓存）；模型/provider 只改 init.py
         try:
-            self.model = get_model()
+            self.model = model_factory() if model_factory is not None else get_model()
         except ModelLoadError as exc:
             raise LLMError(str(exc)) from exc
         self.agent = _build_agent(
@@ -312,7 +313,7 @@ class OpsAssistant:
         """带历史 + **会话上下文**跑一轮（ApprovalContextCapable 契约）。
 
         history 是**可进模型窗口**的历史消息（只有 final 状态），由调用方从会话表取出；
-        本方法**不读写任何存储**——持久化是 core 的事，Agent 只负责这一轮怎么跑。
+        聊天正文由 core 落库；审批过期清理和队列淘汰会通过注入的 ledger 对账。
 
         模型可自主决定是否调用监控工具（cpu_usage 等）后组织回答。
 
@@ -323,8 +324,7 @@ class OpsAssistant:
         `approval_decisions` 表要记会话），不影响这一轮怎么跑、也不进模型上下文。
 
         **每轮仍是全新的 thread_id**：历史由调用方每轮重新拼进来，
-        checkpointer 只当「审批中断的临时草稿纸」，跑完即删——已实测：新 thread +
-        完整历史不会跨轮累积。
+        checkpointer 只保留审批中断的临时状态，最终回复或运行失败后删除线程。
         """
         if not (message or "").strip():
             raise LLMError("消息为空")
@@ -343,28 +343,30 @@ class OpsAssistant:
             if thread_id
             else {"recursion_limit": self.recursion_limit}
         )
-        response = self.agent.invoke({"messages": payload}, config=config)
-
-        # **先判中断**：中断那轮的 AI 消息 content 为空，若先取文本会返回
-        # 「抱歉，我暂时无法回答这个问题。」，把待审批伪装成失败。
-        interrupted = _extract_interrupt(response)
-        if interrupted is not None:
-            approval_id = self._register_pending(
-                thread_id, interrupted, session_id=session_id, user=user
-            )
-            return TurnResult(
-                text=_render_pending(
-                    approval_id, interrupted, target_summary=self.target_summary
-                ),
-                status="pending_approval",
-                approval_id=approval_id,
-            )
-
+        retain_thread = False
         try:
+            response = self.agent.invoke({"messages": payload}, config=config)
+
+            # **先判中断**：中断那轮的 AI 消息 content 为空，若先取文本会返回
+            # 「抱歉，我暂时无法回答这个问题。」，把待审批伪装成失败。
+            interrupted = _extract_interrupt(response)
+            if interrupted is not None:
+                approval_id = self._register_pending(
+                    thread_id, interrupted, session_id=session_id, user=user
+                )
+                retain_thread = True
+                return TurnResult(
+                    text=_render_pending(
+                        approval_id, interrupted, target_summary=self.target_summary
+                    ),
+                    status="pending_approval",
+                    approval_id=approval_id,
+                )
+
             return TurnResult(text=_last_ai_content(response))
         finally:
-            # 本轮已跑完，线程不再需要（不删会让 InMemorySaver 随请求数无限增长）
-            self._delete_thread(thread_id)
+            if not retain_thread:
+                self._delete_thread(thread_id)
 
     def cancel_pending(self, approval_id: str) -> bool:
         """作废一条待审批项并清掉其线程（ApprovalCancellable 契约）。
@@ -452,6 +454,8 @@ class OpsAssistant:
                 f"不支持的审批决策 {action!r}，仅支持: {', '.join(ALLOWED_APPROVAL_DECISIONS)}"
             )
 
+        # 先拿到到期记录并释放线程；pop 自行清理时调用方拿不到 thread_id。
+        self._purge_expired()
         record = self.approvals.pop(approval_id)  # 先取走 → 天然防重放
         if record is None:
             raise ApprovalError(f"未知、已过期或已被处理的审批 id: {approval_id}")
@@ -505,49 +509,52 @@ class OpsAssistant:
             approval_id, action, [a.get("name") for a in actions], reason_note,
         )
 
-        from langgraph.types import Command  # 惰性导入：仅审批路径需要
-
-        if action == "reject" and hasattr(self.agent_actions, "record_rejection"):
-            self.agent_actions.record_rejection(approval_id, actions)
-        execution_context = (
-            self.agent_actions.approval_context(approval_id)
-            if action == "approve"
-            and self.agent_actions is not None
-            and hasattr(self.agent_actions, "approval_context")
-            else nullcontext()
-        )
-
-        with execution_context:
-            response = self.agent.invoke(
-                Command(resume={"decisions": decisions}),
-                config={
-                    "configurable": {"thread_id": thread_id},
-                    "recursion_limit": self.recursion_limit,
-                },
-            )
-
-        # 续跑可能触发**下一条**写命令（同一线程、新的中断），需继续挂起等审批
-        interrupted = _extract_interrupt(response)
-        if interrupted is not None:
-            # 链式审批也属于**同一个会话、同一个触发者**，上下文原样继承——
-            # 否则第二条待审批项会变成「无主」，连原主都批不了。
-            next_id = self._register_pending(
-                thread_id,
-                interrupted,
-                session_id=record.get("session_id"),
-                user=record.get("user"),
-            )
-            return ApprovalOutcome(
-                approval_id=approval_id,
-                decision=action,
-                status="pending_approval",
-                reply=_render_pending(
-                    next_id, interrupted, target_summary=self.target_summary
-                ),
-                next_approval_id=next_id,
-            )
-
+        # 决策已消费后，异常也必须释放检查点；只保留成功登记的链式审批。
+        retain_thread = False
         try:
+            from langgraph.types import Command  # 惰性导入：仅审批路径需要
+
+            if action == "reject" and hasattr(self.agent_actions, "record_rejection"):
+                self.agent_actions.record_rejection(approval_id, actions)
+            execution_context = (
+                self.agent_actions.approval_context(approval_id)
+                if action == "approve"
+                and self.agent_actions is not None
+                and hasattr(self.agent_actions, "approval_context")
+                else nullcontext()
+            )
+
+            with execution_context:
+                response = self.agent.invoke(
+                    Command(resume={"decisions": decisions}),
+                    config={
+                        "configurable": {"thread_id": thread_id},
+                        "recursion_limit": self.recursion_limit,
+                    },
+                )
+
+            # 续跑可能触发**下一条**写命令（同一线程、新的中断），需继续挂起等审批
+            interrupted = _extract_interrupt(response)
+            if interrupted is not None:
+                # 链式审批也属于**同一个会话、同一个触发者**，上下文原样继承——
+                # 否则第二条待审批项会变成「无主」，连原主都批不了。
+                next_id = self._register_pending(
+                    thread_id,
+                    interrupted,
+                    session_id=record.get("session_id"),
+                    user=record.get("user"),
+                )
+                retain_thread = True
+                return ApprovalOutcome(
+                    approval_id=approval_id,
+                    decision=action,
+                    status="pending_approval",
+                    reply=_render_pending(
+                        next_id, interrupted, target_summary=self.target_summary
+                    ),
+                    next_approval_id=next_id,
+                )
+
             return ApprovalOutcome(
                 approval_id=approval_id,
                 decision=action,
@@ -555,7 +562,8 @@ class OpsAssistant:
                 reply=_last_ai_content(response),
             )
         finally:
-            self._delete_thread(thread_id)
+            if not retain_thread:
+                self._delete_thread(thread_id)
 
     # -- 内部：中断登记与线程清理 ------------------------------------------
     def _register_pending(

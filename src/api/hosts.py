@@ -8,7 +8,7 @@ import re
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from src.interfaces.host import HostError
-from src.interfaces.monitor import MonitorError
+from src.interfaces.monitor import MetricNotApplicable, MonitorError
 
 router = APIRouter()
 
@@ -80,6 +80,9 @@ def get_host_metric(host_id: str, metric_id: str, request: Request) -> dict[str,
         samples = request.app.state.container.monitor().query_metric(
             metric_id, target=host.monitor
         )
+    except MetricNotApplicable as exc:
+        return {"host_id": host.host_id, "metric_id": metric_id,
+                "state": "not_applicable", "detail": str(exc), "samples": []}
     except MonitorError as exc:
         raise HTTPException(status_code=502, detail=f"监控源查询失败: {exc}") from exc
     return {
@@ -106,9 +109,9 @@ def get_host_metric_trend(
     metric_id: str,
     request: Request,
     minutes: int = Query(60, ge=1, le=1440),
-    step: str = Query("5m", min_length=2, max_length=8),
+    step: str | None = Query(None, min_length=2, max_length=8),
 ) -> dict[str, Any]:
-    if re.fullmatch(r"[1-9][0-9]*[smhd]", step) is None:
+    if step is not None and re.fullmatch(r"[1-9][0-9]*[smhd]", step) is None:
         raise HTTPException(status_code=422, detail="step 必须是正整数加 s/m/h/d")
     host = _enabled_host(request, host_id)
     try:
@@ -123,6 +126,6 @@ def get_host_metric_trend(
     return {
         "host_id": host.host_id,
         "metric_id": metric_id,
-        "state": "ok" if trend.get("points") else "no_data",
+        "state": trend.get("state", "ok" if trend.get("points") else "no_data"),
         "trend": trend,
     }

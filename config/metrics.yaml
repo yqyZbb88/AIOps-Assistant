@@ -1,3 +1,5 @@
+# 所有内置指标支持即时/趋势；无 Swap 为不适用，缺失采集器为无数据。
+# 磁盘/网络趋势按设备保留标签，默认最多 241 点/序列、32 序列。
 # 统一指标配置。
 # PromQL、单位、阈值方向和工具名由代码目录维护；本文件只配置启用范围、阈值和 selector。
 # 手动编辑后需由管理员显式应用磁盘配置。
@@ -12,21 +14,21 @@ metrics:
   # 核心指标：参与巡检、聊天工具和告警分析。
   cpu.usage:
     enabled: true
-    surfaces: { inspection: true, chat: true, alert_analysis: true }
+    surfaces: {inspection: true, chat: true, alert_analysis: true}
     warning: 80
     critical: 90
     severity_enabled: true
 
   memory.usage:
     enabled: true
-    surfaces: { inspection: true, chat: true, alert_analysis: true }
+    surfaces: {inspection: true, chat: true, alert_analysis: true}
     warning: 85
     critical: 95
     severity_enabled: true
 
   disk.usage:
     enabled: true
-    surfaces: { inspection: true, chat: true, alert_analysis: true }
+    surfaces: {inspection: true, chat: true, alert_analysis: true}
     warning: 80
     critical: 90
     severity_enabled: true
@@ -34,73 +36,73 @@ metrics:
   # 增强巡检指标：先观察，确认基线后再开启阈值。
   cpu.load1:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   cpu.iowait:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   memory.available:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   memory.swap_usage:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   disk.read_bytes:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   disk.write_bytes:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   disk.io_util:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   network.rx_bytes:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   network.tx_bytes:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   network.rx_errors:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   network.tx_errors:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   system.process_count:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   system.uptime:
     enabled: true
-    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    surfaces: {inspection: true, chat: false, alert_analysis: false}
     severity_enabled: false
 
   # 活动告警数：参与巡检和聊天。
   alerts.active_count:
     enabled: true
-    surfaces: { inspection: true, chat: true, alert_analysis: false }
+    surfaces: {inspection: true, chat: true, alert_analysis: false}
     warning: 1
     critical: 3
     severity_enabled: true

@@ -620,8 +620,7 @@ def test_purge_keeps_recently_updated_session(store):
     assert len(store.list()) == 3
 
 
-def test_append_turn_to_unknown_session_is_rejected(tmp_path):
-    """内存实现显式拒绝；SQLite 版因无外键不会报错——故只测内存实现。"""
-    store = InMemorySessionStore()
+def test_append_turn_to_unknown_session_is_rejected(store):
+    """两种存储都必须拒绝未知或并发删除的会话，不能写入孤立消息。"""
     with pytest.raises(SessionError):
         store.append_turn("nope", user_content="a", assistant_content="b")

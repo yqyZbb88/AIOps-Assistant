@@ -1,20 +1,9 @@
-"""监控能力单一实现：查询 + 格式化收敛为纯函数（Agent 工具与关键词兜底共用）。
+"""监控查询与文本格式化的共用实现，供 Agent 工具和关键词兜底调用。
 
-背景：CPU / 内存 / 磁盘 / 告警 四类监控查询在两条链路上各实现过一次——
-    Agent 工具（agent/tools.py 的 @tool）与无 LLM 兜底（core/chat.py 的关键词 handler），
-    逻辑重复、措辞还漂移（一边"CPU 使用率：45.0%"，一边"当前 CPU 使用率：45.0%"）。
-本模块把「取数 + 转可读文本」收编成 4 个纯函数，两条链路都转发到这里，
-产出**同一套规范文案**；以后改措辞只改本模块，Agent 与兜底同步生效。
-
-约束：
-- 顶层不 import langchain：无 langchain 的兜底链路也能 import 本模块直接调用；
-- 每个函数接收注入的 MonitorSource，内部捕获 MonitorError → 返回可读失败文案，
-  绝不抛异常（监控挂掉 / 命令失败只是"查询失败"可读返回，不中断 Agent）；
-- 文案即规范：成功 `CPU 使用率：45.0%` / 失败 `查询 CPU 使用率失败：…` /
-  无数据 `…暂无数据（请确认 Node Exporter 已采集）…`。
-
-扩展方式：新增监控能力 → 在本模块加 `xxx_text(monitor)` 纯函数，再到
-agent/tools.py 的 build_tools 与 core/chat.py 的规则各转发一行。
+接收注入的 MonitorSource，将 MonitorError 转成可读的查询失败文案；无样本时
+返回暂无数据提示。其它异常仍交给上层处理，不保证任意插件错误都能在此降级。
+统一指标入口还支持已登记目标和数据时效说明，避免两条聊天路径产生不同结论。
+顶层不导入 LangChain，保持关键词兜底可独立加载。
 """
 from __future__ import annotations
 

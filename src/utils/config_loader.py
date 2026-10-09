@@ -6,16 +6,17 @@
 - 解析成嵌套的 `Settings` dataclass，各层代码按需取用；
 - 严格校验：配置文件缺失、pyyaml 未安装、未知字段或类型错误时抛 ConfigError，拒绝不确定启动。
 
-敏感信息约束：本模块只做字符串替换，绝不在配置里产生明文密钥来源；
-真实密钥只存在于 .env / 环境变量（见 README「安全说明」）。
+敏感信息约束：YAML 应保留环境占位符；密钥由 .env、部署凭据或运行环境提供。
+插值后的 Settings 在内存中包含明文值，不应完整打印或直接返回给客户端。
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import re
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, get_type_hints
 
@@ -256,6 +257,42 @@ def interpolate(text: str) -> str:
     return _ENV_REF.sub(_env_value, text)
 
 
+def interpolate_yaml(text: str) -> str:
+    """保留 YAML 引号内插值字符串的原值；未加引号字段沿用原标量解析行为。"""
+    import yaml
+    from yaml.tokens import ScalarToken
+
+    try:
+        quoted = [token for token in yaml.scan(text)
+                  if isinstance(token, ScalarToken) and token.style in {"'", '"'}
+                  and _ENV_REF.search(token.value)]
+    except yaml.YAMLError:
+        # 某些原有未加引号占位（例如 flow 集合）在插值后才是合法 YAML。
+        return interpolate(text)
+    pieces: list[str] = []
+    cursor = 0
+    for token in quoted:
+        pieces.append(interpolate(text[cursor:token.start_mark.index]))
+        # JSON 字符串是合法 YAML 双引号标量，能保留引号、反斜线、换行和 Unicode。
+        pieces.append(json.dumps(interpolate(token.value)))
+        cursor = token.end_mark.index
+    pieces.append(interpolate(text[cursor:]))
+    return "".join(pieces)
+
+
+def parse_yaml(text: str) -> Any:
+    """插值后安全解析；语法诊断仅保留位置，不附带可能含凭据的原文。"""
+    import yaml
+
+    try:
+        return yaml.safe_load(interpolate_yaml(text))
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        location = f"（第 {mark.line + 1} 行，第 {mark.column + 1} 列）" if mark else ""
+        # ParserError 的原文与异常链均可能包含插值后的明文或转义凭据。
+        raise yaml.YAMLError(f"YAML 语法错误{location}") from None
+
+
 # ---------------------------------------------------------------------------
 # YAML 到数据类
 # ---------------------------------------------------------------------------
@@ -278,38 +315,38 @@ def _as_scalar(value: Any, typ: type, *, what: str) -> Any:
                 return True
             if text in _FALSE_WORDS:
                 return False
-        raise ConfigError(f"{what} 必须是布尔值 true/false，得到: {value!r}")
+        raise ConfigError(f"{what} 必须是布尔值 true/false，得到类型: {type(value).__name__}")
     if typ is str:
         if not isinstance(value, str):
-            raise ConfigError(f"{what} 必须是字符串，得到: {value!r}")
+            raise ConfigError(f"{what} 必须是字符串，得到类型: {type(value).__name__}")
         return value
     if typ is int:
         if isinstance(value, bool):
-            raise ConfigError(f"{what} 必须是整数，得到: {value!r}")
+            raise ConfigError(f"{what} 必须是整数，得到类型: {type(value).__name__}")
         try:
             return int(value)
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(f"{what} 必须是整数，得到: {value!r}") from exc
+        except (TypeError, ValueError):
+            raise ConfigError(f"{what} 必须是整数，得到类型: {type(value).__name__}") from None
     if typ is float:
         if isinstance(value, bool):
-            raise ConfigError(f"{what} 必须是数字，得到: {value!r}")
+            raise ConfigError(f"{what} 必须是数字，得到类型: {type(value).__name__}")
         try:
             result = float(value)
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(f"{what} 必须是数字，得到: {value!r}") from exc
+        except (TypeError, ValueError):
+            raise ConfigError(f"{what} 必须是数字，得到类型: {type(value).__name__}") from None
         if not math.isfinite(result):
-            raise ConfigError(f"{what} 必须是有限数字，得到: {value!r}")
+            raise ConfigError(f"{what} 必须是有限数字")
         return result
     try:
         return typ(value)
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{what} 类型无效，得到: {value!r}") from exc
+    except (TypeError, ValueError):
+        raise ConfigError(f"{what} 类型无效，得到类型: {type(value).__name__}") from None
 
 
 def _build_dataclass(model_type: type, data: Any, *, prefix: str) -> Any:
     """递归构造严格配置 dataclass；未知键、类型错误与缺失映射直接报错。"""
     if not isinstance(data, dict):
-        raise ConfigError(f"配置节 {prefix or '<root>'} 必须是映射，得到: {data!r}")
+        raise ConfigError(f"配置节 {prefix or '<root>'} 必须是映射，得到类型: {type(data).__name__}")
     hints = get_type_hints(model_type)
     allowed = {f.name for f in fields(model_type)}
     unknown = set(data) - allowed
@@ -395,7 +432,7 @@ def load_settings(path: str | Path | None = None) -> Settings:
     try:
         with open(file_path, encoding="utf-8") as fh:
             raw = fh.read()
-        data = yaml.safe_load(interpolate(raw)) or {}
+        data = parse_yaml(raw) or {}
         if not isinstance(data, dict):
             raise ConfigError("配置顶层必须是映射")
         if "auth" not in data:

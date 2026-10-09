@@ -23,7 +23,7 @@ from src.interfaces.host import HostRegistry
 from src.interfaces.execution import ActionExecutionStore
 from src.plugins.common.endpoint import CONNECTION_FIELDS
 from src.storage.models import ActionRule, Alert, AlertmanagerPayload, RulesFile
-from src.utils.config_loader import ROOT_DIR, interpolate
+from src.utils.config_loader import ROOT_DIR, parse_yaml
 from src.utils.security import redact_sensitive
 
 logger = logging.getLogger("aiops_assistant.rule_engine")
@@ -131,9 +131,7 @@ class RuleEngine:
 
     def _load_text(self, text: str) -> list[ActionRule]:
         """从不可变文本构造规则集，避免旧请求在保存后读到新文件。"""
-        import yaml
-
-        parsed = RulesFile(**(yaml.safe_load(interpolate(text)) or {}))
+        parsed = RulesFile(**(parse_yaml(text) or {}))
 
         # 过滤未注入执行器的动作，避免运行时才报错
         self._auto_execute_enabled = parsed.auto_execute_enabled

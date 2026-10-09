@@ -87,8 +87,8 @@ def build_alert_context(
 
     instance = alert.instance
     if strict_target and target is None:
-        lines.append("[实例趋势]\\n- 告警无法唯一归属已登记主机，禁止按原始 instance 查询")
-        return "\\n".join(lines)
+        lines.append("[实例趋势]\n- 告警无法唯一归属已登记主机，禁止按原始 instance 查询")
+        return "\n".join(lines)
     if not instance or instance == "unknown":
         lines.append("[实例趋势]\n- 实例信息缺失，无法查询历史趋势")
         return "\n".join(lines)

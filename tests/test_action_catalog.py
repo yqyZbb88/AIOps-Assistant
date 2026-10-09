@@ -164,3 +164,23 @@ class TestCatalogExecutor:
         # sudo/workdir 等不属于目录声明的参数 → 拒绝（目录只认声明参数）
         with pytest.raises(ActionError, match="不接受参数"):
             executor.execute({"host": "h", "service": "nginx", "sudo": False})
+
+
+@pytest.mark.parametrize("value", ["false", 0, None])
+def test_sudo_rejects_non_boolean_values(value):
+    from src.plugins.common.cmddef import CmdDefError, parse_command_def
+    with pytest.raises(CmdDefError, match="sudo.*布尔"):
+        parse_command_def("test_command", {"template": "echo ok", "sudo": value})
+
+
+def test_required_rejects_non_boolean_values():
+    from src.plugins.common.cmddef import CmdDefError, parse_command_def
+    with pytest.raises(CmdDefError, match="required.*布尔"):
+        parse_command_def("test_command", {"template": "echo {value}", "params": {
+            "value": {"type": "int", "required": "false"}}})
+
+
+def test_command_name_with_trailing_newline_is_rejected():
+    from src.plugins.common.cmddef import CmdDefError, parse_command_def
+    with pytest.raises(CmdDefError, match="命令名"):
+        parse_command_def("test_command\n", {"template": "echo ok"})

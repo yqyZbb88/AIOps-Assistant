@@ -62,7 +62,7 @@ def test_endpoint_params_can_override_connect_timeout():
     """默认值统一了，但逐条规则的显式声明仍然说话（写命令要更长就自己写）。"""
     assert endpoint_from_params({"host": "h1", "connect_timeout": 30}).connect_timeout == 30
     assert endpoint_from_params({"host": "h1", "connect_timeout": 0}).connect_timeout == 8, \
-        "0 在 paramiko 里是「永不超时」，不能让它把默认值顶掉"
+        "旧规则的 0 使用默认超时，不能将阶段等待设为 0"
 
 
 def test_new_client_rejects_unknown_hosts(monkeypatch):
@@ -123,3 +123,37 @@ def test_stream_reader_times_out_and_closes_channel():
     with pytest.raises(SshOutcomeUnknown, match="超时"):
         _read_channel(channel, output_limit=20, timeout=0.001)
     assert channel.closed is True
+
+
+@pytest.mark.parametrize("method", ["load_system_host_keys", "load_host_keys", "set_missing_host_key_policy"])
+def test_new_client_closes_when_host_key_setup_fails(monkeypatch, method):
+    client = FakeClient()
+    error = OSError("invalid test host keys")
+    def fail(*args):
+        raise error
+    monkeypatch.setattr(client, method, fail)
+    fake_paramiko = type("FakeParamiko", (), {"SSHClient": lambda: client, "RejectPolicy": FakeRejectPolicy})
+    with pytest.raises(OSError) as caught:
+        _new_client(fake_paramiko, SshEndpoint(host="test-host", known_hosts="test-known-hosts"))
+    assert caught.value is error
+    assert client.closed
+
+
+
+def test_connect_timeout_bounds_banner_auth_and_channel(monkeypatch):
+    from src.plugins.common.ssh import SshError, exec_command
+    calls = {}
+    class Client(FakeClient):
+        def connect(self, **kwargs):
+            calls.update(kwargs)
+            raise OSError("synthetic connection failure")
+    client = Client()
+    module = type("FakeParamiko", (), {"SSHClient": lambda: client, "RejectPolicy": FakeRejectPolicy})
+    monkeypatch.setitem(sys.modules, "paramiko", module)
+    with pytest.raises(SshError):
+        exec_command(SshEndpoint(host="test-host", connect_timeout=3), "true")
+    assert calls["timeout"] == 3
+    assert calls.get("banner_timeout") == 3
+    assert calls.get("auth_timeout") == 3
+    assert calls.get("channel_timeout") == 3
+    assert client.closed

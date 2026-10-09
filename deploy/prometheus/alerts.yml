@@ -3,8 +3,8 @@ groups:
     rules:
       - alert: HighCPUUsage
         expr: |
-          max by (instance) (100 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
-          or on (instance) aiops_demo_cpu_percent > 80
+          max by (job, instance) (100 - avg by (job, instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
+          or on (job, instance) aiops_demo_cpu_percent > 80
         for: 30s
         labels: {severity: warning}
         annotations:
@@ -13,8 +13,8 @@ groups:
 
       - alert: HighMemoryUsage
         expr: |
-          max by (instance) ((1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100) > 85
-          or on (instance) aiops_demo_memory_percent > 85
+          max by (job, instance) ((1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100) > 85
+          or on (job, instance) aiops_demo_memory_percent > 85
         for: 30s
         labels: {severity: warning}
         annotations:
@@ -23,8 +23,8 @@ groups:
 
       - alert: HighDiskUsage
         expr: |
-          max by (instance) ((1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100) > 85
-          or on (instance) aiops_demo_disk_percent > 85
+          max by (job, instance) ((1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100) > 85
+          or on (job, instance) aiops_demo_disk_percent > 85
         for: 30s
         labels: {severity: warning}
         annotations:

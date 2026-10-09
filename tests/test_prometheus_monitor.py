@@ -398,3 +398,22 @@ def test_request_invalid_json_is_monitor_error(monkeypatch, monitor):
     monkeypatch.setattr(requests, "get", lambda *a, **kw: Resp())
     with pytest.raises(MonitorError, match="invalid JSON"):
         monitor.cpu_usage()
+
+
+@pytest.mark.parametrize("raw", ["NaN", "+Inf", "-Inf"])
+def test_nonfinite_instant_values_are_no_data(monkeypatch, monitor, raw):
+    _patch_query(monkeypatch, [{"metric": {}, "value": [100, raw]}])
+    assert monitor.query_metric("cpu.usage") == []
+    assert monitor.cpu_usage() is None
+
+
+@pytest.mark.parametrize("raw", ["NaN", "+Inf", "-Inf"])
+def test_nonfinite_range_values_are_ignored(raw):
+    summary = _summarize_values([[1, "50"], [2, raw]])
+    assert summary["points"] == 1
+    assert summary["latest"] == 50
+
+
+def test_nonfinite_alert_value_is_null(monkeypatch, monitor):
+    _patch_request(monkeypatch, {"alerts": [{"labels": {}, "value": "NaN"}]})
+    assert monitor.active_alerts()[0]["value"] is None

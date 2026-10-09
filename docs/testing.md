@@ -156,12 +156,12 @@ docker compose -p aiops-local-test --env-file .env.example exec -T assistant pyt
 预期退出码为 0，最后显示：
 
 ```text
-PASS: readiness, auth, monitoring, keyword chat, Alertmanager delivery and persistence fixture
+PASS: readiness, auth, all 17 instant/trend queries, managed credentials, chat and webhook fixture
 ```
 
 脚本同时验证：公开 `/ready`、匿名业务请求 401、管理员访问管理配置、Alertmanager 身份不能
 访问管理配置、管理员不能冒充 webhook 身份、Exporter 被正常抓取、关键词聊天、真实
-Alertmanager → Assistant → SQLite 告警归档。
+Alertmanager → Assistant → SQLite 告警归档，并验证全部 17 项即时/趋势 API 与页面凭据保存。
 
 重建后重新复制脚本，因为容器 `/tmp` 不持久化：
 
@@ -211,6 +211,29 @@ Token 输入控制台连接框，Grafana 用户名为 `admin`。报告中不记�
 可达；容器中的 `localhost` 指向容器自身。HOST-01/02 未准备第二个 Exporter 时标记“未执行”。
 清退测试主机需按 [配置指南](configuration.md)核对规则与历史引用，不能把页面不存在的删除操作
 当作测试失败。新建专用测试栈可在完成测试后整体停止保留证据。
+
+## 安全合成告警演示
+
+本节沿用前面已经建立的独立 `aiops-local-test` 测试栈、环境变量和数据目录。
+不要在已有业务部署演示告警；其处置规则可能自动执行写命令。新测试栈的安全模板没有处置规则，
+写命令关闭。以下命令只修改 Node Exporter textfile 合成指标，不制造真实 CPU 负载：
+
+```bash
+docker compose -p aiops-local-test --env-file .env.example run --rm --no-deps --entrypoint python init scripts/demo_fault.py cpu on --runtime /runtime
+```
+
+Prometheus 的高 CPU 规则包含 `for: 30s`，还需要等待抓取、规则评估和 Alertmanager 分组投递。
+在控制台查看活动告警及告警归档，核对 `HighCPUUsage`、`local-node` 和时间。
+未配置模型时仍可接收和归档，不会生成 AI 分析；合成告警不意味着真实 CPU 使用率升高，
+也不保证产生异常巡检记录。
+
+演示结束恢复指标，重复启动不会自动重置它：
+
+```bash
+docker compose -p aiops-local-test --env-file .env.example run --rm --no-deps --entrypoint python init scripts/demo_fault.py reset --runtime /runtime
+```
+
+等待 resolved 通知并检查归档；其它依赖停止/恢复场景见下一节。
 
 ## 6. 告警和异常恢复
 
@@ -361,3 +384,38 @@ API、模型输出、截图和应用日志不暴露 Token、密码或私钥。�
 
 基础验收要求离线回归、本机 Compose 冒烟、页面操作、告警投递、依赖失败恢复和重启持久化
 通过。实际启用 AI、SSH 或写命令的部署还需完成对应场景；未配置的能力不要求为了测试而开放。
+
+## 凭据、全指标和真实 Prometheus 验收
+
+离线 `test_admin_credentials.py` 覆盖管理员权限、一次性 Token、热生效/轮换/撤销、重启恢复、
+SSH 文件路径限制、引用冲突、连接不执行命令、票据失效、模型保留/清除/版本缓存、失败回滚
+和运行冲突。`test_metric_query_matrix.py` 参数化全部 17 项即时与趋势行为、单位/标签隔离、
+空结果与失败、无 Swap、零吞吐、非法样本、密度与序列上限；Node 前端测试覆盖真实采样、
+设备切换、断点、失败提示、旧异步响应隔离和敏感输入清理。
+
+CI 的隔离 Compose job 先通过 `tests/prometheus_acceptance.py` 生成合成样本验收文件，
+再用部署镜像中的 `promtool test rules` 对 17 项即时/趋势表达式求值，覆盖多设备、无 Swap、
+零吞吐、缺失采集器、标签不匹配、采样不足，以及 up 正常/异常下的告警补零。
+`compose_smoke.py` 对真实 Prometheus 分别请求 17 项即时/趋势 API，再写入测试 Token、
+SSH 和无密钥模型配置；重建后验证配置、用户鉴权、原管理员、Webhook、会话与消息保留。
+合成验收与整栈脚本只能在隔离、无真实密钥的测试部署执行，不对真实模型/SSH 发请求。
+真实模型和 SSH 连接由管理员显式按钮另行验收；Docker 不可用时必须记录未执行，不能将
+离线通过当作真实 Prometheus 或容器重建通过。
+
+## 主机告警标签回归
+
+`tests/prometheus_alert_acceptance.py` 生成独立的告警规则验收文件，使用实际部署的
+`deploy/prometheus/alerts.yml`，与 17 项指标表达式验收分开执行，避免生成的 ALERTS
+改变原有指标用例。五组场景覆盖真实指标、演示指标、同主机多分支去重、相同 instance
+不同 job 隔离，以及健康状态无告警；同时断言 pending 和 firing 的完整标签。
+
+```bash
+python tests/prometheus_alert_acceptance.py /tmp/alerts-promtool.yml
+docker run --rm --network none \
+  -v "$PWD/deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro" \
+  -v "/tmp/alerts-promtool.yml:/tests/alerts-promtool.yml:ro" \
+  --entrypoint promtool prom/prometheus:v3.13.3 test rules /tests/alerts-promtool.yml
+```
+
+CI 在隔离 Compose 中执行同样的真实引擎验收。修改任一主机告警时，既要验证阈值，
+也要验证标签；写法约束见 [主机告警 PromQL 编写约束](configuration.md#主机告警-promql-编写约束)。

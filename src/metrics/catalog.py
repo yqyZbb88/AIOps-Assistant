@@ -115,14 +115,8 @@ MEMORY_SWAP_USAGE = MetricDefinition(
     unit="%",
     kind="percentage",
     direction="above",
-    expr_template=(
-        '(1 - (node_memory_SwapFree_bytes{__SELECTORS__} / '
-        'node_memory_SwapTotal_bytes{__SELECTORS__})) * 100'
-    ),
-    range_expr_template=(
-        '(1 - (node_memory_SwapFree_bytes{__SELECTORS__} / '
-        'node_memory_SwapTotal_bytes{__SELECTORS__})) * 100'
-    ),
+    expr_template='((1 - node_memory_SwapFree_bytes{__SELECTORS__} / node_memory_SwapTotal_bytes{__SELECTORS__}) * 100 and node_memory_SwapTotal_bytes{__SELECTORS__} > 0) or ((node_memory_SwapTotal_bytes{__SELECTORS__} == 0) * 0 - 1)',
+    range_expr_template='((1 - node_memory_SwapFree_bytes{__SELECTORS__} / node_memory_SwapTotal_bytes{__SELECTORS__}) * 100 and node_memory_SwapTotal_bytes{__SELECTORS__} > 0) or ((node_memory_SwapTotal_bytes{__SELECTORS__} == 0) * 0 - 1)',
     group_by=("instance",),
     aliases=("swap", "交换分区"),
     min_value=0,
@@ -141,9 +135,8 @@ DISK_USAGE = MetricDefinition(
         'node_filesystem_size_bytes{fstype!~"tmpfs|overlay"__SELECTOR_COMMA__}) * 100'
     ),
     range_expr_template=(
-        'avg by(instance)(100 - '
-        '(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"__SELECTOR_COMMA__} / '
-        'node_filesystem_size_bytes{fstype!~"tmpfs|overlay"__SELECTOR_COMMA__}) * 100)'
+        '100 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"__SELECTOR_COMMA__} / '
+        'node_filesystem_size_bytes{fstype!~"tmpfs|overlay"__SELECTOR_COMMA__}) * 100'
     ),
     group_by=("instance", "mountpoint", "device", "fstype"),
     aliases=("磁盘", "disk"),

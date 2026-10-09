@@ -816,3 +816,69 @@ def test_pending_eviction_deletes_evicted_thread(monkeypatch, fake_actions):
 
     assert first_thread in deleted, "被淘汰的待审批项其线程未清理（泄漏）"
     assert len(approvals.list()) == 1, "容量上限仍应生效（新的那条在）"
+
+
+
+def test_failed_initial_graph_call_releases_checkpoints(monkeypatch, fake_actions):
+    agent = _build_assistant(monkeypatch, [AIMessage(content="ok")], fake_actions=fake_actions)
+    def fail(*args, **kwargs):
+        raise RuntimeError("simulated model outage")
+    monkeypatch.setattr(ScriptedChatModel, "_generate", fail)
+    with pytest.raises(RuntimeError, match="model outage"):
+        agent.reply("test")
+    assert list(agent.checkpointer.list(None)) == []
+
+
+def test_failed_approval_resume_releases_consumed_thread(monkeypatch, fake_actions):
+    agent = _build_assistant(monkeypatch, [_tool_call("restart_service", {"service": "nginx"})], fake_actions=fake_actions)
+    turn = agent.reply_turn_ctx("test", session_id="test-session")
+    assert list(agent.checkpointer.list(None))
+    def fail(*args, **kwargs):
+        raise RuntimeError("simulated resume failure")
+    monkeypatch.setattr(agent.agent, "invoke", fail)
+    with pytest.raises(RuntimeError, match="resume failure"):
+        agent.decide(turn.approval_id, action="approve")
+    assert agent.approvals.get(turn.approval_id) is None
+    assert list(agent.checkpointer.list(None)) == []
+
+
+
+def test_direct_decision_on_expired_approval_releases_thread(monkeypatch, fake_actions):
+    now = [1000.0]
+    approvals = ApprovalStore(ttl_seconds=1, clock=lambda: now[0])
+    agent = _build_assistant(monkeypatch, [_tool_call("restart_service", {"service": "nginx"})], fake_actions=fake_actions, approvals=approvals)
+    turn = agent.reply_turn_ctx("test")
+    assert list(agent.checkpointer.list(None))
+    now[0] += 2
+    with pytest.raises(ApprovalError):
+        agent.decide(turn.approval_id, action="approve")
+    assert fake_actions.calls == []
+    assert list(agent.checkpointer.list(None)) == []
+
+
+@pytest.mark.parametrize("failure", ["storage_error", "missing_turn"])
+def test_failed_chained_publication_cancels_real_graph(monkeypatch, fake_actions, failure):
+    from src.core.chat import ChatService
+    from src.interfaces.approval import ApprovalOutcomeUnknownError
+    from src.interfaces.session import SessionError
+    from src.storage.session import InMemorySessionStore
+    store = InMemorySessionStore()
+    session = store.create()
+    agent = _build_assistant(monkeypatch, [
+        _tool_call("restart_service", {"service": "nginx"}, "c1"),
+        _tool_call("restart_service", {"service": "mysql"}, "c2"),
+        AIMessage(content="test-completed"),
+    ], fake_actions=fake_actions, ledger=store)
+    service = ChatService(agent.monitor, assistant_factory=lambda: agent, sessions=store)
+    turn = service.reply_turn("test-two-writes", session_id=session.session_id)
+    if failure == "storage_error":
+        def fail(*args, **kwargs):
+            raise SessionError("synthetic storage failure")
+        monkeypatch.setattr(store, "update_pending", fail)
+    else:
+        monkeypatch.setattr(store, "update_pending", lambda *args, **kwargs: False)
+    with pytest.raises(ApprovalOutcomeUnknownError, match="consumed"):
+        service.decide(turn.approval_id, action="approve")
+    assert fake_actions.calls == [("restart_service", {"service": "nginx"})]
+    assert agent.pending_approvals() == []
+    assert list(agent.checkpointer.list(None)) == []

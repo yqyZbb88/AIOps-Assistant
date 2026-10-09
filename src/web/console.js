@@ -1,6 +1,6 @@
 "use strict";
 /* 控制台是公开静态空壳；所有运维数据和变更必须经过同源 API。
- * Token 只放 sessionStorage（标签页关闭即失效），浏览器持久化只保存非敏感偏好。
+ * Token 只放 sessionStorage（标签页关闭会清除本地副本，不撤销服务端 Token），浏览器持久化只保存非敏感偏好。
  * DOM 创建统一走 node()/textContent，禁止把 API 文本拼成 HTML。
  */
 
@@ -16,15 +16,15 @@ const VIEW_META = {
   settings: ["PREFERENCES", "个性化设置"],
 };
 const METRICS = [
-  ["cpu.usage", "CPU 使用率", "%"], ["cpu.load1", "1 分钟负载", ""],
+  ["cpu.usage", "CPU 使用率", "%"], ["cpu.load1", "每核 1 分钟负载", "load/core"],
   ["cpu.iowait", "CPU I/O 等待", "%"], ["memory.usage", "内存使用率", "%"],
   ["memory.available", "可用内存", "B"], ["memory.swap_usage", "Swap 使用率", "%"],
-  ["disk.usage", "磁盘使用率", "%"], ["disk.read_bytes", "磁盘读取", "B/s"],
-  ["disk.write_bytes", "磁盘写入", "B/s"], ["disk.io_util", "磁盘 I/O 利用率", "%"],
-  ["network.rx_bytes", "网络接收", "B/s"], ["network.tx_bytes", "网络发送", "B/s"],
-  ["network.rx_errors", "网络接收错误", ""], ["network.tx_errors", "网络发送错误", ""],
-  ["system.process_count", "进程数量", ""], ["system.uptime", "运行时间", "s"],
-  ["alerts.active_count", "活动告警", ""],
+  ["disk.usage", "磁盘使用率", "%"], ["disk.read_bytes", "磁盘读取", "MiB/s"],
+  ["disk.write_bytes", "磁盘写入", "MiB/s"], ["disk.io_util", "磁盘 I/O 利用率", "%"],
+  ["network.rx_bytes", "网络接收", "MiB/s"], ["network.tx_bytes", "网络发送", "MiB/s"],
+  ["network.rx_errors", "网络接收错误", "errors/s"], ["network.tx_errors", "网络发送错误", "errors/s"],
+  ["system.process_count", "进程数量", "processes"], ["system.uptime", "运行时间", "s"],
+  ["alerts.active_count", "活动告警", "alerts"],
 ].map(function (item) { return {id: item[0], label: item[1], unit: item[2]}; });
 const METRIC_MAP = new Map(METRICS.map(function (metric) { return [metric.id, metric]; }));
 const WIDGETS = [
@@ -48,7 +48,7 @@ const state = {
   confirmAction: null, selectedMetricId: "cpu.usage",
   isAdmin: false, admin: null, adminDirty: false,
   adminSection: "general", adminCatalog: "rule_actions",
-  hostOptions: null, hostVerification: "",
+  hostOptions: null, hostVerification: "", adminCredentials: null, trendGeneration: 0, favoriteGeneration: 0, credentialGeneration: 0,
 };
 const $ = function (id) { return document.getElementById(id); };
 
@@ -120,6 +120,7 @@ function formatTime(value) {
 }
 
 function formatValue(value, unit) {
+  if (value === null || value === undefined || (typeof value === "string" && !value.trim())) return "—";
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
   if (unit === "%") return number.toFixed(1) + "%";
@@ -170,6 +171,12 @@ async function request(path, options) {
     });
     let data = null;
     try { data = await response.json(); } catch (_) { data = {detail: "响应不是 JSON"}; }
+    // 已断开或换身份的响应不能重新填入当前标签页。
+    if (authenticated && token !== sessionStorage.getItem(TOKEN_KEY)) {
+      const error = new Error("连接已变化，已忽略旧请求结果");
+      error.connectionChanged = true;
+      throw error;
+    }
     if (!response.ok) {
       const error = new Error(String(response.status) + " " + (data.detail || response.statusText));
       error.status = response.status;
@@ -177,17 +184,40 @@ async function request(path, options) {
     }
     return data;
   } catch (error) {
+    if (authenticated && token !== sessionStorage.getItem(TOKEN_KEY)) {
+      const obsolete = new Error("连接已变化，已忽略旧请求结果");
+      obsolete.connectionChanged = true;
+      throw obsolete;
+    }
     if (error.name === "AbortError") throw new Error("请求超时，请检查服务或网络状态");
     throw error;
   } finally { clearTimeout(timer); }
 }
 
+function updateNoticeLayout() {
+  const notice = $("notice"), anchor = $("notice-anchor");
+  if (!notice || !anchor) return;
+  anchor.hidden = notice.classList.contains("hidden");
+  if (anchor.hidden) return;
+  const header = document.querySelector(".topbar");
+  const bounds = anchor.getBoundingClientRect();
+  const gap = parseFloat(getComputedStyle(anchor).marginTop) || 0;
+  const top = (header ? header.getBoundingClientRect().height : 0) + gap;
+  // Measure the original content-area slot, never its scrolling vertical position.
+  notice.style.setProperty("--notice-top", top + "px");
+  notice.style.left = bounds.left + "px";
+  notice.style.width = bounds.width + "px";
+  notice.style.right = "auto";
+  anchor.style.height = notice.getBoundingClientRect().height + "px";
+}
+
 function showNotice(text, tone) {
   $("notice-text").textContent = text;
   $("notice").className = "notice " + (tone || "");
+  updateNoticeLayout();
 }
 
-function hideNotice() { $("notice").className = "notice hidden"; }
+function hideNotice() { $("notice").className = "notice hidden"; updateNoticeLayout(); }
 
 function setBusy(key, active) {
   if (active) state.busy.add(key); else state.busy.delete(key);
@@ -211,6 +241,7 @@ function applyPreferences() {
   $("overview-range").textContent = "最近 " + rangeLabel(state.prefs.trendMinutes);
   syncSettingsForm();
   scheduleRefresh();
+  updateNoticeLayout();
 }
 
 function rangeLabel(minutes) {
@@ -230,6 +261,7 @@ function scheduleRefresh() {
 }
 
 function navigate(view) {
+  if (view !== "admin") clearCredentialInputs();
   if (!Object.hasOwn(VIEW_META, view)) view = "overview";
   if (view === "admin" && !state.isAdmin) view = "overview";
   state.view = view;
@@ -307,7 +339,7 @@ async function loadHosts() {
 
 async function loadSessions() {
   state.sessions = await request("/sessions?limit=100");
-  if (state.selectedSessionId && !state.sessions.some(function (item) { return item.session_id === state.selectedSessionId; })) {
+  if (state.selectedSessionId && !state.sessions.some(function (item) { return item.session_id === state.selectedSessionId && item.host_id === state.selectedHostId; })) {
     state.selectedSessionId = "";
   }
   const hostSessions = state.sessions.filter(function (item) { return item.host_id === state.selectedHostId; });
@@ -338,6 +370,7 @@ async function loadAdminAccess() {
       $("admin-summary").textContent = "磁盘配置已变化；当前草稿保存时将发生冲突，请先重载";
     }
   } catch (error) {
+    if (error.connectionChanged) return;
     state.isAdmin = false;
     state.admin = null;
     state.adminDirty = false;
@@ -349,6 +382,10 @@ async function loadAdminAccess() {
 }
 
 function clearAdminView() {
+  if ($("host-current-metric")) $("host-current-metric").replaceChildren();
+  state.trendGeneration++; state.favoriteGeneration++; state.credentialGeneration++;
+  clearCredentialInputs(); state.adminCredentials = null;
+  ["admin-ssh", "admin-tokens", "admin-model"].forEach(function (id) { if ($(id)) $(id).replaceChildren(); });
   state.hostOptions = null; state.hostVerification = "";
   $("admin-content").classList.add("hidden");
   $("admin-restart-banner").classList.add("hidden");
@@ -364,12 +401,14 @@ function clearAdminView() {
 }
 
 async function loadHostStatus() {
-  if (!state.selectedHostId) return;
+  const hostId = state.selectedHostId;
+  if (!hostId) return;
   try {
-    const status = await request("/hosts/" + encodeURIComponent(state.selectedHostId) + "/status");
-    state.hostStatuses.set(state.selectedHostId, status);
+    const status = await request("/hosts/" + encodeURIComponent(hostId) + "/status");
+    state.hostStatuses.set(hostId, status);
   } catch (error) {
-    state.hostStatuses.set(state.selectedHostId, {exporter: {state: "query_error"}, metrics: {}, active_alerts: [], error: error.message});
+    if (error.connectionChanged) return;
+    state.hostStatuses.set(hostId, {exporter: {state: "query_error"}, metrics: {}, active_alerts: [], error: error.message});
   }
   renderHosts();
   renderHostDetail();
@@ -381,6 +420,7 @@ async function loadAllHostStatuses() {
       const status = await request("/hosts/" + encodeURIComponent(host.host_id) + "/status");
       state.hostStatuses.set(host.host_id, status);
     } catch (error) {
+      if (error.connectionChanged) return;
       state.hostStatuses.set(host.host_id, {exporter: {state: "query_error"}, metrics: {}, active_alerts: [], error: error.message});
     }
   }));
@@ -390,12 +430,14 @@ async function loadAllHostStatuses() {
 
 async function loadRecords() {
   const limit = Number($("record-limit").value || 50);
-  const suffix = state.selectedHostId ? "&host_id=" + encodeURIComponent(state.selectedHostId) : "";
+  const hostId = state.selectedHostId;
+  const suffix = hostId ? "&host_id=" + encodeURIComponent(hostId) : "";
   const results = await Promise.all([
     request("/alerts/history?limit=" + limit + suffix),
     request("/inspections/recent?limit=" + limit + suffix),
     request("/executions?limit=" + limit + suffix),
   ]);
+  if (hostId !== state.selectedHostId) return;
   state.history = results[0];
   state.inspections = results[1].inspections || [];
   state.executions = results[2].executions || [];
@@ -405,8 +447,14 @@ async function loadRecords() {
 async function refreshAll(showMessage) {
   // 自动刷新不应覆盖管理员正在编辑的草稿；loadAdminAccess 会保留 dirty 草稿并提示 revision 冲突。
   if (state.busy.has("refresh")) return;
+  const token = sessionStorage.getItem(TOKEN_KEY);
   setBusy("refresh", true);
   await loadHealth();
+  if (token !== sessionStorage.getItem(TOKEN_KEY)) {
+    setBusy("refresh", false);
+    if (sessionStorage.getItem(TOKEN_KEY)) await refreshAll(false);
+    return;
+  }
   if (!sessionStorage.getItem(TOKEN_KEY)) {
     state.isAdmin = false; state.admin = null; state.adminDirty = false;
     state.hostOptions = null; state.hostVerification = "";
@@ -420,14 +468,20 @@ async function refreshAll(showMessage) {
   try {
     await loadHosts();
     await Promise.all([loadAllHostStatuses(), loadSessions(), loadApprovals(), loadRecords(), loadAdminAccess()]);
+    if (token !== sessionStorage.getItem(TOKEN_KEY)) return;
     updateConnection("online", "已连接");
     renderOverview();
     if (state.view === "hosts") await loadSelectedTrend();
     if (showMessage !== false) showNotice("数据已刷新 · " + new Date().toLocaleTimeString(), "success");
   } catch (error) {
+    if (error.connectionChanged || token !== sessionStorage.getItem(TOKEN_KEY)) return;
     updateConnection("error", error.status === 401 ? "Token 无效" : "连接异常");
     showNotice(error.status === 401 ? "Token 无效或已失效，请重新连接。" : error.message, "error");
-  } finally { setBusy("refresh", false); }
+  } finally {
+    setBusy("refresh", false);
+    // 换身份时正在执行的旧刷新会占用 busy；释放后重新加载当前身份。
+    if (token !== sessionStorage.getItem(TOKEN_KEY) && sessionStorage.getItem(TOKEN_KEY)) await refreshAll(false);
+  }
 }
 
 async function selectHost(hostId) {
@@ -601,7 +655,7 @@ function renderRecentOverview() {
 }
 
 function createSummarySvg(summary, metric) {
-  // 接口只给 min/avg/latest/max 摘要，不给采样时间轴；不能伪造折线走势。
+  // 兼容旧版摘要响应；有 series 时使用 createTrendPlot 绘制真实时间采样。
   // 相同数值合并为一个圆点，文字值放在图下独立卡片以避免零范围时重叠。
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -645,9 +699,9 @@ function trendCard(metric, summary, large) {
     head.append(node("strong", "", metric.label), node("span", "", summary && summary.points ? summary.points + " 个采样" : "暂无数据"));
     card.append(head);
   }
-  if (!summary || !summary.points) card.append(node("div", "chart-empty", "该时间范围内暂无数据"));
+  if (!summary || !summary.points) card.append(node("div", "chart-empty", summary && summary.state === "not_applicable" ? "不适用：该主机没有 Swap" : "趋势：该时间范围内暂无数据"));
   else {
-    card.append(node("p", "range-caption", summary.points + " 个采样 · 所选时间范围的区间摘要"), createSummarySvg(summary, metric));
+    card.append(node("p", "range-caption", summary.points + " 个采样 · " + (summary.series ? "真实时间序列" : "区间摘要")), summary.series ? createTrendPlot(summary, metric) : createSummarySvg(summary, metric));
     const values = node("div", "range-values");
     [["最低", summary.min], ["平均", summary.avg], ["当前", summary.latest], ["最高", summary.max]].forEach(function (item) {
       const stat = node("div", "range-value");
@@ -663,36 +717,104 @@ function trendCard(metric, summary, large) {
 }
 
 async function loadFavoriteTrends() {
-  const box = $("favorite-trends");
-  const hostId = state.selectedHostId;
+  const box = $("favorite-trends"), hostId = state.selectedHostId, minutes = state.prefs.trendMinutes;
+  const generation = ++state.favoriteGeneration;
   if (!hostId) return replace("favorite-trends", empty("请选择主机"));
   const cards = await Promise.all(state.prefs.favoriteMetrics.map(async function (id) {
     const metric = METRIC_MAP.get(id);
     try {
-      const data = await request("/hosts/" + encodeURIComponent(hostId) + "/metrics/" + encodeURIComponent(id) + "/trend?minutes=" + state.prefs.trendMinutes + "&step=" + trendStep(state.prefs.trendMinutes));
+      const data = await request("/hosts/" + encodeURIComponent(hostId) + "/metrics/" + encodeURIComponent(id) + "/trend?minutes=" + minutes + "&step=" + trendStep(minutes));
       return trendCard(metric, data.trend, false);
-    } catch (error) { return trendCard(metric, null, false); }
+    } catch (error) {
+      const card = node("div", "trend-card");
+      card.append(node("strong", "", metric.label), empty("趋势查询失败：" + error.message));
+      return card;
+    }
   }));
-  if (hostId !== state.selectedHostId) return;
+  if (generation !== state.favoriteGeneration || hostId !== state.selectedHostId || minutes !== state.prefs.trendMinutes || !state.connected) return;
   box.replaceChildren.apply(box, cards);
 }
 
-function trendStep(minutes) {
-  if (minutes <= 15) return "1m";
-  if (minutes <= 60) return "5m";
-  if (minutes <= 360) return "15m";
-  return "1h";
-}
+function trendStep(minutes) { return Math.max(15, Math.ceil(minutes * 60 / 240)) + "s"; }
 
 async function loadSelectedTrend() {
-  const hostId = state.selectedHostId, metricId = state.selectedMetricId;
-  if (!hostId) return replace("host-trend", empty("请选择主机"));
+  const hostId = state.selectedHostId, metricId = state.selectedMetricId, minutes = state.prefs.trendMinutes;
+  const generation = ++state.trendGeneration, metric = METRIC_MAP.get(metricId);
+  if (!hostId) { if ($("host-current-metric")) $("host-current-metric").replaceChildren(); return replace("host-trend", empty("请选择主机")); }
+  const stale = function () { return generation !== state.trendGeneration || hostId !== state.selectedHostId || metricId !== state.selectedMetricId || minutes !== state.prefs.trendMinutes; };
   replace("host-trend", node("div", "chart-empty", "正在加载趋势…"));
+  const base = "/hosts/" + encodeURIComponent(hostId) + "/metrics/" + encodeURIComponent(metricId);
+  // 两项独立更新，不因任一请求失败掩盖另一项状态。
+  const instant = $("host-current-metric") ? request(base).then(function (data) {
+    if (stale()) return;
+    const box = $("host-current-metric"); box.replaceChildren(node("strong", "", "即时查询"));
+    if (!data.samples || !data.samples.length) box.append(node("p", "", data.state === "not_applicable" ? "不适用：该主机没有 Swap" : "无数据"));
+    (data.samples || []).forEach(function (sample) { box.append(node("p", "", seriesLabel(sample.labels || {}) + " · " + formatValue(sample.value, metric.unit))); });
+  }).catch(function (error) { if (!stale() && !error.connectionChanged) $("host-current-metric").replaceChildren(empty("即时查询失败：" + error.message)); }) : Promise.resolve();
   try {
-    const data = await request("/hosts/" + encodeURIComponent(hostId) + "/metrics/" + encodeURIComponent(metricId) + "/trend?minutes=" + state.prefs.trendMinutes + "&step=" + trendStep(state.prefs.trendMinutes));
-    if (hostId !== state.selectedHostId || metricId !== state.selectedMetricId) return;
-    replace("host-trend", trendCard(METRIC_MAP.get(metricId), data.trend, true));
-  } catch (error) { replace("host-trend", empty(error.message)); }
+    const data = await request(base + "/trend?minutes=" + minutes + "&step=" + trendStep(minutes));
+    if (!stale()) replace("host-trend", trendCard(metric, data.trend, true));
+  } catch (error) {
+    if (!error.connectionChanged && !stale()) replace("host-trend", empty("趋势查询失败：" + error.message));
+  }
+  await instant;
+}
+
+function seriesLabel(labels) {
+  const entries = Object.entries(labels).filter(function (entry) { return !["job", "instance", "__name__"].includes(entry[0]); });
+  return entries.length ? entries.map(function (entry) { return entry[0] + "=" + entry[1]; }).join(" · ") : "主机";
+}
+
+function createTrendPlot(summary, metric) {
+  const wrapper = node("div", "time-series"), choices = node("div", "chip-row"), canvas = node("div", "plot-canvas");
+  const curves = summary.series || [], selected = new Set(curves.slice(0, 6).map(function (_, i) { return i; }));
+  const colors = ["#3b82f6", "#f59e0b", "#10b981", "#ec4899", "#8b5cf6", "#06b6d4"];
+  function draw() {
+    const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+    const plotWidth = (wrapper.clientWidth && wrapper.clientWidth < 450) || (typeof window !== "undefined" && window.innerWidth < 600) ? 360 : 720;
+    const right = plotWidth - 26;
+    svg.setAttribute("viewBox", "0 0 " + plotWidth + " 270"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", metric.label + " 时间序列，单位 " + metric.unit);
+    const values = [], times = [];
+    curves.forEach(function (curve, i) { if (selected.has(i)) (curve.values || []).forEach(function (point) { times.push(Number(point[0])); if (point[1] !== null && Number.isFinite(Number(point[1]))) values.push(Number(point[1])); }); });
+    if (!values.length) { canvas.replaceChildren(empty("所选设备没有有效采样")); return; }
+    let lo = Math.min.apply(null, values), hi = Math.max.apply(null, values);
+    const margin = Math.max((hi - lo) * 0.12, Math.abs(hi) * 0.02, 0.01); lo -= margin; hi += margin;
+    const begin = Math.min.apply(null, times), end = Math.max.apply(null, times);
+    const x = function (t) { return 82 + (t - begin) / (end - begin || 1) * (right - 82); };
+    const y = function (v) { return 226 - (v - lo) / (hi - lo) * 196; };
+    function part(tag, attrs, text) { const el = document.createElementNS(ns, tag); Object.entries(attrs).forEach(function (a) { el.setAttribute(a[0], String(a[1])); }); if (text !== undefined) el.textContent = text; svg.append(el); return el; }
+    part("text", {x: 82, y: 17, fill: "currentColor", "font-size": 12}, metric.unit);
+    for (let i = 0; i <= 4; i++) {
+      const v = lo + (hi - lo) * i / 4;
+      part("line", {x1: 82, x2: right, y1: y(v), y2: y(v), class: "trend-grid"});
+      part("text", {x: 76, y: y(v) + 4, "text-anchor": "end", fill: "currentColor", "font-size": 11}, Math.abs(v) < 1e-12 ? "0" : Number(v.toPrecision(3)).toLocaleString(undefined, {maximumSignificantDigits: 3}));
+      const t = begin + (end - begin) * i / 4;
+      part("text", {x: x(t), y: 252, "text-anchor": "middle", fill: "currentColor", "font-size": 11}, new Date(t * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}));
+    }
+    curves.forEach(function (curve, i) {
+      if (!selected.has(i)) return;
+      let path = "", previous = null;
+      (curve.values || []).forEach(function (point) {
+        const t = Number(point[0]), v = point[1];
+        if (v === null || !Number.isFinite(Number(v))) { previous = null; return; }
+        const gap = previous === null || (summary.step_seconds && t - previous > summary.step_seconds * 1.5);
+        path += (gap ? "M" : "L") + x(t).toFixed(2) + "," + y(Number(v)).toFixed(2) + " "; previous = t;
+        const dot = part("circle", {cx: x(t), cy: y(Number(v)), r: 2.4, fill: colors[i % colors.length]});
+        const title = document.createElementNS(ns, "title"); title.textContent = seriesLabel(curve.labels || {}) + " · " + new Date(t * 1000).toLocaleString() + " · " + formatValue(v, metric.unit); dot.append(title);
+      });
+      part("path", {d: path.trim(), fill: "none", stroke: colors[i % colors.length], "stroke-width": 2});
+    });
+    canvas.replaceChildren(svg);
+  }
+  curves.forEach(function (curve, i) {
+    const label = node("label", "chip"), checkbox = node("input"); checkbox.type = "checkbox"; checkbox.checked = selected.has(i);
+    checkbox.addEventListener("change", function () { if (checkbox.checked) selected.add(i); else selected.delete(i); draw(); });
+    label.setAttribute("style", "color:" + colors[i % colors.length]); label.append(checkbox, node("span", "", seriesLabel(curve.labels || {}))); choices.append(label);
+  });
+  wrapper.append(choices, canvas);
+  if (summary.truncated) wrapper.append(node("p", "safety-note", "共 " + summary.series_total + " 条序列，仅返回前 32 条；请缩小采集范围。"));
+  wrapper.redrawTrend = draw;
+  draw(); return wrapper;
 }
 
 function updateFavoriteButton() {
@@ -734,14 +856,17 @@ async function selectSession(sessionId) {
 
 async function loadConversation() {
   const log = $("chat-log");
-  if (!state.selectedSessionId) {
+  const sessionId = state.selectedSessionId;
+  if (!sessionId) {
     log.replaceChildren(empty("选择已有会话，或为当前主机新建会话。"));
     $("conversation-title").textContent = "请选择或新建会话";
     updateControls();
     return;
   }
   try {
-    const session = await request("/sessions/" + encodeURIComponent(state.selectedSessionId));
+    const session = await request("/sessions/" + encodeURIComponent(sessionId));
+    // 旧会话的成功或失败响应都不能覆盖后来选中的会话。
+    if (sessionId !== state.selectedSessionId) return;
     $("conversation-title").textContent = sessionLabel(session);
     log.replaceChildren();
     if (!session.messages || !session.messages.length) log.append(empty("会话已创建，可以开始提问或诊断。"));
@@ -755,6 +880,8 @@ async function loadConversation() {
     });
     log.scrollTop = log.scrollHeight;
   } catch (error) {
+    if (error.connectionChanged) return;
+    if (sessionId !== state.selectedSessionId) return;
     if (error.status === 404) {
       state.selectedSessionId = "";
       await loadSessions();
@@ -795,13 +922,12 @@ async function submitSession(event) {
   finally { setBusy("session", false); }
 }
 
-async function deleteCurrentSession() {
-  const session = currentSession();
-  if (!session) return;
+async function deleteCurrentSession(session) {
+  if (!session || state.busy.has("session")) return;
   setBusy("session", true);
   try {
     await request("/sessions/" + encodeURIComponent(session.session_id), {method: "DELETE"});
-    state.selectedSessionId = "";
+    if (state.selectedSessionId === session.session_id) state.selectedSessionId = "";
     showNotice("会话已删除，关联的未决审批已作废", "success");
     await Promise.all([loadSessions(), loadApprovals()]);
   } catch (error) { showNotice(error.message, "error"); }
@@ -810,21 +936,31 @@ async function deleteCurrentSession() {
 
 async function ensureSession() {
   if (state.selectedSessionId) return state.selectedSessionId;
-  const created = await request("/sessions", {method: "POST", body: {name: "快捷诊断", host_id: state.selectedHostId}});
-  state.selectedSessionId = created.session_id;
-  await loadSessions();
+  const hostId = state.selectedHostId;
+  const created = await request("/sessions", {method: "POST", body: {name: "快捷诊断", host_id: hostId}});
+  // 创建成功仍属于请求时的主机；用户切换选择后不抢回旧会话。
+  if (hostId === state.selectedHostId && !state.selectedSessionId) {
+    state.selectedSessionId = created.session_id;
+    await loadSessions();
+  }
   return created.session_id;
 }
 
 async function prepareDiagnostic(prompt) {
   if (!state.selectedHostId) return showNotice("请先选择主机", "error");
+  if (state.busy.has("session") || state.busy.has("chat")) return;
+  const hostId = state.selectedHostId;
+  setBusy("session", true);
   navigate("assistant");
   try {
-    await ensureSession();
+    const sessionId = await ensureSession();
+    if (hostId !== state.selectedHostId || sessionId !== state.selectedSessionId) return;
     $("chat-message").value = prompt;
     $("chat-message").focus();
     showNotice("诊断问题已填入，确认后发送", "success");
-  } catch (error) { showNotice(error.message, "error"); }
+  } catch (error) {
+    if (!error.connectionChanged && hostId === state.selectedHostId) showNotice(error.message, "error");
+  } finally { setBusy("session", false); }
 }
 
 function appendPendingTurn(content) {
@@ -862,23 +998,29 @@ async function sendChat(event) {
   event.preventDefault();
   const content = $("chat-message").value.trim();
   if (!content || !state.selectedSessionId || state.busy.has("chat")) return;
+  const sessionId = state.selectedSessionId;
+  const token = sessionStorage.getItem(TOKEN_KEY);
+  const isCurrent = () => sessionId === state.selectedSessionId && token === sessionStorage.getItem(TOKEN_KEY);
   setBusy("chat", true);
   $("chat-message").value = "";
   const pending = appendPendingTurn(content);
   let succeeded = false;
   showNotice("Assistant 正在处理，请稍候…");
   try {
-    const result = await request("/chat", {method: "POST", body: {session_id: state.selectedSessionId, message: content}, timeout: 120000});
+    const result = await request("/chat", {method: "POST", body: {session_id: sessionId, message: content}, timeout: 120000});
     succeeded = true;
+    if (!isCurrent()) return;
     finishPendingTurn(pending, result.reply || "回答已完成", false);
     showNotice(result.reply && result.reply.includes("审批") ? "已产生待审批请求" : "回答已完成", "success");
   } catch (error) {
-    $("chat-message").value = content;
-    finishPendingTurn(pending, error.message + "。输入内容已恢复，可再次发送。", true);
+    if (!isCurrent() || error.connectionChanged) return;
+    const restored = !$("chat-message").value;
+    if (restored) $("chat-message").value = content;
+    finishPendingTurn(pending, error.message + (restored ? "。输入内容已恢复。" : "。当前输入已保留。"), true);
     showNotice(error.message, "error");
   } finally {
     setBusy("chat", false);
-    if (succeeded) {
+    if (succeeded && token === sessionStorage.getItem(TOKEN_KEY)) {
       await Promise.all([loadSessions(), loadApprovals(), loadRecords()]);
       renderOverview();
     }
@@ -1514,11 +1656,12 @@ async function hostWizardAction(kind) {
 }
 
 function activateAdminSection(section, moveFocus) {
-  if (section === "monitor" && state.adminDirty && state.adminSection !== "monitor") {
+  if (["monitor", "ssh", "tokens", "model"].includes(section) && state.adminDirty && state.adminSection !== section) {
     showNotice("进入新增主机向导前，请先保存或放弃当前管理草稿。", "error");
     return;
   }
-  state.adminSection = ["general", "rules", "commands", "hosts", "monitor"].includes(section) ? section : "general";
+  if (state.adminSection !== section) clearCredentialInputs();
+  state.adminSection = ["general", "rules", "commands", "hosts", "monitor", "ssh", "tokens", "model"].includes(section) ? section : "general";
   document.querySelectorAll("[data-admin-section]").forEach(function (tab) {
     const active = tab.dataset.adminSection === state.adminSection;
     tab.classList.toggle("active", active);
@@ -1530,6 +1673,7 @@ function activateAdminSection(section, moveFocus) {
     pane.hidden = pane.dataset.adminPane !== state.adminSection;
   });
   if (state.adminSection === "monitor" && !state.hostOptions) loadHostOptions();
+  if (state.isAdmin && ["ssh", "tokens", "model"].includes(state.adminSection)) loadAdminCredentials();
 }
 
 function activateAdminCatalog(catalog, moveFocus) {
@@ -1631,7 +1775,40 @@ function toggleSelectedFavorite() {
   loadFavoriteTrends();
 }
 
+function clearConnectionData() {
+  // 身份变化时丢弃旧运维数据、草稿和确认回调；展示偏好与正在执行的请求各自保留。
+  state.hosts = []; state.hostStatuses.clear(); state.sessions = []; state.approvals = [];
+  state.history = {alerts: [], remediations: [], advice: []};
+  state.inspections = []; state.executions = [];
+  state.isAdmin = false; state.admin = null; state.adminDirty = false;
+  state.selectedHostId = ""; state.selectedSessionId = ""; state.confirmAction = null;
+  $("chat-message").value = "";
+  $("chat-log").replaceChildren(empty("连接后选择或新建会话。"));
+  $("conversation-title").textContent = "请选择或新建会话";
+  $("host-detail-title").textContent = "请选择主机";
+  $("active-alert-count").textContent = "0";
+  ["host-detail-badges", "host-metrics", "host-active-alerts"].forEach(function (id) { $(id).replaceChildren(); });
+  ["host-trend", "favorite-trends"].forEach(function (id) { replace(id, empty("请选择主机")); });
+  ["confirm-dialog", "session-dialog"].forEach(function (id) { if ($(id).open) $(id).close(); });
+  $("admin-nav").classList.add("hidden");
+  clearAdminView();
+  updateConnection("offline", "未连接");
+  renderHostSelectors(); renderHosts(); renderSessions(); renderApprovals(); renderRecords(); renderOverview();
+}
+
 function bindEvents() {
+  if (typeof ResizeObserver === "function") {
+    // One observer follows header wrapping, sidebar transitions and notice wrapping.
+    const observer = new ResizeObserver(updateNoticeLayout);
+    [$("notice-anchor"), $("notice"), document.querySelector(".topbar")].forEach(function (element) {
+      if (element) observer.observe(element);
+    });
+  }
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    // 一个页面级 resize 监听，按当前 DOM 重绘；移除卡片后不会遗留监听器或观察器。
+    window.addEventListener("resize", function () { updateNoticeLayout(); document.querySelectorAll(".time-series").forEach(function (plot) { if (plot.redrawTrend) plot.redrawTrend(); }); });
+  }
+
   document.querySelectorAll("[data-view]").forEach(function (button) { button.addEventListener("click", function () { navigate(button.dataset.view); }); });
   document.querySelectorAll("[data-go]").forEach(function (button) { button.addEventListener("click", function () { navigate(button.dataset.go); }); });
   document.querySelectorAll(".diagnostic-prompt").forEach(function (button) { button.addEventListener("click", function () { prepareDiagnostic(button.dataset.prompt); }); });
@@ -1644,6 +1821,7 @@ function bindEvents() {
     event.preventDefault();
     const token = $("token").value.trim();
     if (!token) return;
+    if (token !== sessionStorage.getItem(TOKEN_KEY)) clearConnectionData();
     sessionStorage.setItem(TOKEN_KEY, token);
     $("token").value = "";
     $("auth-dialog").close();
@@ -1651,14 +1829,8 @@ function bindEvents() {
   });
   $("disconnect").addEventListener("click", function () {
     sessionStorage.removeItem(TOKEN_KEY);
-    state.hosts = []; state.hostStatuses.clear(); state.sessions = []; state.approvals = [];
-    state.isAdmin = false; state.admin = null; state.adminDirty = false;
-    state.selectedHostId = ""; state.selectedSessionId = "";
+    clearConnectionData();
     $("auth-dialog").close();
-    $("admin-nav").classList.add("hidden");
-    clearAdminView();
-    updateConnection("offline", "未连接");
-    renderHostSelectors(); renderHosts(); renderSessions(); renderApprovals(); renderRecords(); renderOverview();
     showNotice("Token 已从当前标签页清除", "success");
   });
   $("global-host").addEventListener("change", function (event) { selectHost(event.target.value); });
@@ -1669,7 +1841,7 @@ function bindEvents() {
   $("delete-session").addEventListener("click", function () {
     $("session-menu").classList.add("hidden");
     const session = currentSession();
-    if (session) openConfirm({title: "删除会话", message: "将删除“" + sessionLabel(session) + "”及其消息，并作废关联未决审批。", submitLabel: "确认删除", danger: true, reason: false, action: deleteCurrentSession});
+    if (session) openConfirm({title: "删除会话", message: "将删除“" + sessionLabel(session) + "”及其消息，并作废关联未决审批。", submitLabel: "确认删除", danger: true, reason: false, action: function () { return deleteCurrentSession(session); }});
   });
   $("session-menu-button").addEventListener("click", function () { $("session-menu").classList.toggle("hidden"); });
   $("session-form").addEventListener("submit", submitSession);
@@ -1730,6 +1902,137 @@ function bindEvents() {
   document.addEventListener("click", function (event) {
     if (!event.target.closest(".menu-wrap")) $("session-menu").classList.add("hidden");
   });
+}
+
+
+// 凭据页面只接收白名单元信息；输入和一次性 Token 只存在 DOM，不进入偏好或草稿。
+function clearCredentialInputs() {
+  document.querySelectorAll("[data-credential-sensitive]").forEach(function (input) { input.value = ""; input.textContent = ""; });
+}
+
+function credentialInput(type, value, sensitive) {
+  const input = node("input"); input.type = type || "text"; input.value = value ?? ""; input.autocomplete = "off";
+  if (sensitive) input.setAttribute("data-credential-sensitive", "true");
+  return input;
+}
+function credentialButton(label, action) {
+  const button = node("button", "secondary", label); button.type = "button"; button.addEventListener("click", action); return button;
+}
+async function loadAdminCredentials() {
+  if (!state.isAdmin || state.busy.has("admin")) return;
+  if (state.adminCredentials && state.admin && state.adminCredentials.revision === state.admin.revision) return;
+  try {
+    const generation = ++state.credentialGeneration;
+    const result = await request("/admin/credentials");
+    if (!state.isAdmin || generation !== state.credentialGeneration) return;
+    state.adminCredentials = result; renderCredentials();
+  } catch (error) { if (!error.connectionChanged) showNotice(error.message, "error"); }
+}
+async function changeCredential(path, method, data) {
+  if (!state.isAdmin || state.busy.has("admin")) return;
+  if (state.adminDirty) return showNotice("请先保存或放弃管理草稿", "error");
+  const revision = state.adminCredentials && state.adminCredentials.revision;
+  if (!revision) return;
+  clearCredentialInputs(); state.credentialGeneration++; setBusy("admin", true);
+  try {
+    const result = await request("/admin/credentials/" + path, {method: method, body: {revision: revision, data: data}, timeout: 30000});
+    state.adminCredentials = result; state.hostOptions = null; state.hostVerification = "";
+    // 一次性明文不存入 state，不被后续刷新复制。
+    const once = result.token_once; delete result.token_once;
+    let refreshError = null;
+    try { state.admin = await request("/admin/config"); }
+    catch (error) { if (error.connectionChanged) return; refreshError = error; }
+    // 轮换当前登录 Token 后，GET 已失效；仍须显示刚生成的一次性明文。
+    if (!state.isAdmin) return;
+    if (state.admin) state.admin.revision = result.revision;
+    state.adminDirty = false;
+    renderAdmin(); renderCredentials();
+    if (once && state.adminSection === "tokens") {
+      const output = $("admin-token-once"); output.value = once;
+      showNotice(refreshError ? "Token 已生成，请立即复制并重新连接；当前连接已失效或刷新失败" : "Token 已生成，请立即复制；离开页面即清除", "success");
+    } else showNotice(refreshError ? "配置已保存，状态刷新失败；请重新连接或重载" : "配置已保存并生效", "success");
+  } catch (error) {
+    if (!error.connectionChanged) showNotice(error.status === 409 ? "配置已变化或存在运行操作/未决审批，请重载后重试。" : error.message, "error");
+    state.adminCredentials = null;
+  } finally { setBusy("admin", false); }
+}
+function renderCredentials() {
+  const data = state.adminCredentials; if (!data || !state.isAdmin) return;
+  const tokenBox = $("admin-tokens"), sshBox = $("admin-ssh"), modelBox = $("admin-model");
+  if (!tokenBox || !sshBox || !modelBox) return;
+  clearCredentialInputs(); tokenBox.replaceChildren(); sshBox.replaceChildren(); modelBox.replaceChildren();
+  const identity = credentialInput("text"); identity.maxLength = 128;
+  tokenBox.append(node("p", "admin-help", "按身份名生成 Token。角色在安全与开关中授权；部署管理员和 Webhook 凭据只读保留。"), adminLabel("身份名", identity), credentialButton("生成用户 Token", function () { changeCredential("tokens", "POST", {identity: identity.value}); }));
+  const once = node("textarea"); once.id = "admin-token-once"; once.readOnly = true; once.rows = 2; once.autocomplete = "off"; once.setAttribute("data-credential-sensitive", "true");
+  tokenBox.append(adminLabel("一次性 Token（请立即复制）", once), credentialButton("清除明文", clearCredentialInputs));
+  data.tokens.forEach(function (item) {
+    const row = node("div", "admin-card"); row.append(node("strong", "", item.identity + (item.managed ? " · 页面管理" : " · 部署只读")));
+    if (item.managed) row.append(credentialButton("轮换", function () { changeCredential("tokens/" + encodeURIComponent(item.id) + "/rotate", "POST", {}); }), credentialButton("撤销", function () { changeCredential("tokens/" + encodeURIComponent(item.id), "DELETE", {}); }));
+    tokenBox.append(row);
+  });
+  const id = credentialInput("text"), username = credentialInput("text"), method = node("select"), password = credentialInput("password", "", true), key = credentialInput("file", "", true), known = node("textarea");
+  id.maxLength = 63; username.maxLength = 128; known.rows = 5; known.maxLength = 131072; known.setAttribute("data-credential-sensitive", "true");
+  ["password", "private_key"].forEach(function (value) { const option = node("option", "", value === "password" ? "密码" : "上传私钥（无口令）"); option.value = value; method.append(option); }); method.value = "password";
+  const passwordLabel = adminLabel("密码（更新时留空保留）", password), keyLabel = adminLabel("上传私钥（更新时不上传则保留）", key);
+  keyLabel.hidden = true; method.addEventListener("change", function () { password.value = ""; key.value = ""; passwordLabel.hidden = method.value !== "password"; keyLabel.hidden = method.value !== "private_key"; });
+  sshBox.append(node("p", "admin-help", "密码或私钥用于登录；known_hosts 用于验证服务器身份，两种认证方式都需要。新建时请粘贴已核验的 known_hosts，更新时可留空保留。连接测试只验证认证，不授予诊断或写权限。部署凭据只读。"), adminLabel("凭据 ID", id), adminLabel("用户名", username), adminLabel("认证方式", method), passwordLabel, keyLabel, adminLabel("可信 known_hosts（新建必填，更新留空保留）", known));
+  sshBox.append(credentialButton("保存 SSH 凭据", async function () {
+    const update = {username: username.value.trim(), method: method.value}, profile = id.value.trim();
+    const existing = data.ssh.find(function (item) { return item.managed && item.id === profile; });
+    if (!profile) { showNotice("请输入 SSH 凭据 ID", "error"); id.focus(); return; }
+    if (!update.username) { showNotice("请输入 SSH 用户名", "error"); username.focus(); return; }
+    if (!known.value.trim() && !existing) {
+      showNotice("新建 SSH 凭据必须填写可信 known_hosts，用于验证服务器身份；密码和私钥认证都需要。", "error");
+      known.focus(); return;
+    }
+    if (known.value.trim()) update.known_hosts = known.value;
+    if (method.value === "password") {
+      if (!password.value && (!existing || existing.method !== "password")) {
+        showNotice("请输入 SSH 密码", "error"); password.focus(); return;
+      }
+      if (password.value) update.password = password.value;
+    }
+    if (method.value === "private_key" && !(key.files && key.files[0]) && (!existing || existing.method !== "private_key")) {
+      showNotice("请选择无口令的 SSH 私钥文件", "error"); key.focus(); return;
+    }
+    if (method.value === "private_key" && key.files && key.files[0]) {
+      if (key.files[0].size > 131072) return showNotice("私钥最长 128 KiB", "error");
+      const selectedFile = key.files[0]; update.private_key = await selectedFile.text();
+      if (!state.isAdmin || state.adminSection !== "ssh" || key.files[0] !== selectedFile) return;
+    }
+    await changeCredential("ssh/" + encodeURIComponent(profile), "PUT", update);
+  }));
+  data.ssh.forEach(function (item) {
+    const row = node("div", "admin-card"); row.append(node("strong", "", item.id + " · " + item.username + " · " + item.method + (item.managed ? "" : " · 部署只读")));
+    if (item.managed) row.append(credentialButton("编辑", function () { clearCredentialInputs(); id.value = item.id; username.value = item.username; method.value = item.method; passwordLabel.hidden = method.value !== "password"; keyLabel.hidden = method.value !== "private_key"; }), credentialButton("删除", function () { changeCredential("ssh/" + encodeURIComponent(item.id), "DELETE", {}); }));
+    sshBox.append(row);
+  });
+  // 已登记主机修改关联，目标地址仍由后端登记表决定。
+  ((state.admin && state.admin.config.hosts) || []).forEach(function (host) {
+    const row = node("div", "admin-card"), select = node("select");
+    const placeholder = node("option", "", "选择凭据"); placeholder.value = ""; select.append(placeholder);
+    data.ssh.forEach(function (item) { const option = node("option", "", item.id + " · " + item.username); option.value = item.id; select.append(option); }); select.value = host.ssh_ref || "";
+    row.append(node("strong", "", host.name + " · " + host.host_id), adminLabel("SSH 凭据关联", select), credentialButton("更新关联", function () { changeCredential("hosts/" + encodeURIComponent(host.host_id) + "/ssh", "PUT", {credential_id: select.value}); })); row.append(credentialButton("测试已保存的 SSH 连接", async function () {
+      if (state.busy.has("admin")) return; clearCredentialInputs(); setBusy("admin", true);
+      try { const result = await request("/admin/credentials/hosts/" + encodeURIComponent(host.host_id) + "/ssh/test", {method: "POST", timeout: 30000}); showNotice(result.detail, "success"); }
+      catch (error) { if (!error.connectionChanged) showNotice(error.message, "error"); }
+      finally { setBusy("admin", false); }
+    })); sshBox.append(row);
+  });
+  const cfg = data.model, apiKey = credentialInput("password", "", true), mode = node("select"), fields = {};
+  [["keep", "保留密钥"], ["replace", "替换密钥"], ["clear", "明确清除密钥"]].forEach(function (entry) { const option = node("option", "", entry[1]); option.value = entry[0]; mode.append(option); }); mode.value = "keep";
+  mode.addEventListener("change", function () { apiKey.value = ""; });
+  modelBox.append(node("p", "admin-help", "DeepSeek · " + (cfg.configured ? "密钥已配置" : "密钥未配置") + (cfg.managed ? " · 页面管理" : " · 沿用部署环境") + "。保存不发起模型请求。"), adminLabel("密钥操作", mode), adminLabel("新 API Key", apiKey));
+  [["base_url", "Base URL", "text"], ["model", "模型名", "text"], ["timeout", "超时（秒）", "number"], ["max_retries", "重试次数", "number"], ["max_tokens", "最大输出长度", "number"]].forEach(function (entry) { const input = credentialInput(entry[2], cfg[entry[0]]); fields[entry[0]] = input; modelBox.append(adminLabel(entry[1], input)); });
+  modelBox.append(credentialButton("保存模型配置", function () {
+    const update = {key_action: mode.value}; Object.entries(fields).forEach(function (entry) { update[entry[0]] = entry[1].value; }); if (mode.value === "replace") update.api_key = apiKey.value;
+    changeCredential("model", "PUT", update);
+  }), credentialButton("测试已保存的模型连接", async function () {
+    if (state.busy.has("admin")) return; clearCredentialInputs(); setBusy("admin", true);
+    try { const result = await request("/admin/credentials/model/test", {method: "POST", timeout: 20000}); showNotice(result.detail, "success"); }
+    catch (error) { if (!error.connectionChanged) showNotice(error.message, "error"); }
+    finally { setBusy("admin", false); }
+  }), credentialButton("重新加载凭据状态", function () { state.adminCredentials = null; loadAdminCredentials(); }));
 }
 
 function initialize() {

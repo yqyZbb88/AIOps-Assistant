@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from typing import Any, Mapping
@@ -10,7 +11,7 @@ import requests
 
 from src.interfaces.metric import MetricDefinition, MetricSample, MetricsConfig
 from src.interfaces.host import MonitorTarget
-from src.interfaces.monitor import MonitorError, MonitorSource
+from src.interfaces.monitor import MetricNotApplicable, MonitorError, MonitorSource
 from src.metrics.catalog import METRIC_BY_ID, METRIC_CATALOG
 from src.utils.metrics_config import default_metrics_config
 
@@ -137,7 +138,8 @@ class PrometheusMonitor(MonitorSource):
         if not result:
             return None
         try:
-            return float(result[0]["value"][1])
+            value = float(result[0]["value"][1])
+            return value if math.isfinite(value) else None
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise MonitorError("Prometheus 返回数据无法解析") from exc
 
@@ -183,7 +185,21 @@ class PrometheusMonitor(MonitorSource):
         target: MonitorTarget | None = None,
         range_query: bool = False,
     ) -> str:
-        template = definition.range_expr_template if range_query else definition.expr_template
+        template = (definition.range_expr_template or definition.expr_template) if range_query else definition.expr_template
+        if definition.kind == "alert_count" and range_query:
+            effective = self._effective_selector(definition, instance=instance, target=target)
+            matchers = ",".join(_matcher_text(k, v) for k, v in effective.items())
+            up_matchers = ",".join(_matcher_text(k, v) for k, v in effective.items()
+                                   if _matcher_key(k)[0] in {"job", "instance"})
+            branches = []
+            for state in ("firing", "pending"):
+                labels = f'alertstate="{state}"' + ("," + matchers if matchers else "")
+                branches.append(
+                    f'label_replace((sum(ALERTS{{{labels}}}) or (vector(0) '
+                    f'and on() (max(up{{{up_matchers}}}) == 1))), '
+                    f'"state", "{state}", "", "")'
+                )
+            return " or ".join(branches)
         if not template:
             raise MonitorError(f"指标 {definition.metric_id} 不支持该查询")
         selector = self._effective_selector(definition, instance=instance, target=target)
@@ -201,6 +217,10 @@ class PrometheusMonitor(MonitorSource):
     ) -> list[MetricSample]:
         definition = self._definition(metric_id)
         instance = _instance_from_selector(selector)
+        if definition.kind == "alert_count" and target is not None:
+            # 同一条 PromQL 内门控补零，不增加巡检查询预算。旧无目标告警接口继续兼容。
+            return self._parse_samples(metric_id, definition, self._query(
+                self._render_expr(definition, target=target, range_query=True)))
         if definition.kind == "alert_count":
             alerts = self.active_alerts(target=target)
             effective = self._effective_selector(
@@ -242,6 +262,11 @@ class PrometheusMonitor(MonitorSource):
             except (KeyError, IndexError, TypeError, ValueError):
                 logger.warning("指标 %s 单条数据解析失败，已跳过: %s", metric_id, item)
                 continue
+            if metric_id == "memory.swap_usage" and value == -1:
+                raise MetricNotApplicable("此主机未启用 Swap")
+            # NaN/Inf 不是可用于阈值判断的样本，不能通过 clamp 伪装成 0/100。
+            if not math.isfinite(timestamp) or not math.isfinite(value):
+                continue
             if definition.min_value is not None or definition.max_value is not None:
                 low = definition.min_value if definition.min_value is not None else value
                 high = definition.max_value if definition.max_value is not None else value
@@ -271,7 +296,7 @@ class PrometheusMonitor(MonitorSource):
         instance: str | None = None,
         *,
         minutes: int = 60,
-        step: str = "5m",
+        step: str | None = None,
         selector: Mapping[str, str] | None = None,
         target: MonitorTarget | None = None,
     ) -> dict[str, Any]:
@@ -279,29 +304,68 @@ class PrometheusMonitor(MonitorSource):
         expr = self._render_expr(
             definition, instance=instance, target=target, range_query=True
         )
-        try:
-            series = self._query_range(expr, minutes=minutes, step=step)
-        except MonitorError as exc:
-            logger.debug("指标趋势查询失败 metric=%s: %s", metric_id, exc)
-            return dict(_EMPTY_TREND)
-        if not series:
-            return dict(_EMPTY_TREND)
-
-        summaries = [
-            _summarize_values(
-                item.get("values") if isinstance(item.get("values"), list) else [],
-                low=definition.min_value,
-                high=definition.max_value,
-            )
-            for item in series
-            if isinstance(item, dict)
-        ]
+        # 限制查询密度：最多 240 个间隔（241 个点），不在前端丢弃真实走势。
+        duration = max(1, int(minutes)) * 60
+        units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        match = re.fullmatch(r"([1-9][0-9]*)([smhd])", step or "15s")
+        if not match:
+            raise MonitorError("step 必须是正整数加 s/m/h/d")
+        seconds = max(15, math.ceil(duration / 240), int(match[1]) * units[match[2]])
+        series = self._query_range(expr, minutes=minutes, step=f"{seconds}s")
+        curves = []
+        for item in series:
+            if not isinstance(item, dict) or not isinstance(item.get("values"), list):
+                continue
+            labels = item.get("metric") or {}
+            if not isinstance(labels, dict):
+                continue
+            points = {}
+            applicable = False
+            no_swap = False
+            for pair in item["values"]:
+                if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                    continue
+                try:
+                    timestamp, value = float(pair[0]), float(pair[1])
+                except (ValueError, TypeError):
+                    continue
+                if not math.isfinite(timestamp):
+                    continue
+                if metric_id == "memory.swap_usage" and value == -1:
+                    points[timestamp] = None
+                    no_swap = True
+                    continue
+                if math.isfinite(value):
+                    if definition.min_value is not None:
+                        value = max(definition.min_value, value)
+                    if definition.max_value is not None:
+                        value = min(definition.max_value, value)
+                    applicable = True
+                    points[timestamp] = value
+                else:
+                    points[timestamp] = None
+            ordered = [[t, v] for t, v in sorted(points.items())][:241]
+            if ordered:
+                curves.append({"labels": {k: str(v) for k, v in sorted(labels.items())
+                                           if k != "__name__"}, "values": ordered,
+                               "applicable": applicable, "no_swap": no_swap})
+        curves.sort(key=lambda c: tuple(c["labels"].items()))
+        total = len(curves)
+        curves = curves[:32]
+        summaries = [_summarize_values(c["values"], low=definition.min_value,
+                                      high=definition.max_value) for c in curves]
         valid = [summary for summary in summaries if summary["points"]]
-        if not valid:
-            return dict(_EMPTY_TREND)
-        if definition.direction == "below":
-            return min(valid, key=lambda item: item["latest"])
-        return max(valid, key=lambda item: item["latest"])
+        summary = dict(_EMPTY_TREND)
+        if valid:
+            choose = min if definition.direction == "below" else max
+            summary = dict(choose(valid, key=lambda item: item["latest"]))
+        state = "ok" if valid else "no_data"
+        if metric_id == "memory.swap_usage" and curves and any(c["no_swap"] for c in curves) and not any(c["applicable"] for c in curves):
+            state = "not_applicable"
+        summary.update({"series": [{"labels": c["labels"], "values": c["values"]} for c in curves],
+                        "state": state, "step_seconds": seconds,
+                        "series_total": total, "truncated": total > 32})
+        return summary
 
     # -- 旧接口兼容包装 ---------------------------------------------------
     def cpu_usage(self) -> float | None:
@@ -348,6 +412,8 @@ class PrometheusMonitor(MonitorSource):
             try:
                 value = float(raw_value) if raw_value not in (None, "") else None
             except (TypeError, ValueError):
+                value = None
+            if value is not None and not math.isfinite(value):
                 value = None
             records.append(
                 {
@@ -403,11 +469,14 @@ class PrometheusMonitor(MonitorSource):
         step: str = "5m",
     ) -> dict[str, dict[str, Any]]:
         """旧接口：固定返回 CPU/内存/磁盘趋势。"""
-        return {
-            "CPU使用率": self.query_metric_trend("cpu.usage", instance, minutes=minutes, step=step),
-            "内存使用率": self.query_metric_trend("memory.usage", instance, minutes=minutes, step=step),
-            "磁盘使用率": self.query_metric_trend("disk.usage", instance, minutes=minutes, step=step),
-        }
+        result = {}
+        for title, metric_id in (("CPU使用率", "cpu.usage"), ("内存使用率", "memory.usage"), ("磁盘使用率", "disk.usage")):
+            try:
+                result[title] = self.query_metric_trend(metric_id, instance, minutes=minutes, step=step)
+            except MonitorError:
+                result[title] = dict(_EMPTY_TREND)
+        return result
+
 
 
 def _alert_matches_selector(alert: Mapping[str, Any], selector: Mapping[str, str]) -> bool:
@@ -442,6 +511,8 @@ def _summarize_values(
         try:
             value = float(raw)
         except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value):
             continue
         if low is not None:
             value = max(low, value)

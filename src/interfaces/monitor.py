@@ -6,7 +6,8 @@ core（聊天兜底 / 告警分析上下文）与 agent 工具只依赖本接口
 
 TrendSummary：单个指标近 N 分钟趋势汇总
     {"latest": float|None, "min": ..., "max": ..., "avg": ..., "points": int}
-points 表示有效采样点数；全 None + points=0 表示该指标无数据。
+points 表示摘要对应序列的有效采样点数；series 保留各设备的 labels、values=[时间戳,值]。
+无效/缺失值为 None；state 区分 ok、no_data、not_applicable。查询失败抛 MonitorError。
 """
 from __future__ import annotations
 
@@ -22,6 +23,10 @@ TrendSummary = dict[str, Any]
 
 class MonitorError(Exception):
     """监控数据源查询失败（连接失败 / 返回错误 / 数据异常）。"""
+
+
+class MetricNotApplicable(MonitorError):
+    """目标不具备此项资源，例如未启用 Swap；不表示主机故障。"""
 
 
 class MonitorSource(ABC):
@@ -52,7 +57,7 @@ class MonitorSource(ABC):
         instance: str | None = None,
         *,
         minutes: int = 60,
-        step: str = "5m",
+        step: str | None = None,
         selector: Mapping[str, str] | None = None,
         target: MonitorTarget | None = None,
     ) -> TrendSummary:

@@ -38,6 +38,7 @@
           <button id="open-auth" class="auth-button" type="button"><span id="auth-state">连接</span></button>
         </div>
       </header>
+      <div id="notice-anchor" class="notice-anchor" hidden aria-hidden="true"></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"><span id="notice-text"></span><button id="notice-close" class="icon-button" type="button" aria-label="关闭通知">×</button></div>
       <main>
         <section id="view-overview" class="view active" data-view-panel="overview">
@@ -79,6 +80,7 @@
                 <label for="metric-select">区间指标</label><select id="metric-select"></select>
                 <button id="favorite-metric" class="secondary" type="button" disabled>加入收藏</button>
               </div>
+              <div id="host-current-metric" class="panel-subsection" aria-live="polite"></div>
               <div id="host-trend" class="large-chart empty-state">选择可用主机后查看趋势</div>
               <div class="panel-subsection">
                 <div class="subsection-head"><h3>活动告警</h3><span id="active-alert-count" class="counter">0</span></div>
@@ -157,6 +159,9 @@
               <button id="admin-tab-commands" class="admin-tab" type="button" role="tab" data-admin-section="commands" aria-controls="admin-pane-commands" aria-selected="false" tabindex="-1">命令目录</button>
               <button id="admin-tab-hosts" class="admin-tab" type="button" role="tab" data-admin-section="hosts" aria-controls="admin-pane-hosts" aria-selected="false" tabindex="-1">主机授权</button>
               <button id="admin-tab-monitor" class="admin-tab" type="button" role="tab" data-admin-section="monitor" aria-controls="admin-pane-monitor" aria-selected="false" tabindex="-1">监控主机</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-section="ssh" aria-controls="admin-pane-ssh" aria-selected="false" tabindex="-1">SSH 凭据</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-section="tokens" aria-controls="admin-pane-tokens" aria-selected="false" tabindex="-1">用户 Token</button>
+              <button class="admin-tab" type="button" role="tab" data-admin-section="model" aria-controls="admin-pane-model" aria-selected="false" tabindex="-1">模型配置</button>
             </div>
             <div id="admin-pane-general" class="admin-pane settings-grid" role="tabpanel" aria-labelledby="admin-tab-general" data-admin-pane="general">
               <section class="panel setting-group"><div class="panel-head"><div><p class="panel-kicker">SECURITY</p><h2>安全与功能</h2></div></div><div id="admin-security" class="admin-form"></div></section>
@@ -191,6 +196,9 @@
               </form>
               <div id="admin-host-result" class="admin-summary panel" role="status">填写后先预览；Exporter 的 up=0 不阻止登记。</div>
             </section>
+            <section id="admin-pane-ssh" class="panel admin-pane" role="tabpanel" data-admin-pane="ssh" aria-label="SSH 凭据" hidden><div class="panel-head"><h2>SSH 凭据</h2></div><div id="admin-ssh" class="admin-form"></div></section>
+            <section id="admin-pane-tokens" class="panel admin-pane" role="tabpanel" data-admin-pane="tokens" aria-label="用户 Token" hidden><div class="panel-head"><h2>用户 Token</h2></div><div id="admin-tokens" class="admin-form"></div></section>
+            <section id="admin-pane-model" class="panel admin-pane" role="tabpanel" data-admin-pane="model" aria-label="模型配置" hidden><div class="panel-head"><h2>模型配置</h2></div><div id="admin-model" class="admin-form"></div></section>
           </div>
         </section>
         <section id="view-settings" class="view" data-view-panel="settings" hidden>

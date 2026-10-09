@@ -273,7 +273,7 @@ class Database:
         conn = sqlite3.connect(str(self.path), timeout=self.timeout, isolation_level=None)
         try:
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute(f"PRAGMA busy_timeout = {max(0, int(self.timeout * 1000))}")
             yield conn
         finally:
             conn.close()
@@ -312,9 +312,12 @@ class Database:
             return _retry_transient(lambda: conn.execute(sql, params), sql).rowcount
 
     def executemany(self, sql: str, seq: Sequence[Sequence[Any]]) -> int:
-        """批量写（自动提交），返回受影响行数。瞬时锁会退避重试。"""
-        with self.connect() as conn:
-            return _retry_transient(lambda: conn.executemany(sql, seq), sql).rowcount
+        """同一事务批量写；任何一条失败即整批回滚，返回受影响行数。
+
+        仅 BEGIN 取锁可重试；逐条自动提交后重发整批会重复已经成功的写入。
+        """
+        with self.transaction() as conn:
+            return conn.executemany(sql, seq).rowcount
 
     # -- 维护 ---------------------------------------------------------------
     def checkpoint(self) -> None:

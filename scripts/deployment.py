@@ -118,7 +118,11 @@ def _initialize(runtime: Path, *, templates: Path, legacy_config: Path,
     if (runtime / "compose.env").exists():
         values = read_credentials(runtime)
     else:
-        if metadata.get("initialized") or (runtime / "secrets" / "assistant.json").exists():
+        if (metadata.get("initialized") or metadata.get("credentials_initialized")
+                or source == "legacy"
+                or (bool(metadata) and any((runtime / "config" / name).is_file()
+                                          for name in CONFIG_FILES))
+                or (runtime / "secrets" / "assistant.json").exists()):
             raise DeploymentError("已有部署的 compose.env 丢失；请从备份恢复，拒绝重新生成凭据。")
         user_token, alert_token = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         values = {
@@ -140,6 +144,11 @@ def _initialize(runtime: Path, *, templates: Path, legacy_config: Path,
     atomic_write(runtime / "compose.env", "".join(
         f"{key}={json.dumps(value, ensure_ascii=False)}\n" for key, value in sorted(values.items())
     ))
+
+    # 凭据写入成功即记录，不等配置和派生文件全部完成；中断后禁止静默轮换。
+    atomic_write(marker, json.dumps({
+        "version": 1, "config_source": source, "credentials_initialized": True,
+    }) + "\n")
 
     config_source = legacy_config if source == "legacy" else templates
     config_dir = runtime / "config"

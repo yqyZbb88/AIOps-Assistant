@@ -31,6 +31,7 @@ from src.plugins.diagnostics.commands import DEFAULT_DIAGNOSTICS_FILE, parse_dia
 from src.storage.models import RulesFile
 from src.utils.auth import parse_admins, parse_approvers, parse_tokens
 from src.utils.config_loader import (
+    parse_yaml,
     DEFAULT_SETTINGS_FILE,
     ROOT_DIR,
     Settings,
@@ -166,7 +167,9 @@ class AdminConfigManager:
         }:
             raise AdminConfigUnavailable("Prometheus 目标文件不能覆盖应用配置文件")
         self.backup_root = _path(backup_root, ROOT_DIR / "data" / "config-backups")
-        self._lock = threading.Lock()
+        from src.utils.admin_credentials import CredentialStore
+        self.credential_store = CredentialStore(self.backup_root.parent / "admin-credentials")
+        self._lock = threading.RLock()
         # attach_runtime 前只知道磁盘版本；运行版本以创建的第一份快照为准。
         self.active_revision = self.revision()
         self.runtime = None
@@ -203,7 +206,22 @@ class AdminConfigManager:
                 digest.update(self.target_path.read_bytes() if self.target_path.exists() else b"[]\n")
             except OSError as exc:
                 raise AdminConfigUnavailable("无法读取自管 Prometheus 目标文件") from exc
+        digest.update(b"admin-credentials\0")
+        try:
+            digest.update(self.credential_store.path.read_bytes() if self.credential_store.path.exists() else b"")
+        except OSError:
+            raise AdminConfigUnavailable("管理员凭据无法读取") from None
         return digest.hexdigest()
+
+    def credential_specs(self, docs, state=None):
+        state = self.credential_store.read() if state is None else state
+        base = (parse_yaml(self._dump(docs["hosts"])) or {}).get("credentials") or {}
+        return {**base, **self.credential_store.ssh_specs(state)}
+
+    def host_registry(self, docs, state=None):
+        state = self.credential_store.read() if state is None else state
+        return parse_hosts(self._dump(docs["hosts"]),
+                           credential_overrides=self.credential_store.ssh_specs(state))
 
     def _load_docs(self) -> dict[str, Any]:
         yaml = self._yaml()
@@ -257,11 +275,11 @@ class AdminConfigManager:
     def snapshot(self) -> dict[str, Any]:
         """返回结构化草稿与 revision；不输出主机连接字段或 Token 明文。"""
         docs = self._load_docs()
-        settings_data = _plain(self._yaml().load(interpolate(self._dump(docs["settings"]))) or {})
-        effective = _build_settings(settings_data)
+        settings_data = _plain(parse_yaml(self._dump(docs["settings"])) or {})
+        effective = self.credential_store.settings(_build_settings(settings_data), self.credential_store.read())
         tokens = parse_tokens(effective.auth.tokens)
         identities = sorted({identity for _, identity in tokens})
-        hosts = parse_hosts(self._dump(docs["hosts"]))
+        hosts = self.host_registry(docs)
         by_instance = {host.monitor.instance: host.host_id for host in hosts.all()}
 
         rules: list[dict[str, Any]] = []
@@ -316,6 +334,7 @@ class AdminConfigManager:
                         "host_id": host.host_id,
                         "name": host.name,
                         "enabled": host.enabled,
+                        "ssh_ref": host.credential_ref,
                         "allow": {
                             "diagnostics": sorted(host.capabilities.diagnostics),
                             "rule_actions": sorted(host.capabilities.rule_actions),
@@ -347,6 +366,7 @@ class AdminConfigManager:
         auth = document["auth"]
         tokens = parse_tokens(interpolate(str(auth.get("tokens") or "")))
         available = {identity for _, identity in tokens}
+        available.update(entry["identity"] for entry in self.credential_store.read()["tokens"].values())
         admins = self._identity_list(
             section.get("admin_identities"), "admin_identities", available, required=True
         )
@@ -450,7 +470,7 @@ class AdminConfigManager:
 
     def _apply_rules(self, document: Any, raw_rules: Any, hosts_document: Any) -> None:
         rules = _list(raw_rules, "config.rules")
-        registry = parse_hosts(self._dump(hosts_document))
+        registry = self.host_registry({"hosts": hosts_document})
         existing_list = document.get("rules") or []
         existing = {
             self._rule_id(_mapping(rule, "rules[]"), index): rule
@@ -496,25 +516,23 @@ class AdminConfigManager:
             normalized.append(item)
         document["rules"] = normalized
 
-    def _validate(self, docs: Mapping[str, Any]) -> None:
+    def _validate(self, docs: Mapping[str, Any], *, credential_state=None) -> None:
         """先验证完整候选集，再触碰磁盘；包含各目录与规则/主机的跨文件引用。"""
-        import yaml
-
-        settings_raw = yaml.safe_load(interpolate(self._dump(docs["settings"]))) or {}
-        settings = _build_settings(settings_raw)
+        settings_raw = parse_yaml(self._dump(docs["settings"])) or {}
+        settings = self.credential_store.settings(_build_settings(settings_raw), self.credential_store.read() if credential_state is None else credential_state)
         tokens = parse_tokens(settings.auth.tokens)
         identities = {identity for _, identity in tokens}
         admins = set(parse_admins(settings.auth.admin_identities))
         if not admins or not admins <= identities:
             raise AdminConfigError("管理员身份必须非空且全部存在于 Token 身份映射")
         parse_approvers(settings.auth.approver_identities)
-        registry = parse_hosts(self._dump(docs["hosts"]))
+        registry = self.host_registry(docs, credential_state)
         parse_actions(self._dump(docs["actions"]))
         parse_agent_actions(self._dump(docs["agent_actions"]))
         parse_diagnostics(self._dump(docs["diagnostics"]))
         if "metrics" in docs:
             parse_metrics_config(self._dump(docs["metrics"]))
-        rules_data = yaml.safe_load(interpolate(self._dump(docs["rules"]))) or {}
+        rules_data = parse_yaml(self._dump(docs["rules"])) or {}
         rules = RulesFile(**rules_data)
 
         command_sets: dict[str, set[str]] = {}
@@ -547,7 +565,7 @@ class AdminConfigManager:
             if rule.auto_execute and not rule.target_instance:
                 raise AdminConfigError(f"自动执行规则 {rule.id or rule.alertname} 必须选择目标主机")
 
-    def _candidate(self, docs: Mapping[str, Any]) -> RuntimeSnapshot | None:
+    def _candidate(self, docs: Mapping[str, Any], *, credential_state=None) -> RuntimeSnapshot | None:
         """在写盘前装配候选运行态；不支持热切换的 Settings 差异整批拒绝。
 
         新增 Settings 字段时必须审查下面的 hot_fields：未列入的字段不会被部分应用。
@@ -555,14 +573,15 @@ class AdminConfigManager:
         """
         if self.runtime is None:
             return None
-        import yaml
         from src.container import Container
         from src.main import _check_auth
 
         old = self.runtime.current
         settings = _build_settings(
-            yaml.safe_load(interpolate(self._dump(docs["settings"]))) or {}
+            parse_yaml(self._dump(docs["settings"])) or {}
         )
+        state = self.credential_store.read() if credential_state is None else credential_state
+        settings = self.credential_store.settings(settings, state)
         # 测试及嵌入式运行可通过 create_app 显式注入配置路径。
         if not settings.hosts.file and old.settings.hosts.file:
             settings = replace(settings, hosts=old.settings.hosts)
@@ -571,7 +590,7 @@ class AdminConfigManager:
         before = asdict(old.settings)
         after = asdict(settings)
         hot_fields = {
-            "auth.enabled", "auth.approval_mode", "auth.approver_identities",
+            "auth.tokens", "auth.enabled", "auth.approval_mode", "auth.approver_identities",
             "auth.admin_identities", "auth.alert_identity",
             "prometheus.base_url", "prometheus.timeout", "monitor.provider",
             "llm.enabled", "llm.provider", "agent.enabled", "agent.name",
@@ -594,7 +613,9 @@ class AdminConfigManager:
             )
         _check_auth(settings)
         texts = {name: self._dump(doc) for name, doc in docs.items()}
-        container = Container(settings, config_texts=texts, shared_from=old.container)
+        container = Container(settings, config_texts=texts, shared_from=old.container,
+                              credential_specs=self.credential_store.ssh_specs(state),
+                              model_config=self.credential_store.model_config(state) if state["model"] is not None else None)
         container.metrics_config()
         container.hosts()
         container.executors()

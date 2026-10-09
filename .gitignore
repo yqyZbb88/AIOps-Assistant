@@ -39,6 +39,7 @@ data/
 *.db-shm
 
 # 仅本地保留、不提交的规划与维护文档
+docs/_local/
 PROJECT_HANDOVER.md
 ARCHITECTURE.md
 roadmap.md

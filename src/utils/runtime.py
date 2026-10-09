@@ -12,6 +12,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+from src.interfaces.approval import ApprovalUnavailableError
 from src.utils.config_loader import Settings
 
 
@@ -75,7 +76,11 @@ class RuntimeManager:
         with self._lock:
             if self._applying or self._active_operations:
                 raise RuntimeBusyError("业务请求正在执行，请稍后重试配置应用")
-            if self.current.agent.pending_approvals():
+            try:
+                pending = self.current.agent.pending_approvals(strict=True)
+            except ApprovalUnavailableError as exc:
+                raise RuntimeBusyError("无法核对未决审批，暂不能应用配置") from exc
+            if pending:
                 raise RuntimeBusyError("存在未决审批，请先处理或等待过期")
             self._applying = True
 

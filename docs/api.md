@@ -29,7 +29,7 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 | GET | `/hosts`、`/hosts/{host_id}` | 登记主机公开摘要 | 普通 Bearer |
 | GET | `/hosts/{host_id}/status` | Exporter、核心指标和活动告警 | 普通 Bearer |
 | GET | `/hosts/{host_id}/metrics/{metric_id}` | 指定指标即时样本 | 普通 Bearer |
-| GET | `/hosts/{host_id}/metrics/{metric_id}/trend` | 指定时段指标统计摘要 | 普通 Bearer |
+| GET | `/hosts/{host_id}/metrics/{metric_id}/trend` | 指定时段统计及设备时间序列 | 普通 Bearer |
 | GET | `/executions` | 规则/Agent 动作执行记录 | 普通 Bearer |
 | POST、GET | `/sessions` | 创建、列出会话 | 普通 Bearer |
 | GET、PATCH、DELETE | `/sessions/{session_id}` | 查看、改名、删除会话 | 本人身份 |
@@ -67,21 +67,27 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 上例省略 `host` 和 `metrics` 的其余字段。`exporter.state` 可为 `reachable`、
 `unreachable`、`no_data`、`ambiguous` 或 `query_error`。若 Exporter 不可达，核心指标
 可能为空；`query_error` 代表监控查询失败，不等于目标的 `up=0`。排障先看
-[使用指南](guide.md) 的监控段，未经授权不要启动或重启远端 Exporter。
+[只读排障](troubleshooting.md#prometheus-与-exporter只读分层检查)，未经授权不要启动或重启远端 Exporter。
 
 `GET /hosts/{host_id}/metrics/{metric_id}` 返回 `host_id`、`metric_id`、`state` 与
 `samples`，每个样本有 `labels`、`value`、`timestamp`。`/trend` 增加 `minutes`
-（1～1440，默认 60）和 `step`（正整数加 `s/m/h/d`，默认 `5m`），返回 `trend`：
+（1～1440，默认 60）和 `step`（正整数加 `s/m/h/d`，省略时自动计算），返回 `trend`：
 
 ```json
 {"host_id":"node-a","metric_id":"cpu.usage","state":"ok",
- "trend":{"latest":0.6,"min":0.6,"max":0.6,"avg":0.6,"points":12}}
+ "trend":{"latest":0.6,"min":0.6,"max":0.6,"avg":0.6,"points":2,
+ "state":"ok","step_seconds":15,"series_total":1,"truncated":false,
+ "series":[{"labels":{"instance":"node-a:9100"},"values":[[1700000000,0.6],[1700000015,0.6]]}]}}
 ```
 
-这是统计摘要而非逐点时间序列；无数据时 `points=0`、`state=no_data`。控制台据此画
-区间摘要，不推断采样时刻。未知/禁用主机返回 404，参数格式错误返回 422，监控查询
-失败的单指标 API 返回 502。`/health` 始终 200 且不做外部 I/O；`/ready` 主动探测，
-核心依赖不就绪返回 503，其响应体的 `ready` 与 `components` 用来定位问题。
+`trend` 保留 `latest/min/max/avg/points`，新增 `series=[{labels,values:[[时间戳,值],...]}]`、
+`state`、`step_seconds`、`series_total`、`truncated`。摘要选择方向对应的最差设备序列；
+采样按设备独立返回，不做跨挂载点平均。默认步长 `max(15,ceil(minutes*60/240))` 秒，
+显式步长只可降低密度，每条最多 241 点、最多 32 条序列。超限 `truncated=true`。
+非有限值/缺失点为 `null`；无有效样本 `state=no_data`，无 Swap 为 `not_applicable`。
+活动告警历史查询使用 `ALERTS`，按 pending/firing 分线；缺少告警只在 `up=1` 时补零。
+即时查询采用同样的补零门控。未知/禁用主机 404，非法参数 422，任何即时或趋势请求失败
+均返回脱敏 502。`/ready` 核心依赖不就绪 503；`/health` 不发起外部 I/O。
 
 ## 会话、聊天和审批
 
@@ -99,7 +105,8 @@ Content-Type: application/json
 提供 `host_id`；只有一台启用主机时可省略。`GET /sessions?limit=50` 按最后活动时间
 倒序列出当前身份的会话；`GET /sessions/{id}` 返回元信息及最近 100 条消息的状态。
 `PATCH /sessions/{id}` 的 `{"name":"新名称"}` 改标签，空白名清除标签；
-`DELETE /sessions/{id}` 删除消息并取消未决审批。删除/越权/未知会话统一 404。
+`DELETE /sessions/{id}` 删除消息并取消未决审批。删除/越权/未知会话统一 404；
+改名后的返回读取若遇到并发删除，同样返回 404。
 
 ```http
 POST /chat
@@ -112,7 +119,9 @@ Content-Type: application/json
 `/chat` 响应包含 `reply`、`session_id`、`session_name`。当前是完整 JSON 响应，
 **不是流式输出**；控制台会先在本地回显用户输入并显示加载动画。消息超过
 `chat.max_message_chars` 返回 413。存储关闭时聊天可降级回答，但不会保留多轮历史；
-具体降级条件见 [数据库说明](database.md)。
+具体降级条件见 [数据库说明](database.md)。启用会话存储时，如果会话在回答期间被删除，
+返回 404，不重新创建会话。待审批轮次写入失败会取消本次申请并返回 503；
+不能用未保存的审批申请继续执行。普通最终回答遇到其它历史写入失败时仍可返回，历史可能缺失。
 
 `GET /approvals` 返回当前身份可决策的待审批数组，每项包含 `approval_id`、
 `session_id`、申请人 `user`、`host_id`、冻结动作 `actions`、目标摘要及配置指纹。
@@ -126,14 +135,17 @@ Content-Type: application/json
 响应含 `decision`、`status`、`reply` 和可能的 `next_approval_id`；续跑再次申请写命令时
 `status=pending_approval`。审批范围取决于 `owner` 或 `approvers_only`；无权、过期、
 已处理和未知 ID 对调用者都表现为 404。批准前应核对冻结主机、动作和参数。
+启用会话存储且申请绑定会话时，消费前必须核对已保存的待审批轮次；尚未保存或无法核对返回 503，
+不会续跑。如果原审批已消费、下一条链式申请却保存失败，会取消下一条并返回 503；
+不要重放原决策，应先检查执行记录。
 
 ## 告警、巡检和执行历史
 
 `POST /alert` 接收 Alertmanager webhook。请求体为通知对象（含 `status`、`receiver`、
 `alerts[]`；每条告警常用 `labels.alertname`、`labels.job`、`labels.instance`、
 `startsAt`、`fingerprint`）。返回 `received`、逐条 `alerts`、规则 `remediation`
-和未匹配告警的 `ai_advice`。`/alert` 可能触发不经审批的规则自动处置，因此必须使用
-`auth.enabled=true` 时应使用专用 `alert_identity` Token；自动执行总开关默认关闭。
+和未匹配告警的 `ai_advice`。`/alert` 可能触发不经审批的规则自动处置。
+`auth.enabled=true` 时只允许专用 `alert_identity` 身份投递；自动执行总开关默认关闭。
 归档写入失败返回 503，告警发送方可据此重试；重复写操作由幂等记录保护。
 
 三个告警查询不要混淆：
@@ -166,7 +178,7 @@ SSH 凭据或主机 SSH 连接字段。`PUT /admin/config` 必须传入原 revis
 `changed_files=[]`、`backup_id=null`。有变化时文件会先备份到
 `data/config-backups/<backup_id>/`；备份只保护这次 YAML 写回，**不包含 SQLite 数据库**。
 成功时 `active_revision=revision` 且 `restart_required=false`。若有未决审批或正在执行的
-聊天、审批、告警处置请求，应用返回 409；需重启的字段返回 422 且整批不应用。
+聊天、审批、告警处置请求，或无法核对未决审批状态，应用返回 409；需重启的字段返回 422 且整批不应用。
 
 主机向导四接口统一要求管理员 Token。预览、SSH 检查和新增均提交
 `{"revision":"<当前磁盘 revision>","draft":{"host_id":"node-c","name":"节点 C",...}}`。
@@ -195,3 +207,31 @@ SSH 凭据或主机 SSH 连接字段。`PUT /admin/config` 必须传入原 revis
 摘要和运维结果，调用方应按内部运维数据保管。`restart_required=true` 表示磁盘
 版本尚未应用；管理员需检查是否含需重启字段，再调用 `/admin/config/apply`。
 浏览器或 HTTP 客户端超时不能证明服务端已取消写入；重试前先查询 revision 或执行状态。
+
+## 管理员凭据 API
+
+所有端点始终要求管理员 Bearer。元信息查询和保存响应设置 `Cache-Control: no-store`、
+`Pragma: no-cache`；仅创建/轮换响应额外含 `token_once`、`token_id`，这是一次性明文出口。
+其它查询只含 revision、身份/凭据 ID、用户名/认证方式、模型非敏感参数及 configured/managed 状态。
+
+| 方法 | 路径（前缀 `/admin/credentials`） | 操作 |
+|---|---|---|
+| GET | 空 | 配置状态及安全元信息 |
+| POST | `/tokens` | `data.identity` 生成随机 Token |
+| POST | `/tokens/{id}/rotate` | 轮换页面 Token |
+| DELETE | `/tokens/{id}` | 撤销页面 Token |
+| PUT / DELETE | `/ssh/{id}` | 新增/更新/删除页面 SSH 凭据 |
+| PUT | `/hosts/{host_id}/ssh` | `data.credential_id` 更新已有主机关联 |
+| POST | `/hosts/{host_id}/ssh/test` | 仅认证连接，不执行命令 |
+| PUT | `/model` | 保存 DeepSeek 配置，不请求模型 |
+| POST | `/model/test` | 显式短请求测试 |
+
+写入 body 为 `{"revision":"64位版本摘要","data":{...}}`，DELETE 也携带 body。
+SSH data：username、method=password/private_key、password 或 private_key（上传内容）、known_hosts。
+缺省敏感字段表示保留；不接受服务器 key_filename 路径，私钥和 known_hosts 各最多 128 KiB。
+凭据 ID 为小写字母开头，含小写字母/数字/下划线/连字符，最长 63 字符；不支持带口令私钥。
+模型 data：key_action=keep/replace/clear、api_key、base_url、model、timeout（0~300 秒）、
+max_retries（0~10）、max_tokens（1~131072）。replace 必须提供新密钥；clear 覆盖部署来源。
+Base URL 只允许无用户信息、查询串、片段的 HTTP(S)。模型供应商仍只有 DeepSeek。
+401 未鉴权、403 非管理员、409 revision/运行操作/审批/凭据引用冲突、422 输入无效或部署只读、
+500 持久化失败并回滚、503 配置不可读；模型显式连接测试失败 502。

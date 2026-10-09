@@ -22,11 +22,13 @@ commands:
     summary: 查看内存使用明细
     template: "free -m"
     params: {}
+    enabled: true
 
   disk:
     summary: 查看磁盘占用和文件系统类型
     template: "df -hT"
     params: {}
+    enabled: true
 
   top_processes:
     summary: 按 CPU 占用排序列出进程
@@ -39,6 +41,7 @@ commands:
         max: 50
         description: 返回行数（1-50）
 
+    enabled: true
   service_status:
     summary: 查看 systemd 服务状态
     template: "systemctl status --no-pager -l {service}"
@@ -48,6 +51,7 @@ commands:
         pattern: "^[A-Za-z0-9_.:@-]{1,128}$"
         description: 服务名，如 nginx / mysql
 
+    enabled: true
   service_logs:
     summary: 查看服务最近日志
     template: "journalctl -u {service} --no-pager -n {lines}"
@@ -62,3 +66,4 @@ commands:
         min: 1
         max: 200
         description: 返回行数（1-200）
+    enabled: true

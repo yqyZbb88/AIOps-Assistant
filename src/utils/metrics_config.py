@@ -5,7 +5,7 @@ import logging
 import math
 import re
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from src.interfaces.metric import (
     MetricDefinition,
@@ -14,7 +14,7 @@ from src.interfaces.metric import (
     MetricsConfig,
 )
 from src.metrics.catalog import METRIC_BY_ID, METRIC_CATALOG
-from src.utils.config_loader import ConfigError, ROOT_DIR, interpolate
+from src.utils.config_loader import ConfigError, ROOT_DIR, parse_yaml
 
 logger = logging.getLogger("aiops_assistant.metrics_config")
 
@@ -138,7 +138,7 @@ def parse_metrics_config(text: str, *, path: str = "metrics.yaml") -> MetricsCon
     except ImportError as exc:  # pragma: no cover - core dependency missing path
         raise ConfigError("缺少指标配置依赖 pyyaml，请先安装：pip install pyyaml") from exc
     try:
-        data = yaml.safe_load(interpolate(text)) or {}
+        data = parse_yaml(text) or {}
     except Exception as exc:
         raise ConfigError(f"指标配置解析失败（{path}）: {exc}") from exc
     if not isinstance(data, dict):

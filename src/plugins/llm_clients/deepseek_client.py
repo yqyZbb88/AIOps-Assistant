@@ -15,6 +15,9 @@ class DeepseekLLMClient(LLMClient):
     name = "deepseek"
     description = "DeepSeek 文本补全（复用根目录 init.py 的 init_chat_model 模型）"
 
+    def __init__(self, *, model_config=None):
+        self.model_config = model_config
+
     def complete(self, prompt: str, *, system: str | None = None) -> str:
         if not (prompt or "").strip():
             raise LLMError("prompt 为空")
@@ -34,7 +37,7 @@ class DeepseekLLMClient(LLMClient):
         messages.append(HumanMessage(content=content))
 
         try:
-            model = get_model()
+            model = get_model(self.model_config) if self.model_config is not None else get_model()
         except ModelLoadError as exc:
             raise LLMError(str(exc)) from exc
 

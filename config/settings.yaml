@@ -72,15 +72,16 @@ logging:
   inspection_backup_count: 3
 
 auth:
-  enabled: true             # true 且没有有效 tokens 时拒绝启动
+  enabled: false            # true 且没有有效 tokens 时拒绝启动
 
   # 密钥到身份的 JSON 映射，启用鉴权时必须配置。
   tokens: '${OPS_API_TOKENS:-}'
 
   # owner：仅触发人可审批；approvers_only：列出的审批人可审批所有人的申请。
   approval_mode: approvers_only
-  approver_identities: '${OPS_APPROVER_IDENTITIES:-["admin"]}'
+  approver_identities: '["admin", "alice"]'
 
+  # 最高权限管理员；只控制系统管理 API，不因关闭普通鉴权而绕过。
   admin_identities: '${OPS_ADMIN_IDENTITIES:-["admin"]}'
 
   # 只有该身份可以调用 POST /alert；留空会放宽为任何有效身份并产生 WARNING。

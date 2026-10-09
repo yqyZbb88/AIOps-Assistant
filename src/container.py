@@ -52,9 +52,13 @@ class Container:
         *,
         config_texts: dict[str, str] | None = None,
         shared_from: "Container | None" = None,
+        credential_specs: dict | None = None,
+        model_config: dict | None = None,
     ) -> None:
         self.settings: Settings = settings or load_settings()
         self._config_texts = config_texts or {}
+        self._credential_specs = credential_specs or {}
+        self._model_config = model_config
         self._aiops_assistant: OpsAgent | None = None
         self._monitor: MonitorSource | None = None
         self._metrics_config: MetricsConfig | None = None
@@ -116,7 +120,7 @@ class Container:
             from src.utils.hosts_config import load_host_registry, parse_hosts
 
             self._hosts = (
-                parse_hosts(self._config_texts["hosts"])
+                parse_hosts(self._config_texts["hosts"], credential_overrides=self._credential_specs)
                 if "hosts" in self._config_texts
                 else load_host_registry(
                     self.settings.hosts.file or None,
@@ -158,7 +162,7 @@ class Container:
                     provider, ", ".join(registry.llm_names()) or "(空)",
                 )
                 return None
-            self._llm = cls()
+            self._llm = cls(model_config=self._model_config) if provider == "deepseek" and self._model_config is not None else cls()
         return self._llm
 
     def executors(self) -> dict[str, ActionExecutor]:
@@ -502,6 +506,11 @@ class Container:
             return legacy
         return resolved
 
+    def _model_for_snapshot(self):
+        """模型与 Container 绑定同一配置版本，聊天和告警分析共享缓存。"""
+        from src.utils.model_loader import get_model
+        return get_model(self._model_config)
+
     def _assistant_factory(self):
         """聊天 Agent 工厂（惰性）：首次聊天被 ChatService 调用才构建。"""
         from src.agent.assistant import OpsAssistant  # 触发 langchain/init.py 惰性导入
@@ -517,7 +526,9 @@ class Container:
             approvals = ApprovalStore(
                 maxlen=policy.max_pending, ttl_seconds=policy.timeout_seconds
             )
+        extra = {"model_factory": self._model_for_snapshot} if self._model_config is not None else {}
         return OpsAssistant(
+            **extra,
             monitor=self.monitor(),
             metrics_config=self.metrics_config(),
             inspection_store=self.inspection_store(),
@@ -607,7 +618,9 @@ class Container:
                 target_summary=f"{host.host_id} ({host.name})",
                 config_fingerprint=fingerprint,
             )
+        extra = {"model_factory": self._model_for_snapshot} if self._model_config is not None else {}
         return OpsAssistant(
+            **extra,
             monitor=self.monitor(),
             metrics_config=self.metrics_config(),
             inspection_store=self.inspection_store(),

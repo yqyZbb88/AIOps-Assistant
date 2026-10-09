@@ -115,3 +115,32 @@ def test_layout_has_responsive_host_detail_right_aligned_choices_and_admin_tabs(
     assert "if (refreshDraft) renderAdmin()" in js
     assert "input.disabled = !state.hostVerification" in js
     assert 'id="admin-host-ssh-check"' in page
+
+def test_console_asset_urls_change_when_content_changes_even_if_mtime_does_not(tmp_path, monkeypatch):
+    import os
+    import re
+    from fastapi import FastAPI
+    from src.api import status
+
+    (tmp_path / "console.html").write_text(
+        '<link href="/console-assets/console.css"><script src="/console-assets/console.js"></script>',
+        encoding="utf-8",
+    )
+    css = tmp_path / "console.css"
+    css.write_text(".x{color:red}", encoding="utf-8")
+    (tmp_path / "console.js").write_text("console.log(1)", encoding="utf-8")
+    monkeypatch.setattr(status, "_WEB", tmp_path)
+    app = FastAPI()
+    app.include_router(status.router)
+    with TestClient(app) as client:
+        before = client.get("/console")
+        old_url = re.search(r'href="([^"]+)"', before.text).group(1)
+        old_stat = css.stat()
+        css.write_text(".x{color:tan}", encoding="utf-8")
+        os.utime(css, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+        after = client.get("/console")
+        new_url = re.search(r'href="([^"]+)"', after.text).group(1)
+        assert old_url != new_url
+        assert client.get(new_url).text == ".x{color:tan}"
+        assert client.get(new_url).headers["cache-control"] == "no-cache"
+        assert before.headers["cache-control"] == after.headers["cache-control"] == "no-store"

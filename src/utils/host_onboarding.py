@@ -63,7 +63,7 @@ class HostOnboarding:
             )
             response.raise_for_status()
             payload = response.json()
-            if payload.get("status") != "success":
+            if not isinstance(payload, Mapping) or payload.get("status") != "success":
                 raise ValueError("target response")
             raw = payload["data"]["activeTargets"]
             if not isinstance(raw, list):
@@ -114,10 +114,10 @@ class HostOnboarding:
             "hosts": [
                 {"host_id": host.host_id, "name": host.name,
                  "job": host.monitor.job, "instance": host.monitor.instance}
-                for host in parse_hosts(manager._dump(docs["hosts"])).all()
+                for host in manager.host_registry(docs).all()
             ],
             "targets": targets,
-            "credentials": sorted(str(key) for key in (docs["hosts"].get("credentials") or {})),
+            "credentials": sorted(str(key) for key in manager.credential_specs(docs)),
             "diagnostics": sorted(
                 str(key) for key, value in diagnostics.items()
                 if docs["diagnostics"].get("enabled", True) and value.get("enabled", True)
@@ -153,7 +153,7 @@ class HostOnboarding:
             target = matches[0]
             address, health, eligible = target["address"], target["health"], target["ssh_eligible"]
             new_target = False
-        registry = parse_hosts(manager._dump(docs["hosts"]))
+        registry = manager.host_registry(docs)
         if any(h.monitor.instance == instance for h in registry.all()):
             old = registry.get(host_id)
             if old is None or old.monitor.job != job or old.monitor.instance != instance:
@@ -174,9 +174,9 @@ class HostOnboarding:
         if cred:
             if not eligible:
                 raise AdminConfigError("该代理抓取目标不能安全推导 SSH 主机")
-            if cred not in (docs["hosts"].get("credentials") or {}):
+            if cred not in manager.credential_specs(docs):
                 raise AdminConfigError("SSH 凭据 ID 不存在")
-            credential = (docs["hosts"].get("credentials") or {})[cred]
+            credential = manager.credential_specs(docs)[cred]
             if not credential.get("password") and not credential.get("key_filename"):
                 raise AdminConfigError("所选 SSH 凭据没有显式密码或密钥")
             try:
@@ -225,7 +225,7 @@ class HostOnboarding:
             raise AdminConfigConflict("配置已变化，请刷新后重试")
         docs = manager._load_docs()
         item, new_target, health = self._prepare(draft, docs)
-        if parse_hosts(manager._dump(docs["hosts"])).get(item["id"]) is None:
+        if manager.host_registry(docs).get(item["id"]) is None:
             docs["hosts"]["hosts"].append(item)
             manager._validate(docs)
         return {
@@ -243,8 +243,9 @@ class HostOnboarding:
         item, _new, _health = self._prepare(draft, docs)
         if "ssh" not in item:
             raise AdminConfigError("请先选择可用的 SSH 凭据")
-        docs["hosts"]["hosts"].append(item)
-        target = parse_hosts(manager._dump(docs["hosts"])).require(item["id"]).ssh
+        if manager.host_registry(docs).get(item["id"]) is None:
+            docs["hosts"]["hosts"].append(item)
+        target = manager.host_registry(docs).require(item["id"]).ssh
         try:
             import paramiko
             client = _new_client(paramiko, target)
@@ -253,6 +254,9 @@ class HostOnboarding:
                     hostname=target.host, port=target.port, username=target.username,
                     key_filename=target.key_filename, password=target.password,
                     timeout=target.connect_timeout,
+                    banner_timeout=target.connect_timeout,
+                    auth_timeout=target.connect_timeout,
+                    channel_timeout=target.connect_timeout,
                     allow_agent=False,
                     look_for_keys=False,
                 )
@@ -263,6 +267,27 @@ class HostOnboarding:
         ticket = secrets.token_urlsafe(32)
         self._verified[ticket] = (self._fingerprint(revision, item), time.monotonic() + 300)
         return {"verified": True, "verification_id": ticket, "host_id": preview["host_id"]}
+
+    def check_registered_ssh(self, host_id: str) -> dict[str, Any]:
+        """显式检查已登记主机的当前连接；不运行命令或修改授权。"""
+        host = self.manager.runtime.current.container.hosts().get(host_id)
+        if host is None or not host.enabled or host.ssh is None:
+            raise AdminConfigError("主机未启用或尚未关联 SSH 凭据")
+        target = host.ssh
+        try:
+            import paramiko
+            client = _new_client(paramiko, target)
+            try:
+                client.connect(hostname=target.host, port=target.port, username=target.username,
+                               key_filename=target.key_filename, password=target.password,
+                               timeout=target.connect_timeout, banner_timeout=target.connect_timeout,
+                               auth_timeout=target.connect_timeout, channel_timeout=target.connect_timeout,
+                               allow_agent=False, look_for_keys=False)
+            finally:
+                client.close()
+        except Exception:
+            raise AdminConfigError("SSH 主机密钥或认证检查失败；未执行远程命令") from None
+        return {"verified": True, "host_id": host_id, "detail": "SSH 认证正常；未执行命令或更改授权"}
 
     def _target_text(self, address: str) -> str:
         import yaml
@@ -284,7 +309,7 @@ class HostOnboarding:
         manager = self.manager
         with manager._lock:
             docs = manager._load_docs()
-            registered = parse_hosts(manager._dump(docs["hosts"])).get(
+            registered = manager.host_registry(docs).get(
                 str(draft.get("host_id") or "").strip()
             )
             if registered is not None:

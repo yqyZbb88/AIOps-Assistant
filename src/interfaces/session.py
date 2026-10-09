@@ -35,7 +35,7 @@ STATUS_ABANDONED = "abandoned"
 DEFAULT_MESSAGE_WINDOW = 20
 
 #: 会话名（客户端自定义别名）的格式。
-#: **限制长度是硬要求**：不限的话有人会拿一兆字节当名字塞进唯一索引（长度按码点算）。
+#: **限制长度是硬要求**：限制外部输入造成的存储和展示开销；长度按 Unicode 码点计算。
 #: 名字**不等于** session_id——id 仍是服务端生成的 32 位随机值。
 SESSION_NAME_MAX_CHARS = 64
 
@@ -325,6 +325,14 @@ class SessionStore(ABC):
 
         与 history() 的区别正是「给用户看」与「给模型看」的区别。
         """
+
+    def has_pending_approval(self, session_id: str, approval_id: str) -> bool:
+        """确认已保存的待审批轮次，不受展示/模型窗口限制。
+
+        未提供此校验的存储实现拒绝审批消费，不能把无法核对当作已保存。
+        内置 SQLite 与内存存储均实现此方法；不改变 HTTP 或数据库 schema。
+        """
+        raise SessionError("会话存储不支持校验已保存的待审批轮次")
 
     @abstractmethod
     def append_turn(

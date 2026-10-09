@@ -16,7 +16,7 @@ from src.interfaces.host import (
     MonitorTarget,
 )
 from src.plugins.common.endpoint import DEFAULT_CONNECT_TIMEOUT
-from src.utils.config_loader import ROOT_DIR, interpolate
+from src.utils.config_loader import ROOT_DIR, parse_yaml
 
 HOST_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 LEGACY_HOST_ID = "legacy-default"
@@ -53,6 +53,15 @@ def _text(value: Any, what: str, *, required: bool = True) -> str:
     return result
 
 
+def _password(value: Any, what: str) -> str | None:
+    # 密码是认证凭据，首尾空白和 Unicode 字符都必须原样传给 SSH。
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HostConfigError(f"{what} 必须是字符串")
+    return value or None
+
+
 def _positive_int(value: Any, what: str, default: int) -> int:
     if isinstance(value, bool):
         raise HostConfigError(f"{what} 必须是正整数")
@@ -76,13 +85,13 @@ def _string_set(value: Any, what: str) -> frozenset[str]:
     return frozenset(result)
 
 
-def parse_hosts(text: str) -> HostRegistry:
+def parse_hosts(text: str, *, credential_overrides: Mapping[str, Mapping[str, Any]] | None = None) -> HostRegistry:
     try:
         import yaml
     except ImportError as exc:  # pragma: no cover
         raise HostConfigError("缺少 pyyaml，无法解析 hosts.yaml") from exc
     try:
-        raw = yaml.safe_load(interpolate(text)) or {}
+        raw = parse_yaml(text) or {}
     except Exception as exc:
         raise HostConfigError(f"hosts.yaml 解析失败: {exc}") from exc
     data = _mapping(raw, "hosts.yaml 顶层")
@@ -90,7 +99,9 @@ def parse_hosts(text: str) -> HostRegistry:
     if data.get("version") != 1:
         raise HostConfigError("hosts.yaml version 当前只支持 1")
 
-    raw_credentials = _mapping(data.get("credentials") or {}, "credentials")
+    # 页面凭据在解析后覆盖；其明文不得再次做环境变量插值或写回 YAML。
+    raw_credentials = {**_mapping(data.get("credentials") or {}, "credentials"),
+                       **(credential_overrides or {})}
     credentials: dict[str, Mapping[str, Any]] = {}
     for key, value in raw_credentials.items():
         cred_id = _text(key, "credential id")
@@ -143,7 +154,7 @@ def parse_hosts(text: str) -> HostRegistry:
                 host=_text(ssh.get("host"), f"hosts[{index}].ssh.host"),
                 port=_positive_int(ssh.get("port"), f"hosts[{index}].ssh.port", 22),
                 username=_text(credential.get("username", "root"), f"credentials.{credential_ref}.username"),
-                password=_text(credential.get("password", ""), f"credentials.{credential_ref}.password", required=False) or None,
+                password=_password(credential.get("password"), f"credentials.{credential_ref}.password"),
                 key_filename=_text(credential.get("key_filename", ""), f"credentials.{credential_ref}.key_filename", required=False) or None,
                 known_hosts=_text(credential.get("known_hosts", ""), f"credentials.{credential_ref}.known_hosts", required=False) or None,
                 connect_timeout=_positive_int(ssh.get("connect_timeout"), f"hosts[{index}].ssh.connect_timeout", DEFAULT_CONNECT_TIMEOUT),

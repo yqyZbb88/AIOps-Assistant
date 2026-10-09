@@ -21,7 +21,7 @@ Agent 的写命令（config/agent_actions.yaml）在执行前会中断，等人�
 **但最后一条别当成安全边界**：它是个可由管理员热应用的配置开关，
 不是代码保证；而 `config/actions.yaml` 那条规则路径同样会执行写命令。
 **绑到 0.0.0.0 之前请务必打开 auth**，否则任何能访问端口的人都可能批准写命令。
-详见 README「安全说明」。
+详见 docs/auth.md。
 """
 from __future__ import annotations
 

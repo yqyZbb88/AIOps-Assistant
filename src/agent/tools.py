@@ -19,7 +19,8 @@
   在模型调用时执行——HumanInTheLoopMiddleware 先中断，人工批准后才真正执行；
 - 顶层 import langchain 无碍：本模块只会在构建 Agent（assistant 工厂）时被导入。
 
-扩展方式：监控工具 = build_tools 里写 @tool 追加；只读诊断 = config/diagnostics.yaml 加命令；
+扩展方式：新指标加入 src/metrics/catalog.py 并配置 metrics.yaml 的 chat 范围，
+build_tools 据目录动态生成工具；只读诊断 = config/diagnostics.yaml 加命令；
 Agent 写命令 = config/agent_actions.yaml 加命令。管理页保存可热应用；页面外手改 YAML
 须由管理员显式应用。未决审批会阻止配置切换，环境变量密钥变更仍需重启进程。
 """
@@ -29,7 +30,6 @@ import logging
 from dataclasses import dataclass
 from typing import Iterable, Literal
 
-from langchain.tools import tool
 from langchain_core.tools import StructuredTool
 from pydantic import Field, create_model
 

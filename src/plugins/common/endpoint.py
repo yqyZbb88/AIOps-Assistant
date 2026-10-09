@@ -15,12 +15,8 @@ from typing import Any, Mapping
 
 #: 未声明 `connect_timeout` 时的默认秒数。**本模块是它的唯一定义处。**
 #:
-#: 这个值同时被 ssh.py 用在**连接**（`connect`）和**每条命令**（`exec_command`）上，
-#: 所以它是「连不上」与「命令跑不完」共用的上限。
-#:
-#: 取值与 config/diagnostics.yaml、config/agent_actions.yaml 里显式写着的 8 一致：
-#: 同一套 SSH 层不该有两个「没写就用多少」的答案（这里曾是 15，而诊断与 Agent 写命令
-#: 的配置模型默认 8——两条路径对同一个概念各留一个数，正是漂移的起点）。
+#: SSH TCP、banner、认证、通道打开及命令输出等待使用同一秒数；
+#: 各阶段分别计时，整次调用可能超过此值。默认值与发布模板保持一致。
 DEFAULT_CONNECT_TIMEOUT: int = 8
 
 #: 一条规则/命令 params 里表示「连接」的键名（其余键视为语义参数，进命令模板校验）
@@ -62,8 +58,7 @@ def endpoint_from_params(
     与语义参数混在一起；多主机路径必须改由登记主机的 SSH 目标提供。
 
     `connect_timeout` 未声明时用 `default_timeout`（= `DEFAULT_CONNECT_TIMEOUT`）。
-    显式写 0 也落到默认值上——0 在 paramiko 里是「永不超时」，而一个不设上限的
-    远程写命令会把整个处置流程挂死，那正是「没写」时不该发生的事。
+    旧规则显式写 0 也落到默认值；新 YAML 目录和主机配置要求正整数。
     """
     host = params.get("host")
     if not host:

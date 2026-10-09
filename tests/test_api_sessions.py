@@ -559,3 +559,54 @@ def test_delete_session_keeps_session_if_approval_lookup_fails(client, monkeypat
     response = client.delete(f"/sessions/{session_id}")
     assert response.status_code == 503
     assert client.get(f"/sessions/{session_id}").status_code == 200
+
+
+def test_rename_deleted_between_update_and_read_returns_404(client, monkeypatch):
+    session_id = _seed(client.store)
+    original_rename = client.store.rename
+
+    def rename_then_delete(*args, **kwargs):
+        changed = original_rename(*args, **kwargs)
+        client.store.delete(session_id)
+        return changed
+
+    monkeypatch.setattr(client.store, "rename", rename_then_delete)
+    response = client.patch(f"/sessions/{session_id}", json={"name": "updated"})
+    assert response.status_code == 404
+
+
+
+def test_chat_returns_503_when_pending_turn_cannot_be_saved(client, monkeypatch):
+    from src.interfaces.session import SessionError, TurnResult
+    session_id = _seed(client.store)
+    cancelled = []
+    class PendingAssistant:
+        def reply(self, message):
+            return "test"
+        def reply_turn(self, message, *, history=()):
+            return TurnResult(text="pending", status="pending_approval", approval_id="test-pending")
+        def cancel_pending(self, approval_id):
+            cancelled.append(approval_id)
+            return True
+    client.app.state.agent.chat_service._assistant = PendingAssistant()
+    def fail(*args, **kwargs):
+        raise SessionError("synthetic storage error")
+    monkeypatch.setattr(client.store, "append_turn", fail)
+    response = client.post("/chat", json={"session_id": session_id, "message": "test"})
+    assert response.status_code == 503
+    assert cancelled == ["test-pending"]
+
+
+def test_chat_deleted_during_model_call_returns_404_without_orphan_messages(client):
+    from src.interfaces.session import TurnResult
+    session_id = _seed(client.store)
+    class DeleteDuringCall:
+        def reply(self, message):
+            return "test"
+        def reply_turn(self, message, *, history=()):
+            client.store.delete(session_id)
+            return TurnResult(text="late reply")
+    client.app.state.agent.chat_service._assistant = DeleteDuringCall()
+    response = client.post("/chat", json={"session_id": session_id, "message": "test"})
+    assert response.status_code == 404
+    assert client.store.messages(session_id) == []

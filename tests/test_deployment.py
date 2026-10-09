@@ -166,3 +166,74 @@ def test_up_waits_for_health_and_does_not_reset_demo(monkeypatch):
     monkeypatch.setattr("sys.argv", ["dev_stack.py", "up", "--wait-timeout", "240"])
     assert dev_stack.main() == 0
     assert calls == [("up", "--build", "--wait", "--wait-timeout", "240")]
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_interrupted_initialization_missing_credentials_does_not_rotate(tmp_path, legacy):
+    runtime = tmp_path / "runtime"
+    if legacy:
+        initialize(runtime)
+        (runtime / "deployment.json").unlink()
+        (runtime / "secrets/assistant.json").unlink()
+        for name in deployment.CONFIG_FILES:
+            (runtime / "config" / name).unlink()
+    missing_templates = tmp_path / "missing-templates"
+    with pytest.raises(deployment.DeploymentError, match="缺少初始化配置"):
+        deployment.initialize(runtime, templates=missing_templates, legacy_config=missing_templates, environment={})
+    (runtime / "compose.env").unlink()
+    with pytest.raises(deployment.DeploymentError, match="丢失"):
+        initialize(runtime)
+    assert not (runtime / "compose.env").exists()
+
+
+def test_interrupted_initialization_retries_with_same_credentials(tmp_path):
+    runtime = tmp_path / "runtime"
+    missing = tmp_path / "missing-templates"
+    with pytest.raises(deployment.DeploymentError, match="缺少初始化配置"):
+        deployment.initialize(runtime, templates=missing, legacy_config=missing, environment={})
+    original = (runtime / "compose.env").read_bytes()
+    assert initialize(runtime) == "bundled"
+    assert (runtime / "compose.env").read_bytes() == original
+    assert json.loads((runtime / "deployment.json").read_text())["initialized"] is True
+
+
+def test_pre_checkpoint_interrupted_initialization_does_not_rotate(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "deployment.json").write_text(json.dumps({"version": 1, "config_source": "bundled"}))
+    (runtime / "config").mkdir()
+    (runtime / "config/settings.yaml").write_text("app: {}\n")
+    with pytest.raises(deployment.DeploymentError, match="丢失"):
+        initialize(runtime)
+    assert not (runtime / "compose.env").exists()
+
+
+def test_fresh_initialization_allows_precreated_compose_mounts(tmp_path):
+    runtime = tmp_path / "runtime"
+    for name in ("config", "secrets", "assistant-data", "assistant-logs"):
+        (runtime / name).mkdir(parents=True)
+    assert initialize(runtime) == "bundled"
+    assert (runtime / "compose.env").is_file()
+
+
+
+def test_failed_precredential_validation_can_retry_with_empty_mounts(tmp_path):
+    runtime = tmp_path / "runtime"
+    (runtime / "config").mkdir(parents=True)
+    missing = tmp_path / "missing"
+    with pytest.raises(deployment.DeploymentError, match="单行"):
+        deployment.initialize(runtime, templates=missing, legacy_config=missing,
+                              environment={"DEEPSEEK_API_KEY": "synthetic\ninvalid"})
+    assert not (runtime / "compose.env").exists()
+    assert initialize(runtime) == "bundled"
+
+
+def test_initialization_preserves_page_credentials_and_assets(tmp_path):
+    initialize(tmp_path)
+    directory = tmp_path / "assistant-data" / "admin-credentials"
+    (directory / "assets" / "fixture").mkdir(parents=True)
+    (directory / "state.json").write_text("page-managed-state", encoding="utf-8")
+    (directory / "assets" / "fixture" / "private_key").write_text("isolated-test-key", encoding="utf-8")
+    initialize(tmp_path)
+    assert (directory / "state.json").read_text() == "page-managed-state"
+    assert (directory / "assets" / "fixture" / "private_key").read_text() == "isolated-test-key"

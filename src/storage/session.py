@@ -33,6 +33,7 @@ from src.interfaces.session import (
     WINDOW_STATUSES,
     ChatMessage,
     SessionError,
+    SessionNotFoundError,
     SessionInfo,
     SessionStore,
 )
@@ -282,6 +283,13 @@ class SqliteSessionStore(SessionStore):
         )
         return [_row_to_message(r) for r in rows]
 
+    def has_pending_approval(self, session_id: str, approval_id: str) -> bool:
+        return bool(self._query(
+            "SELECT 1 FROM messages WHERE session_id = ? AND approval_id = ? "
+            "AND status = ? AND role = ? LIMIT 1",
+            (session_id, approval_id, STATUS_PENDING_APPROVAL, ROLE_ASSISTANT),
+        ))
+
     def append_turn(
         self,
         session_id: str,
@@ -299,6 +307,9 @@ class SqliteSessionStore(SessionStore):
         """
         stamp = to_iso(self._clock())
         with self._tx() as conn:
+            # 必须与消息写入共用事务；独立 get 无法阻止并发删除留下孤立消息。
+            if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is None:
+                raise SessionNotFoundError(f"会话不存在: {session_id}")
             conn.execute(
                 _INSERT_MESSAGE,
                 (session_id, session_id, ROLE_USER, redact_text(user_content), status, approval_id, stamp),
@@ -575,6 +586,11 @@ class InMemorySessionStore(SessionStore):
     def messages(self, session_id: str, *, limit: int = 100) -> list[ChatMessage]:
         return self._messages.get(session_id, [])[-max(1, int(limit)):]
 
+    def has_pending_approval(self, session_id: str, approval_id: str) -> bool:
+        return any(message.status == STATUS_PENDING_APPROVAL
+                   and message.role == ROLE_ASSISTANT and message.approval_id == approval_id
+                   for message in self._messages.get(session_id, ()))
+
     def append_turn(
         self,
         session_id: str,
@@ -585,7 +601,7 @@ class InMemorySessionStore(SessionStore):
         approval_id: str | None = None,
     ) -> None:
         if session_id not in self._sessions:
-            raise SessionError(f"会话不存在: {session_id}")
+            raise SessionNotFoundError(f"会话不存在: {session_id}")
         stamp = to_iso(self._clock())
         msgs = self._messages.setdefault(session_id, [])
         # 两行共享 status / approval_id（理由见 SQLite 版 append_turn 的 docstring）

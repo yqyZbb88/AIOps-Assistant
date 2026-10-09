@@ -24,11 +24,11 @@
 | 待审批对象与 LangGraph checkpoint | 当前进程内 Agent | 有未决审批时拒绝应用配置；重启后不能续跑旧申请 |
 | 巡检线程与最近轮次状态 | 单个 `InspectionScheduler` | 调度器不重建；每轮从当前快照取 checker 和设置 |
 | YAML 与 managed Prometheus 目标文件 | 本机磁盘 | revision 是文件内容指纹，不包括环境变量值；写锁仅限本进程 |
-| SSH 检查票据 | `HostOnboarding` 内存 | 5 分钟有效，绑定配置 revision 与主机/目标/凭据；重启即失效 |
+| SSH 检查票据 | 当前进程唯一 `HostOnboarding` | 首次并发请求共用同一票据库；5 分钟有效，绑定配置 revision 与目标；重启失效 |
 | 浏览器草稿与偏好 | `src/web/console.js` | 管理草稿按整份配置保存；偏好不是服务端授权依据 |
 
 `src/utils/runtime.py` 用 ContextVar 固定一次 HTTP 请求的快照。普通业务写请求先计入
-active operation，配置应用遇到进行中的写请求或未决审批返回 409；管理员写请求由
+active operation，配置应用遇到进行中的写请求、未决审批或无法核对审批状态时返回 409；管理员写请求由
 `AdminConfigManager` 的锁和 `begin_apply` 协调。此机制不是跨进程锁，也不保证外部进程
 不改 YAML。不要通过多开 worker 来“提高并发”而绕过这些前提。
 
@@ -36,11 +36,12 @@ active operation，配置应用遇到进行中的写请求或未决审批返回 
 
 1. 监控：`hosts.yaml` 显式登记 `host_id → job/instance`，`metrics.yaml` 定义固定指标；
    `src/plugins/monitors/` 查询 Prometheus，`src/core/hosts.py` 组合主机状态。
-   API 不接受自由 PromQL。趋势接口只给统计摘要，不给逐点时序。
+   API 不接受自由 PromQL。趋势接口保留统计摘要，同时返回带标签的逐点时序与断点。
 2. 聊天：会话固定 `host_id` 与所有者；`src/core/chat.py` 调用关键词兜底或 Agent。
    Agent 工具只从受控指标、告警、巡检与该主机获授权的诊断目录构建。诊断目标和
    SSH 凭据由服务端注册表解析，不由模型或浏览器提交。
-3. 告警：`POST /alert` 要求 webhook 身份；`src/core/rule_engine.py` 按告警名与唯一
+3. 告警：普通鉴权开启且设置 `alert_identity` 时，`POST /alert` 要求该 webhook 身份；
+   `src/core/rule_engine.py` 按告警名与唯一
    主机目标匹配。全局自动处置、单规则自动执行、命令启用及主机授权共同决定能否
    走规则写路径；它不经过 Agent 人工审批，必须保留幂等和审计。
 4. Agent 写操作：模型只能申请已启用、已授权的命令；审批冻结主机、动作及参数。
@@ -51,7 +52,7 @@ active operation，配置应用遇到进行中的写请求或未决审批返回 
 
 ## 配置热更新与主机登记
 
-`src/utils/admin_config.py` 是结构化配置入口，不允许浏览器编辑原始 YAML 或连接凭据。
+`src/utils/admin_config.py` 是结构化配置入口，不允许浏览器编辑原始 YAML；凭据由独立管理员接口管理。
 `GET /admin/config` 返回安全投影、磁盘 revision 和 active revision；`PUT` 需要完整草稿
 及所见 revision。服务端以原文件为底稿合并可编辑字段，验证跨文件引用，先构建候选
 运行快照，再备份有变化的文件、逐文件原子替换，最后切换快照。写入异常时尝试回滚。
@@ -92,7 +93,21 @@ Assistant 就绪后启动 Alertmanager。启动命令通过 `--wait` 等待常�
 
 `deploy/config/` 仅作为新部署模板，`.runtime/config/` 为实际可写配置。旧部署首次迁移
 从根 `config/` 复制，后续不会覆盖管理员变更。`compose.env` 是凭据来源，
-`deployment.json` 记录初始化来源与完成状态；丢失已初始化的源凭据会拒绝生成新密钥。
+`deployment.json` 记录来源、凭据写入检查点与完成状态；凭据写入后即使初始化中断，
+丢失源凭据也会拒绝生成新密钥。
 Linux 初始化使用文件锁和原子替换；不同实例必须使用不同运行目录、项目名和端口。
 服务只挂载各自需要的凭据目录，SQLite 与监控数据卷独立于容器生命周期。
 详见 [部署与升级](deployment.md)。
+
+## 页面凭据与模型生命周期
+
+`admin_credentials.py` 在持久化数据目录下单独保存 `admin-credentials/state.json`，
+私钥和 known_hosts 保存在内容版本资源目录。目录 0700、文件 0600（POSIX），原子替换，
+与普通配置共用锁、revision 和运行快照；单 worker 边界不变。敏感内容不写 YAML、
+普通配置备份或数据库历史。旧快照引用的资源文件保留，凭据资产需随部署数据加密保管和备份。
+部署凭据不被页面覆盖；页面 Token 与基线映射合并，角色仍由原管理员/审批人名单决定。
+SSH 和模型页面配置优先，未配置沿用部署来源；明确清除模型密钥不会回退。
+
+`init.py.build_model(config)` 是唯一惰性工厂，`model_loader.get_model(config)` 按配置摘要缓存。
+同一版本聊天与告警分析共享实例；旧请求保留原 Container/模型，保存本身不构建或调用模型。
+显式测试连接单独使用短超时和小输出长度。查询、配置校验、关键词问答无需真实模型。

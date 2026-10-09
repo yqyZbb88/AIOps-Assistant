@@ -286,6 +286,8 @@ def test_ssh_check_never_runs_command_and_diagnostics_need_verified_ticket(tmp_p
         assert checked.status_code == 200, checked.text
         assert checked.json()["verified"] is True
         assert len(calls) == 2 and calls[0]["allow_agent"] is False
+        for field in ("banner_timeout", "auth_timeout", "channel_timeout"):
+            assert calls[0][field] == calls[0]["timeout"]
         added = client.post("/admin/hosts/add", headers=_auth("admin-token"),
                             json={"revision": revision, "draft": {
                                 **draft, "verification_id": checked.json()["verification_id"]
@@ -329,7 +331,7 @@ def test_busy_operations_and_pending_approvals_reject_hot_update(tmp_path, monke
             app.state.runtime.reset_request(token)
             app.state.runtime.end_operation()
         assert busy.status_code == 409
-        monkeypatch.setattr(app.state.runtime.current.agent, "pending_approvals", lambda: [object()])
+        monkeypatch.setattr(app.state.runtime.current.agent, "pending_approvals", lambda **kwargs: [object()])
         pending = client.put("/admin/config", headers=_auth("admin-token"),
                              json={"revision": before["revision"], "config": draft})
         assert pending.status_code == 409
@@ -552,3 +554,81 @@ def test_admin_batch_write_rolls_back_files_when_replace_fails(tmp_path, monkeyp
         raise AssertionError("预期写入失败")
 
     assert {name: path.read_text(encoding="utf-8") for name, path in paths.items()} == originals
+
+
+
+def test_nonobject_prometheus_targets_returns_unavailable(tmp_path, monkeypatch):
+    import pytest
+    from src.utils.host_onboarding import HostOnboarding
+    from types import SimpleNamespace
+    _, settings, manager = _setup(tmp_path)
+    manager.runtime = SimpleNamespace(current=SimpleNamespace(settings=settings))
+    class Response:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return []
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: Response())
+    with pytest.raises(AdminConfigUnavailable, match="目标查询失败"):
+        HostOnboarding(manager)._targets()
+
+
+
+def test_hot_apply_refuses_when_pending_approval_state_cannot_be_verified():
+    import pytest
+    from src.core.agent import OpsAgent
+    from src.core.chat import ChatService
+    from src.utils.runtime import RuntimeManager, RuntimeSnapshot, RuntimeBusyError
+    from tests.conftest import FakeMonitor
+    class BrokenApprovalAssistant:
+        def reply(self, message):
+            return "test"
+        def pending_approvals(self):
+            raise RuntimeError("synthetic queue unavailable")
+        def decide(self, *args, **kwargs):
+            raise AssertionError("not called")
+    monitor = FakeMonitor()
+    chat = ChatService(monitor)
+    chat._assistant = BrokenApprovalAssistant()
+    runtime = RuntimeManager(RuntimeSnapshot("test-revision", Settings(), None, OpsAgent(monitor, chat_service=chat)))
+    with pytest.raises(RuntimeBusyError):
+        runtime.begin_apply()
+    assert runtime._applying is False
+
+
+
+def test_concurrent_first_onboarding_requests_share_ticket_store(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from types import SimpleNamespace
+    from src.api.admin import _onboarding
+    from src.utils import host_onboarding
+    _, _, manager = _setup(tmp_path)
+    first_entered, release, second_started, duplicate = Event(), Event(), Event(), Event()
+    instances = []
+    class SlowOnboarding:
+        def __init__(self, manager):
+            self._verified = {}
+            instances.append(self)
+            if len(instances) == 1:
+                first_entered.set()
+                assert release.wait(2)
+            else:
+                duplicate.set()
+    monkeypatch.setattr(host_onboarding, "HostOnboarding", SlowOnboarding)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(admin_config=manager)))
+    def second():
+        second_started.set()
+        return _onboarding(request)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(_onboarding, request)
+        assert first_entered.wait(2)
+        other = pool.submit(second)
+        assert second_started.wait(2)
+        duplicate.wait(0.1)
+        release.set()
+        left, right = first.result(2), other.result(2)
+    assert left is right
+    left._verified["synthetic-ticket"] = ("test-revision", 0)
+    assert _onboarding(request)._verified["synthetic-ticket"] == ("test-revision", 0)
+    assert len(instances) == 1

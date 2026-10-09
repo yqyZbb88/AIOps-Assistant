@@ -222,3 +222,14 @@ hosts:
     assert result["host_id"] is None
     assert result["host_resolution"] == "unknown"
     assert "禁止按原始 instance 查询" in fakellm.calls[0][0]
+
+
+def test_unresolved_host_context_uses_lines_without_querying_raw_instance():
+    class NoQueryMonitor(FakeMonitor):
+        def query_metric_trend(self, *args, **kwargs):
+            raise AssertionError("unregistered target must not be queried")
+
+    context = build_alert_context(make_alert("A"), NoQueryMonitor(), strict_target=True)
+    assert "[实例趋势]" in context.splitlines()
+    assert "\\n" not in context
+    assert "禁止按原始 instance 查询" in context

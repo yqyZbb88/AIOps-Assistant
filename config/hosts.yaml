@@ -2,25 +2,62 @@
 version: 1
 
 credentials:
-  ops-default:
-    username: "${SSH_USER:-ops}"
-    key_filename: "${SSH_KEY_FILENAME:-}"
+  acceptance:
+    username: root
+    # key_filename: "${SSH_KEY_FILENAME:-}"
     password: "${SSH_PASSWORD:-}"
-    known_hosts: "${SSH_KNOWN_HOSTS:-}"
+    known_hosts: ".runtime/acceptance_known_hosts"
 
 hosts:
-  - id: local-node
-    name: 本地演示主机
+  - id: node-a
+    name: 验收节点 A
     enabled: true
     prometheus:
       job: node
-      instance: "${PROMETHEUS_INSTANCE:-localhost:9100}"
+      instance: 192.168.20.131:9100
     ssh:
-      host: "${SSH_HOST:-localhost}"
+      host: 192.168.20.131
       port: 22
-      credential_ref: ops-default
+      credential_ref: acceptance
       connect_timeout: 8
     allow:
-      diagnostics: [memory, disk, top_processes, service_status, service_logs]
+      diagnostics:
+        - disk
+        - memory
+        - service_logs
+        - service_status
+        - top_processes
+      rule_actions: []
+      agent_actions:
+        - cleanup_disk
+        - restart_service
+  - id: node-b
+    name: 验收节点 B
+    enabled: true
+    prometheus:
+      job: node
+      instance: 192.168.20.132:9100
+    ssh:
+      host: 192.168.20.132
+      port: 22
+      credential_ref: acceptance
+      connect_timeout: 8
+    allow:
+      diagnostics:
+        - disk
+        - memory
+        - service_logs
+        - service_status
+        - top_processes
+      rule_actions: []
+      agent_actions: []
+  - id: local
+    name: yqyZ
+    enabled: true
+    prometheus:
+      job: windows_exporter
+      instance: localhost:9182
+    allow:
+      diagnostics: []
       rule_actions: []
       agent_actions: []

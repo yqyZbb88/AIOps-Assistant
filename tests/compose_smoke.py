@@ -59,12 +59,27 @@ def main():
     eventually(lambda: any(t["health"] == "up" and t["labels"].get("job") == "node-exporter"
                           for t in request("/api/v1/targets", base="http://prometheus:9090")["data"]["activeTargets"]))
 
+    from src.metrics.catalog import METRIC_CATALOG
+    # Real transport acceptance; individual collectors may be absent inside the container.
+    for metric in METRIC_CATALOG:
+        base = "/hosts/local-node/metrics/" + metric.metric_id
+        instant = request(base, token=admin)
+        trend = request(base + "/trend?minutes=15", token=admin)
+        assert instant["state"] in {"ok", "no_data", "not_applicable"}
+        assert trend["state"] in {"ok", "no_data", "not_applicable"}
+        assert len(trend["trend"]["series"]) <= 32
+        assert all(len(curve["values"]) <= 241 for curve in trend["trend"]["series"])
+
     state_file = Path("/app/data/deployment-smoke.json")
     config_file = Path("/app/config/hosts.yaml")
     if "--verify" in sys.argv:
         state = json.loads(state_file.read_text())
         assert hashlib.sha256(secret.read_bytes()).hexdigest() == state["credential_hash"]
         assert hashlib.sha256(config_file.read_bytes()).hexdigest() == state["config_hash"]
+        assert request("/hosts", token=state["managed_token"])
+        credentials = request("/admin/credentials", token=admin)
+        assert any(item["id"] == state["ssh_id"] for item in credentials["ssh"])
+        assert credentials["model"]["managed"] and credentials["model"]["model"] == "deepseek-chat"
         detail = request("/sessions/" + state["session_id"], token=admin)
         assert detail["session_id"] == state["session_id"]
         assert detail["messages"], "Chat history did not survive recreation"
@@ -84,14 +99,28 @@ def main():
         "startsAt": now.isoformat(), "endsAt": (now + timedelta(minutes=2)).isoformat(),
     }])
     eventually(lambda: name in json.dumps(request("/alerts/history?host_id=local-node", token=admin)))
+    # Persistent page configuration; generated SSH key stays local, model key remains empty.
+    from io import StringIO
+    import paramiko
+    credentials = request("/admin/credentials", token=admin)
+    created = request("/admin/credentials/tokens", token=admin, data={"revision": credentials["revision"], "data": {"identity": "smoke-user"}})
+    key = paramiko.RSAKey.generate(1024)
+    private = StringIO(); key.write_private_key(private)
+    ssh_id = "smoke-key"
+    ssh_saved = request("/admin/credentials/ssh/" + ssh_id, token=admin, method="PUT", data={"revision": created["revision"], "data": {
+        "username": "smoke", "method": "private_key", "private_key": private.getvalue(), "known_hosts": "fixture ssh-rsa " + key.get_base64()}})
+    request("/admin/credentials/model", token=admin, method="PUT", data={"revision": ssh_saved["revision"], "data": {
+        "key_action": "clear", "model": "deepseek-chat", "base_url": "https://example.invalid", "timeout": 10, "max_retries": 0, "max_tokens": 32}})
     with config_file.open("a", encoding="utf-8") as handle:
         handle.write("\n# Isolated deployment smoke: preserve this edit across recreation.\n")
     state_file.write_text(json.dumps({
         "session_id": session["session_id"],
+        "managed_token": created["token_once"], "ssh_id": ssh_id,
         "credential_hash": hashlib.sha256(secret.read_bytes()).hexdigest(),
         "config_hash": hashlib.sha256(config_file.read_bytes()).hexdigest(),
     }))
-    print("PASS: readiness, auth, monitoring, keyword chat, Alertmanager delivery and persistence fixture")
+    state_file.chmod(0o600)
+    print("PASS: readiness, auth, all 17 instant/trend queries, managed credentials, chat and webhook fixture")
 
 
 if __name__ == "__main__":

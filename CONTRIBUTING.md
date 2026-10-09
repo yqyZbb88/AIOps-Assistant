@@ -1,5 +1,7 @@
 # AIOps-Assistant 贡献与维护约定
 
+项目文档总入口见 [文档导航](docs/README.md)，首次运行教程见 [快速入门](docs/quickstart.md)。
+
 本文是代码、配置、注释、文档和测试的共同维护基线。任何功能修改都必须把它们视为
 同一项交付，不能只改实现后把说明留给以后。
 
@@ -21,20 +23,25 @@
 
 | 变更类型 | 必须检查的说明 |
 |---|---|
-| API 路径、请求、响应或状态码 | README、`docs/api.md`、`docs/guide.md`、路由 docstring、API 测试 |
-| 鉴权、身份、审批范围或公开端点 | `docs/auth.md`、README 安全说明、依赖/路由注释 |
+| API 路径、请求、响应或状态码 | `docs/api.md`、路由 docstring、API 测试；用户操作改变时同步使用指南 |
+| 鉴权、身份、审批范围或公开端点 | `docs/auth.md`、README 能力边界、依赖/路由注释 |
 | 控制台视图、状态或管理员操作 | `docs/console.md`、前端注释、DOM 安全与交互测试 |
 | `settings.yaml` 字段 | 配置文件注释、`docs/configuration.md`、配置加载测试 |
 | 指标或 `metrics.yaml` | 配置文件、配置指南、指标目录注释、监控/巡检/工具测试 |
 | SSH 命令目录或参数 schema | 对应 YAML 注释、配置指南、安全测试和命令目录测试 |
 | 数据库表、列、状态或清理策略 | `docs/database.md`、DDL/迁移注释、schema 与 Store 测试 |
-| 值班诊断、故障状态或恢复步骤 | `docs/troubleshooting.md`、`docs/guide.md`、相关测试 |
-| 组件装配、插件或降级路径 | README 架构、模块 docstring、Container 测试 |
+| 值班诊断、故障状态或恢复步骤 | `docs/troubleshooting.md`、相关测试；使用指南只链接到完整排障步骤 |
+| 组件装配、插件或降级路径 | `docs/architecture.md`、模块 docstring、Container 测试 |
 | 运行快照、配置事务或主机登记 | `docs/architecture.md`、`docs/console.md`、并发/回滚/跨主机测试 |
 | 镜像、Compose、部署脚本或模板 | `docs/deployment.md`、README、使用/鉴权/配置指南、部署测试与 CI |
 | 版本号或发布说明 | 更新程序版本、README 和对应测试 |
 
 测试数量会变化，交付信息以实际 `pytest` 输出为准。
+对外专题统一在 `docs/`，主题完整说明按 [文档职责](docs/README.md#文档职责) 指定位置维护，
+其它页面链接引用，避免复制字段表、接口表和备份/排障步骤。
+通用技术交接在 [项目整体交接](docs/handover.md) 维护，只提供当前行为摘要与专题入口。
+本地审查、涉及环境或人员的私有交接和规划材料放入被忽略的 `docs/_local/`，
+不得混入公开使用说明或镜像。
 
 ## 3. 注释原则
 
@@ -75,7 +82,7 @@ api → core → interfaces
 
 ## 6. 配置约定
 
-- 密钥来自 `.env`、部署专用凭据文件或运行环境；YAML 只保留占位符。
+- 密钥来自 `.env`、部署专用凭据文件、管理员独立凭据存储或运行环境；YAML 只保留占位符。
 - `deploy/config/` 是新 Compose 部署的独立安全模板，不能从开发机运行配置直接打包。
 - 初始化必须幂等，保留既有配置、Token 和数据；升级兼容性需有回归测试。
 - 新增字段必须有类型、默认值、范围、失败语义和生效时机。
@@ -92,6 +99,7 @@ api → core → interfaces
 - 迁移只能向前追加，并保留所有旧版本迁移分支。
 - 新库结构必须与逐版本迁移后的结构一致。
 - 删除父子数据必须在同一事务中显式完成，不依赖未统一启用的 SQLite 外键。
+- 会话存储实现须提供 `has_pending_approval`，确认完整会话中已保存的审批轮次；不能受展示窗口截断。未实现时拒绝审批消费。
 - 时间戳统一使用 `src/utils/time.py` 的 UTC 秒级格式。
 
 ## 8. 测试与提交前检查
@@ -99,27 +107,9 @@ api → core → interfaces
 完整命令与人工验收步骤见 [本机测试与验收](docs/testing.md)。
 
 测试不得访问真实 DeepSeek、Prometheus、SSH 或公共网络，也不得写入真实数据库和日志。
-运行离线测试前，应在测试进程环境中设置 `LANGSMITH_TRACING=false`、
-`LANGCHAIN_TRACING=false` 和 `LANGCHAIN_TRACING_V2=false`。
-
-```bash
-LANGSMITH_TRACING=false LANGCHAIN_TRACING=false LANGCHAIN_TRACING_V2=false \
-  conda run -n langchain1.2 python -m pytest -q
-node --check src/web/console.js
-node --test tests/console_ui.test.cjs
-python -m compileall -q src tests init.py
-git diff --check
-```
-
-PowerShell 中先用 `$env:LANGSMITH_TRACING='false'` 等语句设置上述三个环境变量，
-再运行 `conda run`。
-
-根据改动再运行针对性检查，例如：
-
-```bash
-conda run -n langchain1.2 python -m pytest -q tests/test_no_langchain_import.py
-rg -n "src\.agent" src/core
-```
+执行 [离线自动化测试](docs/testing.md#2-离线自动化测试) 中与你的 shell 对应的完整命令，
+包括合成测试身份、关闭追踪、pytest、Node、编译、依赖与差异门禁。
+需要定向检查时使用该页提供的组合，不在此维护另一份可能漏项的命令清单。
 
 提交前还要确认：
 

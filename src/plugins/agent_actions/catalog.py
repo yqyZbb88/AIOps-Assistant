@@ -24,7 +24,7 @@ from src.interfaces.command import CommandSpec, ParamSpec
 from src.plugins.common import cmddef as _cmddef
 from src.plugins.common.cmddef import CmdDef, CmdDefError, ParamError
 from src.plugins.common.endpoint import DEFAULT_CONNECT_TIMEOUT
-from src.utils.config_loader import ROOT_DIR, interpolate
+from src.utils.config_loader import ROOT_DIR, parse_yaml
 
 logger = logging.getLogger("aiops_assistant.agent_actions.catalog")
 
@@ -200,7 +200,7 @@ def parse_agent_actions(text: str) -> AgentActionsConfig:
         import yaml
     except ImportError as exc:  # pragma: no cover - 核心依赖缺失路径
         raise AgentActionsConfigError("缺少可选依赖 pyyaml，无法解析 Agent 写命令目录") from exc
-    data = yaml.safe_load(interpolate(text)) or {}
+    data = parse_yaml(text) or {}
     return build_config(data)
 
 

@@ -118,7 +118,11 @@ def create_app(
         }
         if manager.revision() != initial_revision:
             raise RuntimeError("启动期间配置文件发生变化，请重新启动")
-    container = Container(settings=settings_, config_texts=config_texts)
+    credential_state = manager.credential_store.read()
+    settings_ = manager.credential_store.settings(settings_, credential_state)
+    container = Container(settings=settings_, config_texts=config_texts,
+                          credential_specs=manager.credential_store.ssh_specs(credential_state),
+                          model_config=manager.credential_store.model_config(credential_state) if credential_state["model"] is not None else None)
     configure_secrets(auth_tokens=settings_.auth.tokens)
     configure_logging(
         level=settings_.logging.level,
@@ -151,6 +155,8 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_request: Request, exc: RequestValidationError):
+        if _request.url.path.startswith("/admin/credentials"):
+            return RedactingJSONResponse(status_code=422, content={"detail": "凭据请求格式无效，请检查字段类型"})
         return RedactingJSONResponse(
             status_code=422,
             content={"detail": jsonable_encoder(exc.errors())},

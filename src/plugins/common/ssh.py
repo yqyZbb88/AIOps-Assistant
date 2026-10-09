@@ -35,10 +35,18 @@ class SshCommandResult:
 
 def _new_client(paramiko, endpoint: SshEndpoint):
     client = paramiko.SSHClient()
-    client.load_system_host_keys()
-    if endpoint.known_hosts:
-        client.load_host_keys(endpoint.known_hosts)
-    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    try:
+        client.load_system_host_keys()
+        if endpoint.known_hosts:
+            client.load_host_keys(endpoint.known_hosts)
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    except Exception:
+        # 初始化失败时调用方拿不到 client，必须在此释放并保留原始错误。
+        try:
+            client.close()
+        except Exception:
+            pass
+        raise
     return client
 
 
@@ -113,6 +121,9 @@ def exec_command(
             key_filename=endpoint.key_filename,
             password=endpoint.password or None,
             timeout=endpoint.connect_timeout,
+            banner_timeout=endpoint.connect_timeout,
+            auth_timeout=endpoint.connect_timeout,
+            channel_timeout=endpoint.connect_timeout,
             allow_agent=endpoint.key_filename is None,
             look_for_keys=endpoint.key_filename is None,
         )

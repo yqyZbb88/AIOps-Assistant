@@ -353,3 +353,22 @@ def test_approvals_routes_registered():
     paths = {r.path for r in app.routes}
     assert "/approvals" in paths
     assert "/approvals/{approval_id}" in paths
+
+
+
+def test_approval_waits_for_published_turn_then_can_resume(client, tmp_path):
+    from src.interfaces.session import STATUS_PENDING_APPROVAL
+    from src.storage.db import open_database
+    from src.storage.session import SqliteSessionStore
+    store = SqliteSessionStore(open_database(tmp_path / "sessions.db"))
+    client.app.state.agent.chat_service._sessions = store
+    session = store.create()
+    client.fake._pending = [PendingApproval("abc123", "test-time", session_id=session.session_id)]
+    response = client.post("/approvals/abc123", json={"action": "approve"})
+    assert response.status_code == 503
+    assert client.fake.decisions == []
+    store.append_turn(session.session_id, user_content="test-write", assistant_content="test-pending",
+                      status=STATUS_PENDING_APPROVAL, approval_id="abc123")
+    response = client.post("/approvals/abc123", json={"action": "approve"})
+    assert response.status_code == 200
+    assert len(client.fake.decisions) == 1

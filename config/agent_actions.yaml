@@ -32,8 +32,10 @@ commands:
         pattern: "^[A-Za-z0-9_.:@-]{1,128}$"
         description: 服务名，如 nginx / mysql
 
+    enabled: true
   cleanup_disk:
     summary: 执行目标主机上的磁盘清理脚本
     template: "cd /opt/ops && bash cleanup_disk.sh"
     sudo: false
     params: {}
+    enabled: true

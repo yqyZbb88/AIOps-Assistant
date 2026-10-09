@@ -5,7 +5,7 @@ rules.yaml 的规则只引用目录 key 并提供语义参数；executor 按 key
 
 - 文件缺失 / enabled=false / 结构或校验失败 → 返回 None（自动处置关闭，服务照常）；
 - 命令级解析委托 common/cmddef（allow_sudo=True：写命令允许管理员声明 sudo）；
-- 密码等连接凭据**不在本文件**：由 rules.yaml 每条规则 params 提供（.env 占位）。
+- 密码等连接凭据不在本文件：目标取自主机注册表；旧规则 params 连接字段仅用于兼容。
 
 本模块顶层不 import langchain / paramiko / yaml（yaml 惰性导入）。
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.plugins.common.cmddef import CmdDef, CmdDefError, parse_command_def
-from src.utils.config_loader import ROOT_DIR, interpolate
+from src.utils.config_loader import ROOT_DIR, parse_yaml
 
 logger = logging.getLogger("aiops_assistant.actions.catalog")
 
@@ -69,7 +69,7 @@ def parse_actions(text: str) -> ActionsConfig:
         import yaml
     except ImportError as exc:  # pragma: no cover - 核心依赖缺失路径
         raise ActionsConfigError("缺少可选依赖 pyyaml，无法解析动作目录") from exc
-    data = yaml.safe_load(interpolate(text)) or {}
+    data = parse_yaml(text) or {}
     return build_actions(data)
 
 

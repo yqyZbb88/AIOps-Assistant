@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import threading
 import time
 from datetime import datetime, timezone
@@ -21,7 +20,7 @@ from src.interfaces.inspection import (
 )
 from src.interfaces.host import Host, HostRegistry
 from src.interfaces.metric import MetricDefinition, MetricRuntimeConfig, MetricsConfig
-from src.interfaces.monitor import MonitorSource
+from src.interfaces.monitor import MetricNotApplicable, MonitorSource
 from src.plugins.monitors.prometheus_catalog import METRIC_CATALOG
 from src.utils.config_loader import InspectionSettings
 from src.utils.logger import get_inspection_logger
@@ -111,7 +110,8 @@ def format_inspection_summary(result: InspectionResult) -> str:
 
         samples = item.get("samples") or []
         if not samples:
-            lines.append(f"  {metric_id} [{item.get('level')}]: 无数据")
+            message = item.get("detail", "无数据")
+            lines.append(f"  {metric_id} [{item.get('level')}]: {message}")
             continue
         for sample in samples:
             label = _sample_label(sample)
@@ -271,6 +271,10 @@ class InspectionChecker:
                 samples = self.monitor.query_metric(
                     definition.metric_id, target=self.host.monitor
                 )
+        except MetricNotApplicable as exc:
+            base.update({"level": LEVEL_NORMAL, "state": "not_applicable", "detail": str(exc)})
+            snapshot[definition.metric_id] = base
+            return LEVEL_NORMAL
         except Exception as exc:  # noqa: BLE001 - 单项失败继续后续指标
             message = f"{definition.metric_id} 查询失败: {exc}"
             errors.append(message)
@@ -379,7 +383,10 @@ class InspectionChecker:
 
 
 class MultiHostInspectionChecker:
-    """在主机边界串行巡检；坏节点和轮次预算不影响其它节点。"""
+    """在主机边界串行巡检；预算限制本轮主机数，剩余节点后续轮次续查。
+
+    保留至少一台主机的完整检查；查询预算与整轮时限都不是单查询硬上限。
+    """
 
     def __init__(
         self,

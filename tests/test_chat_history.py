@@ -224,3 +224,150 @@ def test_storage_healthy_reflects_store():
     assert _service(FakeHistoryAssistant(), _UnhealthyStore()).storage_healthy is False
     # 未启用存储不算故障：那时没有历史可丢，报 degraded 只会误导运维
     assert _service(FakeHistoryAssistant(), None).storage_healthy is True
+
+
+
+@pytest.mark.parametrize("sqlite", [False, True])
+def test_deleted_session_during_pending_turn_cancels_approval(tmp_path, sqlite):
+    from src.storage.db import open_database
+    from src.storage.session import SqliteSessionStore
+    store = SqliteSessionStore(open_database(tmp_path / "sessions.db")) if sqlite else InMemorySessionStore()
+    session = store.create()
+    class LateApproval(FakeHistoryAssistant):
+        cancelled = []
+        def reply_turn(self, message, *, history=()):
+            store.delete(session.session_id)
+            return TurnResult(text="approval", status="pending_approval", approval_id="late-test-approval")
+        def cancel_pending(self, approval_id):
+            self.cancelled.append(approval_id)
+            return True
+    assistant = LateApproval()
+    with pytest.raises(SessionError):
+        _service(assistant, store).reply_turn("test", session_id=session.session_id)
+    assert assistant.cancelled == ["late-test-approval"]
+    assert store.messages(session.session_id) == []
+
+
+def test_pending_history_failure_cancels_approval_but_normal_replies_still_degrade(monkeypatch):
+    store = InMemorySessionStore()
+    session = store.create()
+    class PendingAssistant(FakeHistoryAssistant):
+        cancelled = []
+        def cancel_pending(self, approval_id):
+            self.cancelled.append(approval_id)
+            return True
+    assistant = PendingAssistant([TurnResult(text="approval", status="pending_approval", approval_id="test-approval")])
+    def fail(*args, **kwargs):
+        raise SessionError("synthetic storage failure")
+    monkeypatch.setattr(store, "append_turn", fail)
+    with pytest.raises(SessionError):
+        _service(assistant, store).reply_turn("test", session_id=session.session_id)
+    assert assistant.cancelled == ["test-approval"]
+
+
+
+def test_orphan_approval_is_not_resumed_when_cancellation_is_unavailable():
+    from src.interfaces.approval import ApprovalError, PendingApproval
+    store = InMemorySessionStore()
+    session = store.create()
+    store.delete(session.session_id)
+    class OrphanAssistant(FakeHistoryAssistant):
+        def pending_approvals(self):
+            return [PendingApproval(approval_id="test-orphan", created_at="test-time", actions=(), session_id=session.session_id)]
+        def decide(self, *args, **kwargs):
+            raise AssertionError("deleted session must not resume")
+    service = _service(OrphanAssistant(), store)
+    service._ensure_assistant()
+    with pytest.raises(ApprovalError, match="会话不存在"):
+        service.decide("test-orphan", action="approve")
+
+
+@pytest.mark.parametrize("failure", ["storage_error", "missing_turn"])
+def test_unsaved_chained_approval_is_cancelled(failure, monkeypatch):
+    from src.interfaces.approval import ApprovalOutcome, ApprovalOutcomeUnknownError, PendingApproval
+    store = InMemorySessionStore()
+    session = store.create()
+    store.append_turn(session.session_id, user_content="test-first", assistant_content="test-pending",
+                      status=STATUS_PENDING_APPROVAL, approval_id="test-first")
+    class ChainedAssistant(FakeHistoryAssistant):
+        cancelled = []
+        def pending_approvals(self):
+            return [PendingApproval(approval_id="test-first", created_at="test-time", actions=(), session_id=session.session_id)]
+        def decide(self, approval_id, *, action, reason=""):
+            return ApprovalOutcome(approval_id, action, "pending_approval", "test-next", next_approval_id="test-next")
+        def cancel_pending(self, approval_id):
+            self.cancelled.append(approval_id)
+            return True
+    assistant = ChainedAssistant()
+    service = _service(assistant, store)
+    service._ensure_assistant()
+    if failure == "storage_error":
+        def fail(*args, **kwargs):
+            raise SessionError("synthetic storage failure")
+        monkeypatch.setattr(store, "update_pending", fail)
+    else:
+        monkeypatch.setattr(store, "update_pending", lambda *args, **kwargs: False)
+    with pytest.raises(ApprovalOutcomeUnknownError, match="consumed"):
+        service.decide("test-first", action="approve")
+    assert assistant.cancelled == ["test-next"]
+
+
+@pytest.mark.parametrize("sqlite", [False, True])
+@pytest.mark.parametrize("published", [False, True])
+def test_approval_requires_saved_turn_even_outside_message_window(tmp_path, sqlite, published):
+    from src.interfaces.approval import ApprovalOutcome, ApprovalUnavailableError, PendingApproval
+    from src.storage.db import open_database
+    from src.storage.session import SqliteSessionStore
+    store = SqliteSessionStore(open_database(tmp_path / "sessions.db")) if sqlite else InMemorySessionStore()
+    session = store.create()
+    if published:
+        store.append_turn(session.session_id, user_content="test-write", assistant_content="test-pending",
+                          status=STATUS_PENDING_APPROVAL, approval_id="test-unpublished")
+        for i in range(60):
+            store.append_turn(session.session_id, user_content=f"test-q-{i}", assistant_content="test-final")
+    class PublishingAssistant(FakeHistoryAssistant):
+        calls = []
+        def pending_approvals(self):
+            return [PendingApproval(approval_id="test-unpublished", created_at="test-time", actions=(), session_id=session.session_id)]
+        def decide(self, approval_id, *, action, reason=""):
+            self.calls.append(approval_id)
+            return ApprovalOutcome(approval_id, action, "completed", "test-complete")
+    assistant = PublishingAssistant()
+    service = _service(assistant, store)
+    service._ensure_assistant()
+    if published:
+        service.decide("test-unpublished", action="approve")
+        assert assistant.calls == ["test-unpublished"]
+    else:
+        with pytest.raises(ApprovalUnavailableError, match="保存"):
+            service.decide("test-unpublished", action="approve")
+        assert assistant.calls == []
+
+
+
+def test_failed_cancellation_cannot_make_unsaved_chain_executable(monkeypatch):
+    from src.interfaces.approval import ApprovalOutcome, ApprovalOutcomeUnknownError, ApprovalUnavailableError, PendingApproval
+    store = InMemorySessionStore()
+    session = store.create()
+    store.append_turn(session.session_id, user_content="test-first", assistant_content="test-pending",
+                      status=STATUS_PENDING_APPROVAL, approval_id="test-first")
+    class UncancellableChain(FakeHistoryAssistant):
+        pending_id = "test-first"
+        calls = []
+        def pending_approvals(self):
+            return [PendingApproval(self.pending_id, "test-time", session_id=session.session_id)]
+        def decide(self, approval_id, *, action, reason=""):
+            self.calls.append(approval_id)
+            self.pending_id = "test-next"
+            return ApprovalOutcome(approval_id, action, "pending_approval", "test-next", next_approval_id="test-next")
+        def cancel_pending(self, approval_id):
+            return False
+    assistant = UncancellableChain()
+    service = _service(assistant, store)
+    service._ensure_assistant()
+    monkeypatch.setattr(store, "update_pending", lambda *args, **kwargs: False)
+    with pytest.raises(ApprovalOutcomeUnknownError):
+        service.decide("test-first", action="approve")
+    with pytest.raises(ApprovalUnavailableError, match="保存"):
+        service.decide("test-next", action="approve")
+    assert assistant.calls == ["test-first"]

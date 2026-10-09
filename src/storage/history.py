@@ -241,26 +241,22 @@ class SqliteHistoryStore(HistoryStore):
                     "(SELECT rowid FROM remediation_claims ORDER BY claimed_at DESC, rowid DESC LIMIT ?)",
                     (self.max_rows,),
                 ).rowcount
-                # approval_decisions：所有者是会话存储，过期却必须在这里做，两条原因：
-                #   ① 会话侧的清理只在**新建会话**时被触发，频率低、且只按 session_id 删——
-                #      session_id 为空的行，以及会话被 DELETE 掉的孤儿行，它永远扫不到；
-                #   ② 本表的用途是「重启后判 unknown」（见 record_decision），一条记录只要
-                #      还可能有 pending 轮在等它就不能删，按时间兜底是不会误删的判据。
-                # 会话消失时会顺手删掉它的决策记录（storage/session.py），那是**快路径**，
-                # 这里是**兜底**——两条都留着，别把其中一条当冗余删掉。
-                #
-                # 保留期即 history_ttl_hours（默认 7 天）。它要远大于「决策提交 → 进程重启」
-                # 那个毫秒级窗口；**调小它之前先想清楚**：它同时是这个判据的寿命，
-                # 调到比会话 TTL（默认 72h）还小，就可能出现「pending 轮还在、判据先没了」，
-                # 那一轮会被错判成 abandoned（= 命令一定没执行），方向恰是 fail-safe 的反面。
-                # 用 rowid 而非 id：本表没有 id 列（与 remediation_claims 同理）。
+                # pending 轮仍依赖决策记录判断是否可能执行过，不能按 TTL/容量先删证据。
+                # 对账或正常完成后状态不再是 pending，下次清理恢复原保留策略。
+                # 会话删除也会在自己的事务中删除决策；session_id 为空的记录由这里兜底。
+                protect_pending = (
+                    " AND NOT EXISTS (SELECT 1 FROM messages "
+                    "WHERE messages.approval_id = approval_decisions.approval_id "
+                    "AND messages.status = 'pending_approval')"
+                )
                 removed += conn.execute(
-                    "DELETE FROM approval_decisions WHERE decided_at < ?", (cutoff,)
+                    "DELETE FROM approval_decisions WHERE decided_at < ?" + protect_pending,
+                    (cutoff,),
                 ).rowcount
                 removed += conn.execute(
                     "DELETE FROM approval_decisions WHERE rowid NOT IN "
                     "(SELECT rowid FROM approval_decisions "
-                    "ORDER BY decided_at DESC, rowid DESC LIMIT ?)",
+                    "ORDER BY decided_at DESC, rowid DESC LIMIT ?)" + protect_pending,
                     (self.max_rows,),
                 ).rowcount
                 removed += conn.execute(

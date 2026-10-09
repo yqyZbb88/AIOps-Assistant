@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from src.api.deps import require_auth
 from src.core.agent import OpsAgent
-from src.interfaces.session import SessionNotFoundError
+from src.interfaces.session import SessionError, SessionNotFoundError
 
 logger = logging.getLogger("aiops_assistant.api.chat")
 
@@ -96,6 +96,8 @@ def chat(
         turn = agent.chat_turn(req.message, session_id=req.session_id, user=user)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SessionError as exc:
+        raise HTTPException(status_code=503, detail="待审批请求未能保存，请检查会话存储状态后重新发起") from exc
     logger.info(
         "回复 from=%s session=%s(%s): %s",
         user, turn.session_id, turn.session_name, turn.reply,
