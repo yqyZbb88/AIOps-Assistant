@@ -179,6 +179,8 @@ python scripts/stack.py up
 
 生产镜像只包含运行文件，不包含宿主机凭据、运行数据或测试；测试使用独立 test 构建目标。
 Python 依赖由 requirements-lock.txt 约束，验证命令见 [容器测试与验收](testing.md)。
+依赖用途、测试约束与本地/CI 构建缓存见 [依赖与构建](dependencies.md)。源码更新复用依赖层，
+pip 下载缓存不进入镜像；默认生产镜像仍包含 AI 与 SSH 能力。
 
 ## 页面凭据持久化与 Linux 宿主机监控
 

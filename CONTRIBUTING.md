@@ -121,9 +121,12 @@ api → core → interfaces
 ## 部署验证与依赖
 
 `requirements-runtime.txt` 声明运行依赖，`requirements.txt` 加入测试依赖；
-`requirements-lock.txt` 固定已验证的直接与传递依赖版本，是约束快照，不是带哈希的安装锁。
-CI 与 Docker 构建均使用 `-c requirements-lock.txt`。更新时在 Python 3.13 的干净容器环境
-重新解析依赖、检查 `pip check`，同步快照并运行离线测试和 Compose 冒烟测试。
+`requirements-lock.txt` 固定已验证的运行依赖，`requirements.txt` 同时固定 pytest
+及其新增传递依赖，保持三份依赖文件；这些版本快照不是带哈希的安装锁。测试构建复用运行约束；
+离线回归检查约束与实际依赖闭包、安装版本一致，避免漏锁或遗留已不用的包。
+更新时在 Python 3.13 的干净容器环境重新解析依赖、检查 `pip check`，同步对应快照并运行
+离线测试和 Compose 冒烟测试。构建缓存与各依赖的保留理由见
+[依赖与构建](docs/dependencies.md)。
 
 离线测试不连接真实 SSH 或模型；独立 CI 部署任务只测试临时 Docker 服务，
 验证健康状态、鉴权、告警链路及重建后的会话与配置持久化。该任务需要网络下载镜像，

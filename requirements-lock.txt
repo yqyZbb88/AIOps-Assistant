@@ -1,7 +1,6 @@
 # Python 3.13 Linux 依赖快照；与 requirements-runtime.txt 一起使用。
 PyNaCl==1.6.2
 PyYAML==6.0.3
-Pygments==2.21.0
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1

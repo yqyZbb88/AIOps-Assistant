@@ -9,8 +9,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v4
       - name: Build isolated regression image
-        run: docker build --target test -t aiops-regression:ci .
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: test
+          load: true
+          tags: aiops-regression:ci
+          cache-from: type=gha,scope=regression
+          cache-to: type=gha,scope=regression,mode=max
       - name: Compile container sources and check frontend syntax
         run: |
           docker run --rm --network none --entrypoint python aiops-regression:ci -m compileall -q src scripts tests
@@ -29,8 +37,18 @@ jobs:
       MODEL_API_KEY: ""
     steps:
       - uses: actions/checkout@v4
-      - name: Build and wait for healthy services
-        run: docker compose --env-file .env.example up -d --build --wait --wait-timeout 180
+      - uses: docker/setup-buildx-action@v4
+      - name: Build production image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime
+          load: true
+          tags: aiops-assistant:local
+          cache-from: type=gha,scope=runtime
+          cache-to: type=gha,scope=runtime,mode=max
+      - name: Wait for healthy services using the built image
+        run: docker compose --env-file .env.example up -d --no-build --wait --wait-timeout 180
       - name: Validate explicit legacy migration in stopped isolated stack
         run: |
           docker compose --env-file .env.example down

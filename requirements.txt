@@ -1,3 +1,7 @@
 # 容器回归依赖；仅 Dockerfile 的 test 目标安装，生产镜像使用 requirements-runtime.txt。
 -r requirements-runtime.txt
-pytest>=8.0,<10.0
+# 固定 pytest 及其新增传递依赖；运行依赖仍由 requirements-lock.txt 约束。
+pytest==9.1.1
+iniconfig==2.3.1
+pluggy==1.6.0
+Pygments==2.21.0

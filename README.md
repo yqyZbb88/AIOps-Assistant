@@ -44,6 +44,7 @@ docker compose up -d --build --wait --wait-timeout 180
 | 日常运维 | [使用指南](docs/guide.md) |
 | 理解源码 | [架构说明](docs/architecture.md) |
 | 贡献与验证 | [贡献约定](CONTRIBUTING.md) |
+| 依赖用途与构建提速 | [依赖与构建](docs/dependencies.md) |
 
 旧部署的废弃设置由 init 备份后移除：`auth.enabled`、`alert.trend_step`、
 `app.version` 和 `server` 段。有效 Token、角色和主机授权保持，详见
