@@ -5,6 +5,7 @@
 - 参数里夹带连接字段必须被拒，且**不能触达 SSH**（凭据不可由调用方指定）。
 """
 from __future__ import annotations
+from src.interfaces.host import HostSshTarget
 
 import logging
 
@@ -16,11 +17,6 @@ from src.plugins.agent_actions.source import SshAgentActionSource
 
 SAMPLE = """
 enabled: true
-target:
-  host: 192.168.1.1
-  port: 22
-  username: root
-  password: "secret-in-test"
 output_limit: 40
 commands:
   restart_service:
@@ -39,7 +35,7 @@ commands:
 
 @pytest.fixture
 def source() -> SshAgentActionSource:
-    return SshAgentActionSource(parse_agent_actions(SAMPLE))
+    return SshAgentActionSource(parse_agent_actions(SAMPLE), target=HostSshTarget(host="192.168.1.1", username="ops", password="secret-in-test"))
 
 
 def _stub(monkeypatch, code=0, out="done", err=""):
@@ -188,5 +184,5 @@ def test_constructor_requires_host():
     cfg = parse_agent_actions(SAMPLE.replace("host: 192.168.1.1", 'host: "x"'))
     # 用一份 host 非空但直接传 None 的配置来验证护栏
     with pytest.raises(AgentActionError, match="target.host"):
-        SshAgentActionSource(None)  # type: ignore[arg-type]
-    assert cfg.target.host == "x"  # 有效配置不受影响
+        SshAgentActionSource(None, target=HostSshTarget(host="x"))  # type: ignore[arg-type]
+    assert not hasattr(cfg, "target")

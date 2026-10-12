@@ -103,7 +103,7 @@ ssh -N -L 8000:127.0.0.1:8000 user@server.example
 ## 6. 理解数据放在哪里
 
 首次初始化自动建立 `.runtime/`。Compose 实际配置在 `.runtime/config/`；
-deploy/config/ 是首次部署模板，修改模板不会覆盖已有运行配置。
+deploy/templates/assistant/ 是首次部署模板，修改模板不会覆盖已有运行配置。
 管理员保存配置使用“系统管理”；字段、生效时机和热应用见 [配置指南](configuration.md)。
 
 SQLite、日志、凭据和监控数据都持久化在部署目录或命名卷里。

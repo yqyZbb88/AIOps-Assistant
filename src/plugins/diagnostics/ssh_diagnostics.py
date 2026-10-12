@@ -2,8 +2,7 @@
 
 - 连接/认证/执行复用 src/plugins/common/ssh.py 的 exec_command（paramiko 惰性导入），
   审计走 common/audit.py（与动作执行同通道统一结构）；
-- 目标主机与凭据来自构造时注入的 DiagnosticsConfig（config/diagnostics.yaml 加载，
-  password 为 .env 占位插值），**模型上下文与工具参数里永无凭据**；
+- 目标主机与凭据来自构造时注入的 已登记主机（由容器显式注入），**模型上下文与工具参数里永无凭据**；
 - run() 只接受「命令名 + 语义参数」，参数经 commands.py 全匹配/取值/转义后拼进模板；
 - sudo 恒 False（模板不含 sudo 也不给开 sudo 的口）；每条真实 SSH 尝试都写审计。
 
@@ -41,14 +40,14 @@ class SshDiagnostics(DiagnosticSource):
         self,
         config: DiagnosticsConfig,
         *,
-        target: HostSshTarget | None = None,
+        target: HostSshTarget,
         allowed_commands: frozenset[str] | None = None,
     ) -> None:
         # 构造不读文件：config 由容器/测试注入，便于离线单测
-        if config is None or (target is None and not config.target.host):
+        if config is None or not target.host:
             raise DiagnosticError("诊断配置缺少 target.host，无法构造 SshDiagnostics")
         self.config = config
-        self.target = target or config.target
+        self.target = target
         self.allowed_commands = allowed_commands
         self.output_limit = config.output_limit
 

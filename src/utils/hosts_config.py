@@ -1,4 +1,4 @@
-"""严格加载静态 hosts.yaml，并提供旧单主机兼容注册表。"""
+"""严格加载静态 hosts.yaml；连接目标必须显式登记。"""
 from __future__ import annotations
 
 import os
@@ -19,7 +19,6 @@ from src.plugins.common.endpoint import DEFAULT_CONNECT_TIMEOUT
 from src.utils.config_loader import ROOT_DIR, parse_yaml
 
 HOST_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
-LEGACY_HOST_ID = "legacy-default"
 _TOP_KEYS = {"version", "credentials", "hosts"}
 _CREDENTIAL_KEYS = {"username", "password", "key_filename", "known_hosts"}
 _HOST_KEYS = {"id", "name", "enabled", "prometheus", "ssh", "allow"}
@@ -120,7 +119,7 @@ def parse_hosts(text: str, *, credential_overrides: Mapping[str, Mapping[str, An
         spec = _mapping(value, f"hosts[{index}]")
         _unknown(spec, _HOST_KEYS, f"hosts[{index}]")
         host_id = _text(spec.get("id"), f"hosts[{index}].id")
-        if not HOST_ID_RE.fullmatch(host_id) or host_id == LEGACY_HOST_ID:
+        if not HOST_ID_RE.fullmatch(host_id):
             raise HostConfigError(f"非法或保留的 host id: {host_id!r}")
         if host_id in ids:
             raise HostConfigError(f"重复 host id: {host_id}")
@@ -182,35 +181,13 @@ def parse_hosts(text: str, *, credential_overrides: Mapping[str, Mapping[str, An
     return HostRegistry(tuple(hosts))
 
 
-def legacy_registry(*, instance: str = "localhost:9100") -> HostRegistry:
-    """从既有环境变量合成单主机；只用于未配置 hosts.yaml 的兼容路径。"""
-    endpoint = HostSshTarget(
-        host=os.getenv("SSH_HOST", "localhost").strip() or "localhost",
-        port=_positive_int(os.getenv("SSH_PORT"), "SSH_PORT", 22),
-        username=os.getenv("SSH_USER", "ops").strip() or "ops",
-        password=os.getenv("SSH_PASSWORD") or None,
-        key_filename=os.getenv("SSH_KEY_FILENAME") or None,
-        known_hosts=os.getenv("SSH_KNOWN_HOSTS") or None,
-        connect_timeout=DEFAULT_CONNECT_TIMEOUT,
-    )
-    return HostRegistry((Host(
-        host_id=LEGACY_HOST_ID,
-        name="默认主机",
-        enabled=True,
-        monitor=MonitorTarget(job="node", instance=instance or "localhost:9100"),
-        ssh=endpoint,
-        credential_ref="legacy-environment",
-        legacy=True,
-    ),))
-
-
-def load_host_registry(path: str | Path | None, *, legacy_instance: str) -> HostRegistry:
+def load_host_registry(path: str | Path | None) -> HostRegistry:
     raw = str(path or "").strip() or os.getenv("OPS_HOSTS_FILE", "").strip()
     if not raw:
-        return legacy_registry(instance=legacy_instance)
+        raise HostConfigError("必须配置 hosts.file；旧单主机配置请先运行 migrate-config")
     file_path = Path(raw)
     if not file_path.is_absolute():
         file_path = ROOT_DIR / file_path
     if not file_path.is_file():
-        raise HostConfigError(f"主机清单不存在: {file_path}")
+        raise HostConfigError("主机清单不存在；请检查 hosts.file")
     return parse_hosts(file_path.read_text(encoding="utf-8"))

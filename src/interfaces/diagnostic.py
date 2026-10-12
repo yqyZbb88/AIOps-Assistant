@@ -4,7 +4,7 @@
 规则外问题（服务 failed 但没触发规则、CPU 高但找不到元凶进程、node-exporter 关机但想确认主机状态）。
 
 安全边界（与动作执行互斥）：
-- 凭据只存在于插件构造时注入的 config.target，**模型上下文里永无 host/密码/私钥**；
+- 凭据只存在于插件构造时注入的 主机 SSH 目标，**模型上下文里永无 host/密码/私钥**；
 - 命令 = 配置文件声明的模板 + 已校验语义参数（见 plugins/diagnostics/commands.py），
   模型自由文本永不拼进 shell；
 - 只读：sudo 恒 False，命令模板由人在 config/diagnostics.yaml 声明。

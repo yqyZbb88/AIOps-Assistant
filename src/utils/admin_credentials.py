@@ -98,13 +98,8 @@ class CredentialStore:
 
     @staticmethod
     def model_config(state: dict) -> dict:
-        defaults = {"api_key": os.getenv("DEEPSEEK_API_KEY", ""),
-                    "base_url": os.getenv("DEEPSEEK_BASE_URL", ""),
-                    "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-                    "timeout": os.getenv("DEEPSEEK_TIMEOUT", "30"),
-                    "max_retries": os.getenv("DEEPSEEK_MAX_RETRIES", "2"),
-                    "max_tokens": os.getenv("DEEPSEEK_MAX_TOKENS", "2048")}
-        return defaults if state["model"] is None else dict(state["model"])
+        from src.utils.model_loader import model_config
+        return model_config(state["model"])
 
     @staticmethod
     def settings(settings, state: dict):
@@ -119,32 +114,11 @@ class CredentialStore:
 
 
 def validate_model(data: dict) -> dict:
-    if set(data) - {"api_key", "base_url", "model", "timeout", "max_retries", "max_tokens"}:
-        raise AdminConfigError("模型配置包含未知字段")
-    if not isinstance(data.get("api_key"), str) or len(data["api_key"]) > 8192:
-        raise AdminConfigError("模型密钥格式无效")
-    if not isinstance(data.get("model"), str) or not data["model"].strip() or len(data["model"]) > 128:
-        raise AdminConfigError("模型名称不能为空且最长 128 字符")
-    url = data.get("base_url", "")
-    if not isinstance(url, str) or len(url) > 2048:
-        raise AdminConfigError("模型 Base URL 格式无效")
-    if url:
-        parsed = urlsplit(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise AdminConfigError("模型 Base URL 必须是无凭据的 HTTP(S) 地址")
+    from src.utils.model_loader import model_config
     try:
-        if any(isinstance(data.get(k), bool) for k in ("timeout", "max_retries", "max_tokens")):
-            raise ValueError
-        timeout = float(data["timeout"])
-        retries, tokens = int(data["max_retries"]), int(data["max_tokens"])
-        if str(data["max_retries"]) not in {str(retries), str(float(retries))} or str(data["max_tokens"]) not in {str(tokens), str(float(tokens))}:
-            raise ValueError
-        if not math.isfinite(timeout) or not 0 < timeout <= 300 or not 0 <= retries <= 10 or not 1 <= tokens <= 131072:
-            raise ValueError
-    except (ValueError, TypeError, KeyError):
-        raise AdminConfigError("模型参数无效：超时 0~300 秒、重试 0~10、输出 1~131072") from None
-    return {**data, "model": data["model"].strip(), "base_url": url.rstrip("/"),
-            "timeout": timeout, "max_retries": retries, "max_tokens": tokens}
+        return model_config(data)
+    except ValueError as exc:
+        raise AdminConfigError(str(exc)) from None
 
 
 def validate_ssh(data: dict, existing: dict | None) -> dict:
@@ -291,6 +265,12 @@ class AdminCredentials:
                     else:
                         raise AdminConfigError("密钥操作必须为 keep、replace 或 clear")
                     state["model"] = validate_model({**current, **update})
+                    if state["model"]["api_key"]:
+                        from src.utils.model_loader import model_config
+                        try:
+                            model_config(state["model"], require_complete=True)
+                        except ValueError as exc:
+                            raise AdminConfigError(str(exc)) from None
                     register_secrets(*[state["model"]["api_key"]])
                 elif kind == "host":
                     if set(data) != {"credential_id"}:

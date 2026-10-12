@@ -1,6 +1,6 @@
 # AIOps-Assistant 项目整体交接
 
-整理日期：2026-10-09。适用版本：**0.6.2**，SQLite **schema 7**。
+整理日期：2026-10-11。适用版本：**0.6.2**，SQLite **schema 7**。
 
 本文面向接手开发、部署和日常运维的人，说明项目做什么、关键业务如何运行、代码与数据
 在哪里，以及接手时应核验什么。字段表、完整部署命令和 API 契约分别由对应专题维护。
@@ -88,6 +88,8 @@ Webhook 身份和响应语义见 [鉴权说明](auth.md) 与 [API 参考](api.md
 
 页面外修改运行 YAML 后仍需应用磁盘配置；部署环境密钥、Compose 发布端口、SQLite/日志路径
 等需要重启。单文件替换是原子的，多文件没有跨文件或断电原子性，写锁也不跨进程。
+模型配置整组优先于环境；清除页面密钥不会回退。新部署模型地址和名称为空，
+高级输出长度只发送所选参数。模型保存不访问网络，连接测试由管理员显式触发。
 详见 [架构说明](architecture.md) 与 [配置生效说明](configuration.md#十一字段生效与重启)。
 
 ## 代码导航
@@ -107,7 +109,7 @@ Webhook 身份和响应语义见 [鉴权说明](auth.md) 与 [API 参考](api.md
 | `src/storage/` | SQLite 与内存 Store | schema、事务、历史清理、审批与执行状态 |
 | `src/utils/` | 配置、鉴权、运行快照、登记与安全辅助 | `admin_config.py`、`runtime.py`、`host_onboarding.py` |
 | `src/web/console.html/js/css` | 原生 HTML/CSS/JavaScript 控制台 | Token 生命周期、异步响应归属、DOM 安全与管理草稿 |
-| `init.py` | 模型初始化入口 | 可选依赖加载、模型参数与不可用时降级 |
+| `src/utils/model_loader.py` | 统一通用模型入口 | 配置校验、惰性 ChatOpenAI 工厂、版本缓存、标准工具调用 |
 | `scripts/deployment.py` | Compose 初始化和运行入口 | 凭据检查点、幂等初始化、运行配置来源 |
 | `scripts/stack.py`、`demo_fault.py` | Compose 辅助与容器演示指标 | doctor 范围；演示只写合成指标，不制造真实 CPU 负载 |
 | `deploy/`、`compose.yaml`、`Dockerfile` | 部署模板及组件编排 | 模板与运行配置分离、健康检查、挂载和数据保留 |
@@ -153,17 +155,21 @@ Assistant 业务启动失败。代理和镜像源属于每台主机的 Docker �
 
 | 来源 | 作用与注意点 |
 |---|---|
-| 根 `.env` | Compose 参数与可选模型/SSH 配置，不提供业务身份 |
-| `deploy/config/` | 新 Compose 部署模板，随源码发布；修改模板不覆盖已有部署 |
+| 根 `.env` | Compose 参数与可选模型 配置，不提供业务身份 |
+| `deploy/templates/assistant/` | 新 Compose 部署模板，随源码发布；修改模板不覆盖已有部署 |
 | `.runtime/config/` | Compose 实际运行配置，管理页保存写这里 |
 | `.runtime/compose.env` | 持久化凭据来源及可选环境值；不作为 Compose 的 `--env-file` |
-| `.runtime/deployment.json` | 初始化来源、凭据检查点和完成状态 |
+| `.runtime/deployment.json` | 初始化来源、凭据检查点、完成状态和配置迁移版本 |
 | `.runtime/secrets/`、`.runtime/alertmanager/`、`.runtime/grafana/` | 服务专用派生凭据，分别挂入所需服务 |
-| `.runtime/ssh/` | 私钥和 known_hosts，容器内路径为 `/run/ssh/` |
+| `.runtime/assistant-data/admin-credentials/` | 页面 SSH、Token、模型持久凭据；受限目录 |
+| `deploy/` 下监控组件目录 | Compose 直接挂载的公共组件配置 |
 
 `AIOPS_RUNTIME_DIR` 可改变 `.runtime/` 位置，后续命令必须保持相同值。
-根 `.env` 与进程环境影响 Compose 参数和可选模型/SSH 设置；Compose 的业务身份使用
+根 `.env` 与进程环境影响 Compose 参数和可选模型 设置；Compose 的业务身份使用
 初始化生成的部署凭据与页面管理 Token。凭据通过独立安全渠道交付，不写在本文。
+模板只用于首次初始化；运行 YAML 与页面凭据是持久来源；服务专用文件单向派生。
+手工改派生文件不会反向同步，Grafana 页面改密以其数据库为准。
+旧部署请按 [一次性配置迁移](deployment.md#一次性配置迁移) 执行，禁止直接套模板覆盖。
 
 七份 YAML 分工：`settings.yaml` 管开关和运行限制，`hosts.yaml` 管主机与权限引用，
 `metrics.yaml` 管指标，`rules.yaml` 管自动处置，`actions.yaml` 管规则写命令，
@@ -267,9 +273,9 @@ CI 的 `test` 任务验证依赖、编译与 pytest；`deployment-smoke` 任务�
 
 - 仅保留容器服务运行方式；删除根 config/、直接 Python 服务入口和本机 Token 查询。
   Compose 标准库包装脚本为 scripts/stack.py；演示告警保留并通过 init 容器运行。
-- 已有运行配置优先保留。init 兼容 v1 元数据并升级至 v2，备份后移除废弃配置；
-  原文保存至配置备份。已完成部署缺配置或凭据时拒绝套用默认值，恢复流程见部署专题。
-- SSH、Token、DeepSeek 入口独立持久化并热生效；页面保存不会把内存密钥写回 YAML。
+- 已有运行配置优先保留。旧字段必须停栈后显式 migrate-config；先整体校验和受限备份，
+  失败回滚，中断恢复；初始化不再隐式清理字段。已完成部署缺配置或凭据时拒绝套用默认值，恢复流程见部署专题。
+- SSH、Token、OpenAI 兼容模型 入口独立持久化并热生效；页面保存不会把内存密钥写回 YAML。
   SSH 检查不执行命令，模型保存不调用服务。敏感目录应独立受限备份。
 - 17 项指标分别支持即时与趋势查询，设备隔离；缺采集/样本不足返回 no_data，
   查询失败返回脱敏 502；无 Swap 为不适用。现有目录仅支持 Linux node_exporter，
@@ -356,3 +362,41 @@ assistant-data/config-backups/obsolete-settings-<内容哈希>.yaml；引号、�
 验证：相关后端回归 **121 通过**，前端 **43 通过**；覆盖混合大小写 Token、主机授权保存、
 旧审批项保留与移除、新拼写错误拒绝、显式重新授权、无隐式角色转移及公开 HTML 无字面转义。
 没有调用真实模型或 SSH；上线需重建镜像。
+
+
+## 2026-10-11 通用模型入口与配置整理交付
+
+开发基线为修复 worktree 后同步的新版 0.6.2，开发分支为 `refactor/model-config-layout`。
+根模型入口和专用供应商客户端已移除；统一使用 `src/utils/model_loader.py` 的
+ChatOpenAI 惰性工厂，协议限定为 OpenAI 兼容 Chat Completions。
+聊天、告警分析、显式连接测试共用配置解析；配置按摘要缓存，旧请求保留实例。
+页面整组优先，密钥清除不回退，默认地址和模型名为空。
+高级输出参数只发送 max_tokens 或 max_completion_tokens 中所选字段。
+
+SSH 连接目标全部来自已登记主机。命令目录不再含全局连接目标，
+不自动合成主机或绕过逐主机白名单；原审批、身份、主机密钥校验及授权边界保持。
+七份初始化模板现位于 `deploy/templates/assistant/`，持久目录和应用挂载路径保持。
+根环境文件只是初始化输入，持久模型环境与部署凭据在 compose.env；
+服务文件单向派生，Grafana 页面密码仍以其数据库为准。
+
+旧部署需停止业务栈后运行 `python scripts/stack.py migrate-config --dry-run`，
+人工处理报告的冲突或缺失材料，再正式迁移。正常启动只检查并拒绝旧字段。
+迁移先完整校验，受限备份后原子替换；写失败回滚，中断后重新运行恢复，不覆盖迁移外人工修改。
+备份包含凭据，需独立保管。详见 [部署与迁移](deployment.md#一次性配置迁移)。
+
+2026-10-11 实际验证：
+
+- Docker 内 Python 完整回归 **905 项通过**；Node **44 项通过**。
+  编译、前端语法、依赖 pip check 和 git diff --check 通过。
+  保留一项第三方 Starlette/AnyIO 弃用警告，不影响通过结果。
+- 回环 HTTP 验证两种输出长度实际请求体、文本响应、完整工具调用、超时及错误脱敏。
+  迁移覆盖新部署、页面模型、密码/私钥材料、跨文件字段冲突、无归属主机、
+  无效凭据与元数据、备份失败、发布回滚、中断恢复、人工修改保护和重复执行。
+- 隔离 Compose 的新部署、旧配置迁移及重建均通过；真实 Prometheus 引擎验证全部
+  17 项即时/趋势表达式、设备与标签边界、告警标签；实际 API 查询和 Alertmanager 投递通过。
+  两用户/两主机隔离、Token 轮换撤销、收回再恢复授权、页面凭据与聊天历史重建保留通过。
+- 宿主机标准库包装脚本的迁移预览与正式迁移已实测，迁移前后 SQLite 文件摘要一致。
+  业务部署和原主仓库保持原状；未连接真实模型或 SSH，真实连接仍由管理员显式按钮验收。
+
+隔离验收期间遇到 Docker Hub TLS 超时，重试后镜像构建和部署检查完成。
+CI 已加入停止隔离栈、构造旧配置、显式迁移和重复执行的自动验收。

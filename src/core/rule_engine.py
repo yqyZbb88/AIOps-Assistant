@@ -223,7 +223,7 @@ class RuleEngine:
             return record
 
         host = resolution.host if resolution is not None else None
-        if host is not None and not host.legacy and rule.action not in host.capabilities.rule_actions:
+        if host is not None and rule.action not in host.capabilities.rule_actions:
             record["status"] = HOST_UNAUTHORIZED_MARK
             record["detail"] = f"主机 {host.host_id} 未授权规则动作 {rule.action}，拒绝自动执行"
             logger.error("自动处置未授权 %s -> %s: %s", alert.alertname, rule.action, record["detail"])

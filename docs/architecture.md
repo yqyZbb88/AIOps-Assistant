@@ -91,7 +91,7 @@ Compose 使用同一应用镜像运行一次性 `init` 和单 worker 的 Assista
 持久化凭据；新部署复制模板，已有部署校验运行配置，再生成服务专用凭据；Prometheus 健康后启动 Assistant，
 Assistant 就绪后启动 Alertmanager。启动命令通过 `--wait` 等待常驻服务健康。
 
-`deploy/config/` 仅作为新部署模板，`.runtime/config/` 为实际可写配置。升级保留管理员变更；
+`deploy/templates/assistant/` 仅作为新部署模板，`.runtime/config/` 为实际可写配置。升级保留管理员变更；
 已完成部署缺少 YAML 时要求恢复备份，不再从根目录复制本机配置。`compose.env` 是凭据来源，
 `deployment.json` 记录来源、凭据写入检查点与完成状态；凭据写入后即使初始化中断，
 丢失源凭据也会拒绝生成新密钥。
@@ -108,6 +108,6 @@ Linux 初始化使用文件锁和原子替换；不同实例必须使用不同�
 部署凭据不被页面覆盖；页面 Token 与基线映射合并，角色仍由原管理员/审批人名单决定。
 SSH 和模型页面配置优先，未配置沿用部署来源；明确清除模型密钥不会回退。
 
-`init.py.build_model(config)` 是唯一惰性工厂，`model_loader.get_model(config)` 按配置摘要缓存。
+`src/utils/model_loader.py.build_model(config)` 是唯一惰性工厂，`model_loader.get_model(config)` 按配置摘要缓存。
 同一版本聊天与告警分析共享实例；旧请求保留原 Container/模型，保存本身不构建或调用模型。
 显式测试连接单独使用短超时和小输出长度。查询、配置校验、关键词问答无需真实模型。

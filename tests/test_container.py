@@ -2,7 +2,7 @@
 
 覆盖 executors、RuleEngine、provider 和存储降级的装配行为。
 
-全部用例离线：构造插件不发起网络连接（PrometheusMonitor / DeepseekLLMClient /
+全部用例离线：构造插件不发起网络连接（PrometheusMonitor / OpenAICompatibleLLMClient /
 SshDiagnostics 都是「构造即就绪、调用才连网」），不 invoke 任何 LLM。
 """
 from __future__ import annotations
@@ -83,10 +83,10 @@ def test_llm_unregistered_provider_returns_none():
 
 
 def test_llm_enabled_returns_client():
-    """默认 deepseek → 客户端实例化成功且被缓存。"""
+    """默认 openai_compatible → 客户端实例化成功且被缓存。"""
     c = Container(settings=Settings())
     llm = c.llm()
-    assert llm is not None and llm.name == "deepseek"
+    assert llm is not None and llm.name == "openai_compatible"
     assert c.llm() is llm
 
 
@@ -112,7 +112,7 @@ def test_executors_empty_when_catalog_file_missing(monkeypatch, tmp_path):
 def test_executors_built_from_enabled_catalog(tmp_path, monkeypatch):
     """显式启用可信目录后构建非空执行器表；不依赖部署默认开关。"""
     from pathlib import Path
-    source = Path(__file__).parents[1] / "deploy/config/actions.yaml"
+    source = Path(__file__).parents[1] / "deploy/templates/assistant/actions.yaml"
     path = tmp_path / "actions.yaml"
     path.write_text(source.read_text(encoding="utf-8").replace("enabled: false", "enabled: true"), encoding="utf-8")
     monkeypatch.setenv("OPS_ACTIONS_FILE", str(path))
@@ -138,17 +138,17 @@ def test_diagnostics_none_when_paramiko_missing(monkeypatch):
     sys.modules[name]=None 等价「未安装」：任何 import 尝试都抛 ImportError。
     """
     monkeypatch.setitem(sys.modules, "paramiko", None)
-    assert Container(settings=Settings()).diagnostics() is None
+    assert Container(settings=Settings()).diagnostics("local-node") is None
 
 
 def test_diagnostics_built_when_config_and_paramiko_present(tmp_path, monkeypatch):
     """显式启用诊断目录时构造诊断源，离线不连接 SSH。"""
     from pathlib import Path
-    source = Path(__file__).parents[1] / "deploy/config/diagnostics.yaml"
+    source = Path(__file__).parents[1] / "deploy/templates/assistant/diagnostics.yaml"
     path = tmp_path / "diagnostics.yaml"
     path.write_text(source.read_text(encoding="utf-8").replace("enabled: false", "enabled: true"), encoding="utf-8")
     monkeypatch.setenv("OPS_DIAGNOSTICS_FILE", str(path))
-    diag = Container(settings=Settings()).diagnostics()
+    diag = Container(settings=Settings()).diagnostics("local-node")
     assert diag is not None and diag.name == "ssh"
     assert diag.commands(), "diagnostics.yaml 应当至少声明一条只读命令"
 
@@ -403,9 +403,6 @@ def test_lifespan_starts_and_stops_inspection_scheduler():
 # ---------------------------------------------------------------------------
 AGENT_ACTIONS_SAMPLE = """
 enabled: true
-target:
-  host: 10.0.0.9
-  username: ops
 commands:
   {cmd}:
     summary: 测试命令
@@ -433,25 +430,25 @@ def test_agent_actions_none_when_disabled(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(f))
-    assert Container(settings=Settings()).agent_actions() is None
+    assert Container(settings=Settings()).agent_actions("local-node") is None
 
 
 def test_agent_actions_none_when_file_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(tmp_path / "not_here.yaml"))
-    assert Container(settings=Settings()).agent_actions() is None
+    assert Container(settings=Settings()).agent_actions("local-node") is None
 
 
 def test_agent_actions_built_when_enabled(monkeypatch, tmp_path):
     """启用 + paramiko 在 → 构造写命令源（离线，不连接）。"""
     monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(_write_agent_actions(tmp_path)))
-    src = Container(settings=Settings()).agent_actions()
+    src = Container(settings=Settings()).agent_actions("local-node")
     assert src is not None and [s.key for s in src.commands()] == ["restart_service"]
 
 
 def test_agent_actions_none_when_paramiko_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(_write_agent_actions(tmp_path)))
     monkeypatch.setitem(sys.modules, "paramiko", None)
-    assert Container(settings=Settings()).agent_actions() is None
+    assert Container(settings=Settings()).agent_actions("local-node") is None
 
 
 def test_agent_actions_collision_with_monitor_tool_disables_family(
@@ -463,11 +460,11 @@ def test_agent_actions_collision_with_monitor_tool_disables_family(
     )
     c = Container(settings=Settings())
     with caplog.at_level(logging.ERROR):
-        assert c.agent_actions() is None
+        assert c.agent_actions("local-node") is None
     assert "冲突" in caplog.text
     # 关键：只关这一族，监控与只读诊断照常
     assert c.monitor() is not None
-    assert c.diagnostics() is not None
+    assert c.diagnostics("local-node") is not None
 
 
 def test_agent_actions_collision_with_diagnostics_key_disables_family(
@@ -478,11 +475,11 @@ def test_agent_actions_collision_with_diagnostics_key_disables_family(
         "OPS_AGENT_ACTIONS_FILE", str(_write_agent_actions(tmp_path, cmd="service_status"))
     )
     c = Container(settings=Settings())
-    assert c.diagnostics() is not None
-    assert c.agent_actions() is None
+    assert c.diagnostics("local-node") is not None
+    assert c.agent_actions("local-node") is None
 
 
 def test_agent_actions_cached(monkeypatch, tmp_path):
     monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(_write_agent_actions(tmp_path)))
     c = Container(settings=Settings())
-    assert c.agent_actions() is c.agent_actions()
+    assert c.agent_actions("local-node") is c.agent_actions("local-node")

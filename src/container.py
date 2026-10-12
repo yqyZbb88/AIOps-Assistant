@@ -5,11 +5,11 @@
       ├─ prometheus.base_url/timeout ──> PrometheusMonitor（monitor）
       ├─ actions.yaml 写命令目录 ──────> {目录 key: CatalogCommandExecutor} 执行器
       ├─ rules.yaml ──────────────────> RuleEngine(executors)
-      ├─ llm.enabled/provider ────────> DeepseekLLMClient | None
+      ├─ llm.enabled/provider ────────> OpenAICompatibleLLMClient | None
       └─ ChatService.assistant_factory：首次聊天时经工厂构建 Agent（惰性，见 core/chat）
 
 惰性边界：
-- import 本模块不触发任何 langchain / init.py 导入（Agent 在首次聊天才构建）；
+- import 本模块不触发任何 模型 SDK 导入（Agent 在首次聊天才构建）；
 - plugins 包 import 即完成注册，但所有重量级依赖（paramiko / langchain）均惰性加载；
 - 组件（monitor / llm / executors / agent）实例化后缓存，全容器共享同一份。
 """
@@ -66,9 +66,8 @@ class Container:
         self._llm: LLMClient | None = None
         self._executors: dict[str, ActionExecutor] | None = None
         self._execution_guard: RuleExecutionGuard | None = None
-        self._diagnostics: DiagnosticSource | None = None
-        self._agent_actions: AgentActionSource | None = None
-        self._agent_actions_config = None
+        self._host_diagnostics: dict[str, DiagnosticSource] = {}
+        self._host_actions: dict[str, AgentActionSource] = {}
         self._sessions: SessionStore | None = None
         self._sessions_ready = False
         self._history: HistoryStore | None = None
@@ -115,7 +114,7 @@ class Container:
         return self._metrics_config
 
     def hosts(self) -> HostRegistry:
-        """加载并缓存唯一主机目标来源；无新配置时合成 legacy-default。"""
+        """加载并缓存唯一主机目标来源；所有目标必须显式登记。"""
         if self._hosts is None:
             from src.utils.hosts_config import load_host_registry, parse_hosts
 
@@ -124,7 +123,6 @@ class Container:
                 if "hosts" in self._config_texts
                 else load_host_registry(
                     self.settings.hosts.file or None,
-                    legacy_instance=self.metrics_config().instance,
                 )
             )
         return self._hosts
@@ -162,7 +160,7 @@ class Container:
                     provider, ", ".join(registry.llm_names()) or "(空)",
                 )
                 return None
-            self._llm = cls(model_config=self._model_config) if provider == "deepseek" and self._model_config is not None else cls()
+            self._llm = cls(model_config=self._model_config) if provider == "openai_compatible" and self._model_config is not None else cls()
         return self._llm
 
     def executors(self) -> dict[str, ActionExecutor]:
@@ -214,95 +212,49 @@ class Container:
             )
         return self._execution_guard
 
-    def diagnostics(self) -> DiagnosticSource | None:
-        """旧单主机兼容诊断源；多主机会话改由 `_host_assistant_factory` 绑定目标。
-
-        目录缺失/关闭/未装 paramiko → None。兼容路径的连接参数留在服务端配置，
-        多主机路径则使用 hosts.yaml 的已登记 SSH 目标；两者都不向模型传连接凭据。
-        """
-        if self._diagnostics is not None:
-            return self._diagnostics
+    def diagnostics(self, host_id: str) -> DiagnosticSource | None:
+        """显式主机的只读源；没有主机授权不构造连接。"""
+        if host_id in self._host_diagnostics:
+            return self._host_diagnostics[host_id]
         from src.plugins.diagnostics.commands import load_diagnostics_config, parse_diagnostics
-
-        config = (
-            parse_diagnostics(self._config_texts["diagnostics"])
-            if "diagnostics" in self._config_texts
-            else load_diagnostics_config()
-        )
-        if config is not None and not config.enabled:
-            config = None
-        if config is None:
+        from src.plugins.diagnostics.ssh_diagnostics import SshDiagnostics
+        host = self.hosts().require(host_id)
+        config = parse_diagnostics(self._config_texts["diagnostics"]) if "diagnostics" in self._config_texts else load_diagnostics_config()
+        if not config or not config.enabled or not host.ssh or not host.capabilities.diagnostics:
             return None
-        # paramiko 未装 → 能力降级（不注册诊断工具，Agent 看不到），而非启动失败
         try:
-            import paramiko  # noqa: F401
+            import paramiko
         except ImportError:
-            logger.warning("缺少可选依赖 paramiko，只读诊断能力关闭（pip install paramiko）")
             return None
-        provider = config.provider or "ssh"
-        try:
-            cls = registry.diagnostic_class(provider)
-        except KeyError:
-            available = ", ".join(registry.diagnostic_names()) or "(空)"
-            logger.warning(
-                "未注册的诊断源 provider=%r（可用: %s），只读诊断关闭",
-                provider, available,
-            )
-            return None
-        self._diagnostics = cls(config)
-        return self._diagnostics
+        source = SshDiagnostics(config, target=host.ssh, allowed_commands=host.capabilities.diagnostics)
+        self._host_diagnostics[host_id] = source
+        return source
 
-    def agent_actions(self) -> AgentActionSource | None:
-        """旧单主机兼容写命令源；多主机会话由 `_host_assistant_factory` 单独绑定。
-
-        未启用 / 校验失败 / 缺 paramiko / 工具名冲突 → None。兼容路径的连接参数只在
-        服务端，模型上下文与工具参数里永无 host/密码/私钥。
-
-        **工具名冲突检测**：写命令 key 会变成 Agent 工具名，而 create_agent 对重名工具
-        不报错（静默遮蔽），所以必须在这里拦住。冲突时只关闭本能力——聊天与只读诊断不受影响。
-        """
-        if self._agent_actions is not None:
-            return self._agent_actions
-        from src.plugins.agent_actions.catalog import (
-            RESERVED_AGENT_TOOL_NAMES,
-            colliding_keys,
-            load_agent_actions_config,
-            parse_agent_actions,
-        )
-
-        config = (
-            parse_agent_actions(self._config_texts["agent_actions"])
-            if "agent_actions" in self._config_texts
-            else load_agent_actions_config()
-        )
-        if config is not None and not config.enabled:
-            config = None
-        if config is None:
-            return None
-        # paramiko 未装 → 能力降级（不注册写工具，Agent 看不到），而非启动失败
-        try:
-            import paramiko  # noqa: F401
-        except ImportError:
-            logger.warning("缺少可选依赖 paramiko，Agent 写命令能力关闭（pip install paramiko）")
-            return None
-
-        occupied = set(RESERVED_AGENT_TOOL_NAMES)
-        diag = self.diagnostics()
-        if diag is not None:
-            occupied |= {spec.key for spec in diag.commands()}
-        clashes = colliding_keys((c.key for c in config.commands), occupied)
-        if clashes:
-            logger.error(
-                "Agent 写命令与已占用的工具名冲突，本能力关闭（重名工具会被静默遮蔽）: %s",
-                ", ".join(sorted(clashes)),
-            )
-            return None
-
+    def agent_actions(self, host_id: str) -> AgentActionSource | None:
+        """显式主机的写命令源；所有命令仍由 Agent 前置审批。"""
+        if host_id in self._host_actions:
+            return self._host_actions[host_id]
+        from src.plugins.agent_actions.catalog import load_agent_actions_config, parse_agent_actions
         from src.plugins.agent_actions.source import SshAgentActionSource
-
-        self._agent_actions_config = config
-        self._agent_actions = SshAgentActionSource(config)
-        return self._agent_actions
+        host = self.hosts().require(host_id)
+        config = parse_agent_actions(self._config_texts["agent_actions"]) if "agent_actions" in self._config_texts else load_agent_actions_config()
+        if not config or not config.enabled or not host.ssh or not host.capabilities.agent_actions:
+            return None
+        try:
+            import paramiko
+        except ImportError:
+            return None
+        from src.plugins.agent_actions.catalog import colliding_keys, RESERVED_AGENT_TOOL_NAMES
+        names = set(RESERVED_AGENT_TOOL_NAMES)
+        diag = self.diagnostics(host_id)
+        if diag:
+            names.update(spec.key for spec in diag.commands())
+        if colliding_keys((cmd.key for cmd in config.commands), names):
+            logger.error("工具名冲突，关闭此主机的 Agent 写命令源")
+            return None
+        source = SshAgentActionSource(config, target=host.ssh, allowed_commands=host.capabilities.agent_actions)
+        self._host_actions[host_id] = source
+        return source
 
     def _database(self) -> Database | None:
         """打开（并缓存）SQLite 底座；配置关闭或打不开 → None。
@@ -323,6 +275,7 @@ class Container:
 
         self._db = open_database(self._resolve_db_path(cfg.db_path))
         return self._db
+
 
     def sessions(self) -> SessionStore | None:
         """会话存储；配置关闭或 SQLite 打不开 → None（持久化能力关闭）。
@@ -511,90 +464,28 @@ class Container:
         from src.utils.model_loader import get_model
         return get_model(self._model_config)
 
-    def _assistant_factory(self):
-        """聊天 Agent 工厂（惰性）：首次聊天被 ChatService 调用才构建。"""
-        from src.agent.assistant import OpsAssistant  # 触发 langchain/init.py 惰性导入
-
-        write_source = self.agent_actions()
-        if self.settings.storage.enabled and self.execution_store() is None:
-            logger.error("Persistent execution audit unavailable; Agent write tools disabled")
-            write_source = None
-        approvals = None
-        if write_source is not None:
-            # 有写命令才建审批存储：容量/时限来自配置（审批本身无开关，恒为强制）
-            policy = self._agent_actions_config.approval
-            approvals = ApprovalStore(
-                maxlen=policy.max_pending, ttl_seconds=policy.timeout_seconds
-            )
-        extra = {"model_factory": self._model_for_snapshot} if self._model_config is not None else {}
-        return OpsAssistant(
-            **extra,
-            monitor=self.monitor(),
-            metrics_config=self.metrics_config(),
-            inspection_store=self.inspection_store(),
-            diag=self.diagnostics(),
-            agent_actions=write_source,
-            approvals=approvals,
-            # 审批决策落盘与淘汰后对账都走会话存储（窄接口，见 ApprovalLedger）。
-            # 持久化未启用时是 None，那两套机制整体跳过——没有会话表就没有要分辨的东西。
-            ledger=self.sessions(),
-            debug=self.settings.agent.debug,
-            name=self.settings.agent.name,
-            recursion_limit=self.settings.agent.recursion_limit,
-        )
-
     def _host_assistant_factory(self, host_id: str):
         """为会话固定主机构造 Agent；所有外部 IO 都从同一 Host 派生。"""
         from src.agent.assistant import OpsAssistant
-        from src.plugins.diagnostics.commands import load_diagnostics_config, parse_diagnostics
-        from src.plugins.diagnostics.ssh_diagnostics import SshDiagnostics
         from src.plugins.agent_actions.catalog import load_agent_actions_config, parse_agent_actions
-        from src.plugins.agent_actions.source import SshAgentActionSource
 
         host = self.hosts().require(host_id)
-        diag = None
-        write_source = None
+        diag = self.diagnostics(host_id)
+        write_source = self.agent_actions(host_id)
         approvals = None
-
-        if host.ssh is not None:
-            diag_config = (
-                parse_diagnostics(self._config_texts["diagnostics"])
-                if "diagnostics" in self._config_texts
-                else load_diagnostics_config()
-            )
-            if diag_config is not None and not diag_config.enabled:
-                diag_config = None
-            if diag_config is not None:
-                allowed = None if host.legacy else host.capabilities.diagnostics
-                if host.legacy or allowed:
-                    diag = SshDiagnostics(
-                        diag_config,
-                        target=host.ssh,
-                        allowed_commands=allowed,
-                    )
-
+        if write_source is not None and self.settings.storage.enabled and self.execution_store() is None:
+            logger.error("持久执行审计不可用，关闭主机 %s 的 Agent 写命令", host_id)
+            write_source = None
+        if write_source is not None:
             action_config = (
                 parse_agent_actions(self._config_texts["agent_actions"])
                 if "agent_actions" in self._config_texts
                 else load_agent_actions_config()
             )
-            if action_config is not None and not action_config.enabled:
-                action_config = None
-            if action_config is not None and self.settings.storage.enabled and self.execution_store() is None:
-                logger.error("Persistent execution audit unavailable; Agent write tools disabled for host %s", host_id)
-                action_config = None
-            if action_config is not None:
-                allowed_actions = None if host.legacy else host.capabilities.agent_actions
-                if host.legacy or allowed_actions:
-                    write_source = SshAgentActionSource(
-                        action_config,
-                        target=host.ssh,
-                        allowed_commands=allowed_actions,
-                    )
-                    approvals = ApprovalStore(
-                        maxlen=action_config.approval.max_pending,
-                        ttl_seconds=action_config.approval.timeout_seconds,
-                    )
+            approvals = ApprovalStore(
+                maxlen=action_config.approval.max_pending,
+                ttl_seconds=action_config.approval.timeout_seconds,
+            )
 
         fingerprint_material = "|".join(
             [

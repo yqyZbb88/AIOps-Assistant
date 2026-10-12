@@ -19,7 +19,7 @@ Compose 首次构建与拉取镜像需要可用的仓库网络。仅运行 Compo
 
 本文的 Compose 命令针对当前包含 `init` 服务的配置。先在项目根目录执行
 `docker compose config --services`；如果没有 `init`，请使用对应版本的部署说明或先按
-[升级步骤](deployment.md#从旧开发栈升级)更新源码。所有后续命令都在项目根目录运行。
+[升级步骤](deployment.md#一次性配置迁移)更新源码。所有后续命令都在项目根目录运行。
 
 ## 2. 离线自动化测试
 
@@ -31,7 +31,7 @@ docker build --target test -t aiops-regression:0.6.2 .
 docker run --rm --network none aiops-regression:0.6.2
 docker run --rm --network none --entrypoint node aiops-regression:0.6.2 --check src/web/console.js
 docker run --rm --network none --entrypoint node aiops-regression:0.6.2 --test tests/console_ui.test.cjs
-docker run --rm --network none --entrypoint python aiops-regression:0.6.2 -m compileall -q src scripts tests init.py
+docker run --rm --network none --entrypoint python aiops-regression:0.6.2 -m compileall -q src scripts tests
 git diff --check
 ```
 
@@ -53,6 +53,12 @@ docker run --rm --network none aiops-regression:0.6.2 -q tests/test_admin_creden
 
 ## 3. 建立独立 Compose 测试栈
 
+通用模型回归 `test_model_initialization.py` 使用回环 HTTP 服务检验真实 Chat Completions
+请求、两种输出长度字段、文本响应、完整工具回合和超时。测试不访问公共模型。
+`test_config_migration.py` 覆盖预览、新旧冲突、页面配置、材料缺失、写入回滚、
+备份失败、迁移中断和重复执行。SSH 回归保留主机隔离、白名单、审批及主机密钥拒绝。
+前端回归同时检查通用模型字段和敏感输入清理。
+
 测试栈使用项目名 `aiops-local-test`、目录 `.runtime/local-test` 和独立端口。
 不要把已有部署的数据复制到这个目录，也不要将后面的停止、重建、告警或故障操作用于真实服务。
 
@@ -69,7 +75,7 @@ $env:PROMETHEUS_HOST_PORT = '19090'
 $env:ALERTMANAGER_HOST_PORT = '19093'
 $env:NODE_EXPORTER_HOST_PORT = '19100'
 
-foreach ($testEnvName in @('DEEPSEEK_API_KEY', 'SSH_PASSWORD', 'SSH_KEY_FILENAME', 'SSH_KNOWN_HOSTS')) {
+foreach ($testEnvName in @('MODEL_API_KEY', 'MODEL_BASE_URL', 'MODEL_NAME')) {
     Remove-Item -LiteralPath "Env:$testEnvName" -ErrorAction SilentlyContinue
 }
 ```
@@ -81,7 +87,7 @@ export AIOPS_RUNTIME_DIR=./.runtime/local-test
 export AIOPS_IMAGE=aiops-assistant:local-test
 export ASSISTANT_HOST_PORT=18000 GRAFANA_HOST_PORT=13000
 export PROMETHEUS_HOST_PORT=19090 ALERTMANAGER_HOST_PORT=19093 NODE_EXPORTER_HOST_PORT=19100
-unset DEEPSEEK_API_KEY SSH_PASSWORD SSH_KEY_FILENAME SSH_KNOWN_HOSTS
+unset MODEL_API_KEY MODEL_BASE_URL MODEL_NAME
 ```
 
 所有测试栈命令都显式使用 `-p aiops-local-test --env-file .env.example`。
@@ -427,3 +433,23 @@ tests/test_admin_config.py 验证 GET 不含 auth_enabled、提交旧字段返�
 确认原文备份完整、只移除已列明字段、原部署凭据未变化、服务健康；然后运行用户权限及
 部署 smoke，整栈重建后运行两个 --verify。仅使用可丢弃项目、数据目录和合成凭据，
 不直接对实际部署运行写入型验收。2026-10-09 本轮结果见 [交接记录](handover.md)。
+
+
+## 旧配置升级验收
+
+仅在独立测试项目和运行目录中构造旧配置，禁止导入业务凭据。停止测试栈后执行
+`python scripts/stack.py migrate-config --dry-run`、正式迁移，再重复迁移确认无候选。
+脚本使用 COMPOSE_PROJECT_NAME 与 AIOPS_RUNTIME_DIR，务必与测试栈保持一致。
+升级后重复本专题全指标、告警、用户隔离及重建验收；比较迁移前后部署凭据、
+页面凭据、角色与授权、SQLite 和 Grafana 数据。迁移日志只应包含文件名或字段名。
+真实模型和 SSH 连接仍由管理员显式测试，不属于离线迁移验收。
+
+
+## 2026-10-11 本次实际结果
+
+Docker 内 Python 905 项、Node 44 项通过，编译、语法、依赖和差异检查通过。
+隔离新部署、旧配置迁移、全指标真实 Prometheus 验证、实际告警投递、两用户主机隔离、
+重建后 SSH/模型/Token 与聊天持久化通过。标准库包装脚本的迁移也已实测，
+SQLite 文件摘要保持一致。仅有第三方 Starlette/AnyIO 弃用警告。
+真实模型、SSH 和浏览器人工操作未执行；本次没有操作业务部署。
+详细边界与证据摘要见 [交接文档](handover.md#2026-10-11-通用模型入口与配置整理交付)。

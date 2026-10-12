@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from src.plugins.common.ssh import _new_client
 from src.utils.admin_config import AdminConfigConflict, AdminConfigError, AdminConfigUnavailable
-from src.utils.hosts_config import HOST_ID_RE, LEGACY_HOST_ID, parse_hosts
+from src.utils.hosts_config import HOST_ID_RE, parse_hosts
 from src.utils.runtime import RuntimeSnapshot
 
 _ADDRESS = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9.-]*|\[[0-9a-fA-F:]+\]):[0-9]{1,5}$")
@@ -129,7 +129,7 @@ class HostOnboarding:
         manager = self.manager
         host_id = str(draft.get("host_id") or "").strip()
         name = str(draft.get("name") or "").strip()
-        if not HOST_ID_RE.fullmatch(host_id) or host_id == LEGACY_HOST_ID:
+        if not HOST_ID_RE.fullmatch(host_id):
             raise AdminConfigError("host_id 必须是小写字母开头、最长 63 位的字母数字或连字符")
         if not name or len(name) > 128:
             raise AdminConfigError("显示名不能为空且不得超过 128 字符")

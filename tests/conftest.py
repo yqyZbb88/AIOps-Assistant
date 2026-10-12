@@ -12,10 +12,11 @@ import pytest  # noqa: E402
 
 # 保证在任意 pytest 调用方式下都能 `import src`
 ROOT = Path(__file__).resolve().parent.parent
-os.environ["OPS_SETTINGS_FILE"] = str(ROOT / "deploy/config/settings.yaml")
+os.environ["OPS_SETTINGS_FILE"] = str(ROOT / "deploy/templates/assistant/settings.yaml")
 os.environ.setdefault("OPS_API_TOKENS", '{"test-admin":"admin","test-webhook":"alertmanager"}')
 os.environ.setdefault("OPS_ADMIN_IDENTITIES", '["admin"]')
 os.environ.setdefault("OPS_APPROVER_IDENTITIES", '["admin"]')
+os.environ["OPS_HOSTS_FILE"] = str(ROOT / "deploy/templates/assistant/hosts.yaml")
 os.environ["OPS_LLM_ENABLED"] = "false"
 os.environ["OPS_AGENT_ENABLED"] = "false"
 if str(ROOT) not in sys.path:
@@ -26,7 +27,7 @@ if str(ROOT) not in sys.path:
 # 堵住仓库里那个**真实**数据库：测试绝不允许碰它
 # ---------------------------------------------------------------------------
 # 模块级 app 在 pytest 收集阶段装配，必须在导入前隔离真实数据。
-# 测试使用 deploy/config 模板与合成身份；仓库 data/ 下的默认存储被拦截，
+# 测试使用 deploy/templates/assistant 模板与合成身份；仓库 data/ 下的默认存储被拦截，
 # 注入 tmp_path 的数据库正常开库。真实容器运行目录不得挂入测试镜像。
 def _block_real_database() -> None:
     import src.storage.db as dbmod
@@ -377,7 +378,7 @@ def _no_audit_file_in_tests():
 
 
 # ---------------------------------------------------------------------------
-# 全局隔离：测试绝不允许加载**真实模型**（那会发起真实 DeepSeek 调用）
+# 全局隔离：测试绝不允许加载**真实模型**（那会发起真实模型 调用）
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def _no_real_model_in_tests(monkeypatch):
@@ -475,6 +476,23 @@ def enabled_catalogs(tmp_path, monkeypatch):
     """按用例显式启用模板命令，不改变容器出厂安全开关。"""
     for name, variable in (("actions", "OPS_ACTIONS_FILE"), ("diagnostics", "OPS_DIAGNOSTICS_FILE")):
         path = tmp_path / (name + ".yaml")
-        text = (ROOT / "deploy/config" / (name + ".yaml")).read_text(encoding="utf-8")
+        text = (ROOT / "deploy/templates/assistant" / (name + ".yaml")).read_text(encoding="utf-8")
         path.write_text(text.replace("enabled: false", "enabled: true"), encoding="utf-8")
         monkeypatch.setenv(variable, str(path))
+
+@pytest.fixture(autouse=True)
+def _explicit_ssh_test_host(request, tmp_path, monkeypatch):
+    """旧单目标接线测试改用显式登记主机；仅合成凭据，不连接远端。"""
+    if request.module.__name__.split(".")[-1] not in {"test_container", "test_agent_actions_hitl_graph"}:
+        return
+    from src.utils.hosts_config import parse_hosts
+    import yaml
+    path = tmp_path / "registered-hosts.yaml"
+    document = {"version": 1, "credentials": {"synthetic": {"username": "ops", "password": "synthetic-only"}},
+        "hosts": [{"id": "local-node", "name": "Synthetic node", "prometheus": {"job": "node", "instance": "h:9100"},
+            "ssh": {"host": "10.0.0.9", "credential_ref": "synthetic"},
+            "allow": {"diagnostics": ["memory", "disk", "top_processes", "service_status", "service_logs"],
+                      "agent_actions": ["restart_service", "cleanup_disk", "cpu_usage", "memory"],
+                      "rule_actions": []}}]}
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    monkeypatch.setenv("OPS_HOSTS_FILE", str(path))

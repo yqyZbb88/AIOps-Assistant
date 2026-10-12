@@ -2,19 +2,11 @@
 # Agent SSH 只读诊断白名单。
 # enabled=false 或配置无效时只关闭诊断工具，不影响聊天和巡检。
 # 命令模板由管理员维护，模型只能选择命令 key 和通过 schema 校验的语义参数。
-# 命令目录可由管理员热应用；环境变量中的连接密钥变更仍需重启。
+# 命令目录可由管理员热应用；连接信息来自已登记主机。
 
 enabled: false
 provider: ssh
 
-target:
-  host: "${SSH_HOST:-localhost}"
-  port: 22                  # 必须 >= 1
-  username: "${SSH_USER:-ops}"
-  key_filename: "${SSH_KEY_FILENAME:-}"
-  password: "${SSH_PASSWORD:-}"
-  known_hosts: "${SSH_KNOWN_HOSTS:-}"  # 留空时使用系统 known_hosts
-  connect_timeout: 8       # SSH 连接与命令超时秒数，必须 >= 1
 
 output_limit: 4000  # SSH channel 最多保留的输出字符数；超出部分排空但不驻留内存
 

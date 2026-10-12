@@ -4,7 +4,7 @@ import 本包即触发各子包导入；其中动作/诊断的底层共用 src/p
 - monitors/prometheus_monitor.py  注册 monitor "prometheus"
 - actions/catalog + executor       写命令目录（config/actions.yaml）→ 通用执行器（不再注册固定动作类）
 - agent_actions/catalog + source   Agent 写命令目录（config/agent_actions.yaml）→ 强制人工审批的写通道
-- llm_clients/deepseek_client.py   注册 llm "deepseek"
+- llm_clients/openai_compatible_client.py   注册 llm "openai_compatible"
 - diagnostics/ssh_diagnostics.py   注册 diagnostic "ssh"（只读诊断，Agent 工具用）
 
 惰性依赖策略：SSH 的 paramiko、LLM 的 langchain/dotenv 均在调用时才 import，

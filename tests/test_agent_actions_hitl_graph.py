@@ -649,10 +649,6 @@ def test_checkpointer_created_only_with_write_tools(monkeypatch, fake_actions):
 # ---------------------------------------------------------------------------
 AGENT_ACTIONS_YAML = """
 enabled: true
-target:
-  host: 10.0.0.9
-  username: ops
-  password: "placeholder"
 commands:
   restart_service:
     summary: 重启服务
@@ -694,9 +690,9 @@ def test_container_wiring_drives_full_approval_flow(monkeypatch, tmp_path):
     monkeypatch.setattr(assistant_mod, "get_model", lambda: model)
 
     container = Container(settings=Settings())
-    assert container.agent_actions() is not None, "写命令源应已装配"
+    assert container.agent_actions("local-node") is not None, "写命令源应已装配"
 
-    agent = container._assistant_factory()
+    agent = container._host_assistant_factory("local-node")
 
     # 1) 聊天 → 中断，命令未执行
     reply = agent.reply("帮我重启 nginx")
@@ -734,7 +730,7 @@ def test_container_wiring_injects_write_addendum(monkeypatch, tmp_path):
         AGENT_ACTIONS_YAML.replace("enabled: true", "enabled: false"), encoding="utf-8"
     )
     monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(cfg_off))
-    plain = Container(settings=Settings())._assistant_factory()
+    plain = Container(settings=Settings())._host_assistant_factory("local-node")
     assert WRITE_TOOLS_ADDENDUM not in plain.system_prompt
     assert plain.checkpointer is None
 
@@ -742,7 +738,7 @@ def test_container_wiring_injects_write_addendum(monkeypatch, tmp_path):
     cfg_file = tmp_path / "agent_actions.yaml"
     cfg_file.write_text(AGENT_ACTIONS_YAML, encoding="utf-8")
     monkeypatch.setenv("OPS_AGENT_ACTIONS_FILE", str(cfg_file))
-    enabled = Container(settings=Settings())._assistant_factory()
+    enabled = Container(settings=Settings())._host_assistant_factory("local-node")
     assert WRITE_TOOLS_ADDENDUM in enabled.system_prompt
     assert enabled.checkpointer is not None
 

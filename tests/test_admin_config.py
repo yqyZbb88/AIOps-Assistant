@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import yaml
 from dataclasses import replace
 from pathlib import Path
 
@@ -256,7 +257,7 @@ def test_ssh_check_never_runs_command_and_diagnostics_need_verified_ticket(tmp_p
 
     paths, settings, manager = _setup(tmp_path, target_mode="managed")
     paths["diagnostics"].write_text(
-        "enabled: true\nprovider: ssh\ntarget: {host: localhost}\n"
+        "enabled: true\nprovider: ssh\n"
         "commands:\n  memory: {summary: memory, template: 'free -m', params: {}}\n",
         encoding="utf-8",
     )
@@ -376,7 +377,7 @@ def test_hot_update_keeps_one_inspection_thread(tmp_path):
 def test_metrics_file_changes_disk_revision_and_can_be_applied(tmp_path):
     paths, settings, _old_manager = _setup(tmp_path)
     metrics = tmp_path / "metrics.yaml"
-    metrics.write_bytes((Path(__file__).parents[1] / "deploy" / "config" / "metrics.yaml").read_bytes())
+    metrics.write_bytes((Path(__file__).parents[1] / "deploy" / "templates" / "assistant" / "metrics.yaml").read_bytes())
     with paths["settings"].open("a", encoding="utf-8") as handle:
         handle.write("metrics:\n  file: '" + metrics.as_posix() + "'\n")
     settings = replace(settings, metrics=MetricsSettings(file=metrics.as_posix()))
@@ -399,22 +400,26 @@ def test_metrics_file_changes_disk_revision_and_can_be_applied(tmp_path):
 
 def test_lazy_diagnostics_cannot_read_unapplied_disk_changes(tmp_path):
     paths, settings, manager = _setup(tmp_path)
+    hosts = yaml.safe_load(paths["hosts"].read_text(encoding="utf-8"))
+    hosts["hosts"][0]["allow"]["diagnostics"] = ["memory"]
+    paths["hosts"].write_text(yaml.safe_dump(hosts), encoding="utf-8")
+    manager.active_revision = manager.revision()
     app = create_app(settings=settings, admin_config_manager=manager)
     with TestClient(app) as client:
         old_container = app.state.runtime.current.container
         paths["diagnostics"].write_text(
-            "enabled: true\nprovider: ssh\ntarget: {host: localhost}\n"
+            "enabled: true\nprovider: ssh\n"
             "commands:\n  memory: {summary: memory, template: 'free -m', params: {}}\n",
             encoding="utf-8",
         )
-        assert old_container.diagnostics() is None
+        assert old_container.diagnostics("node-a") is None
         disk = client.get("/admin/config", headers=_auth("admin-token")).json()
         assert disk["restart_required"] is True
         response = client.post("/admin/config/apply", headers=_auth("admin-token"),
                                json={"revision": disk["revision"]})
         assert response.status_code == 200, response.text
         assert app.state.runtime.current.container is not old_container
-        assert app.state.runtime.current.container.diagnostics() is not None
+        assert app.state.runtime.current.container.diagnostics("node-a") is not None
 
 
 def _auth(token):

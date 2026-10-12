@@ -13,32 +13,29 @@ x-logging: &logging
 services:
   init:
     <<: *app
-    entrypoint: ["python", "scripts/deployment.py"]
+    entrypoint: ["python", "-m", "scripts.deployment"]
     command: ["init"]
     healthcheck:
       disable: true
     environment:
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
-      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-}
-      DEEPSEEK_TIMEOUT: ${DEEPSEEK_TIMEOUT:-}
-      DEEPSEEK_MAX_RETRIES: ${DEEPSEEK_MAX_RETRIES:-}
-      DEEPSEEK_MAX_TOKENS: ${DEEPSEEK_MAX_TOKENS:-}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+      MODEL_NAME: ${MODEL_NAME:-}
+      MODEL_TIMEOUT: ${MODEL_TIMEOUT:-}
+      MODEL_MAX_RETRIES: ${MODEL_MAX_RETRIES:-}
+      MODEL_TOKEN_LIMIT_PARAM: ${MODEL_TOKEN_LIMIT_PARAM:-}
+      MODEL_MAX_TOKENS: ${MODEL_MAX_TOKENS:-}
       OPS_REDACTION_SECRETS: ${OPS_REDACTION_SECRETS:-}
-      SSH_HOST: ${SSH_HOST:-}
-      SSH_PORT: ${SSH_PORT:-}
-      SSH_USER: ${SSH_USER:-}
-      SSH_PASSWORD: ${SSH_PASSWORD:-}
-      SSH_KEY_FILENAME: ${SSH_KEY_FILENAME:-}
-      SSH_KNOWN_HOSTS: ${SSH_KNOWN_HOSTS:-}
     volumes:
       - ${AIOPS_RUNTIME_DIR:-./.runtime}:/runtime
+      # 仅初始化检查旧字段；不会作为业务运行环境加载。
+      - .:/bootstrap-project:ro
     restart: "no"
     logging: *logging
 
   assistant:
     <<: *app
-    entrypoint: ["python", "scripts/deployment.py"]
+    entrypoint: ["python", "-m", "scripts.deployment"]
     command: ["serve"]
     environment:
       PROMETHEUS_URL: http://prometheus:9090
@@ -52,7 +49,6 @@ services:
       - ${AIOPS_RUNTIME_DIR:-./.runtime}/assistant-logs:/app/logs
       - ${AIOPS_RUNTIME_DIR:-./.runtime}/prometheus-targets:/app/prometheus-targets:rw
       - ${AIOPS_RUNTIME_DIR:-./.runtime}/secrets:/run/assistant-secrets:ro
-      - ${AIOPS_RUNTIME_DIR:-./.runtime}/ssh:/run/ssh:ro
     depends_on:
       init:
         condition: service_completed_successfully

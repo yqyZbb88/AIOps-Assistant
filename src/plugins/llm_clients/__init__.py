@@ -1,8 +1,5 @@
-"""LLM 客户端插件：导入即注册到 registry（键 = 供应商名）。"""
-from src.plugins.llm_clients import deepseek_client  # noqa: F401
+"""注册通用模型客户端；模块导入不构建模型。"""
+from src.plugins.llm_clients.openai_compatible_client import OpenAICompatibleLLMClient
 from src.registry import registry
 
-registry.register_llm(
-    deepseek_client.DeepseekLLMClient.name,
-    deepseek_client.DeepseekLLMClient,
-)
+registry.register_llm(OpenAICompatibleLLMClient.name, OpenAICompatibleLLMClient)

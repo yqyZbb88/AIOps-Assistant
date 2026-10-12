@@ -2218,8 +2218,15 @@ function renderCredentials() {
   const cfg = data.model, apiKey = credentialInput("password", "", true), mode = node("select"), fields = {};
   [["keep", "保留密钥"], ["replace", "替换密钥"], ["clear", "明确清除密钥"]].forEach(function (entry) { const option = node("option", "", entry[1]); option.value = entry[0]; mode.append(option); }); mode.value = "keep";
   mode.addEventListener("change", function () { apiKey.value = ""; });
-  modelBox.append(node("p", "admin-help", "DeepSeek · " + (cfg.configured ? "密钥已配置" : "密钥未配置") + (cfg.managed ? " · 页面管理" : " · 沿用部署环境") + "。保存不发起模型请求。"), adminLabel("密钥操作", mode), adminLabel("新 API Key", apiKey));
+  modelBox.append(node("p", "admin-help", "OpenAI 兼容接口 · " + (cfg.configured ? "密钥已配置" : "密钥未配置") + (cfg.managed ? " · 页面管理" : " · 沿用部署环境") + "。Base URL 填接口根地址；Agent 需要模型支持工具调用。保存不发起模型请求。"), adminLabel("密钥操作", mode), adminLabel("新 API Key", apiKey));
   [["base_url", "Base URL", "text"], ["model", "模型名", "text"], ["timeout", "超时（秒）", "number"], ["max_retries", "重试次数", "number"], ["max_tokens", "最大输出长度", "number"]].forEach(function (entry) { const input = credentialInput(entry[2], cfg[entry[0]]); fields[entry[0]] = input; modelBox.append(adminLabel(entry[1], input)); });
+  const tokenParam = node("select");
+  ["max_tokens", "max_completion_tokens"].forEach(function (value) {
+    const option = node("option", "", value); option.value = value; tokenParam.append(option);
+  });
+  tokenParam.value = cfg.token_limit_param || "max_tokens";
+  fields.token_limit_param = tokenParam;
+  modelBox.append(adminLabel("高级：输出长度参数", tokenParam));
   modelBox.append(credentialButton("保存模型配置", function () {
     const update = {key_action: mode.value}; Object.entries(fields).forEach(function (entry) { update[entry[0]] = entry[1].value; }); if (mode.value === "replace") update.api_key = apiKey.value;
     changeCredential("model", "PUT", update);

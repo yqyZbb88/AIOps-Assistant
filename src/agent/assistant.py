@@ -210,7 +210,7 @@ class OpsAssistant:
         target_summary: str = "",
         config_fingerprint: str = "",
     ) -> None:
-        # 本构造会触发 langchain / init.py 惰性导入；失败向上抛，由调用方回落
+        # 本构造会触发 模型 SDK 惰性导入；失败向上抛，由调用方回落
         from src.agent.prompts import (
             AGENT_NAME,
             OPS_SYSTEM_PROMPT,
@@ -272,7 +272,7 @@ class OpsAssistant:
             # 只有真的注册了写工具，才告诉模型它有写能力（否则它会谎称能重启服务）
             self.system_prompt = self.system_prompt + WRITE_TOOLS_ADDENDUM
 
-        # 惰性复用 init.py 模型入口（utils/model_loader 单例缓存）；模型/provider 只改 init.py
+        # 惰性复用通用模型入口；配置版本由运行快照固定
         try:
             self.model = model_factory() if model_factory is not None else get_model()
         except ModelLoadError as exc:

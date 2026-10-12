@@ -83,7 +83,7 @@ api → core → interfaces
 ## 6. 配置约定
 
 - 密钥来自 `.env`、部署专用凭据文件、管理员独立凭据存储或运行环境；YAML 只保留占位符。
-- `deploy/config/` 是新 Compose 部署的独立安全模板，不能从开发机运行配置直接打包。
+- `deploy/templates/assistant/` 是新 Compose 部署的独立安全模板，不能从开发机运行配置直接打包。
 - 初始化必须幂等，保留既有配置、Token 和数据；升级兼容性需有回归测试。
 - 新增字段必须有类型、默认值、范围、失败语义和生效时机。
 - `settings.yaml` 和 `metrics.yaml` 的错误属于启动配置错误，应拒绝不确定启动。
@@ -106,7 +106,7 @@ api → core → interfaces
 
 完整命令与人工验收步骤见 [容器测试与验收](docs/testing.md)。
 
-测试不得访问真实 DeepSeek、Prometheus、SSH 或公共网络，也不得写入真实数据库和日志。
+测试不得访问真实 OpenAI 兼容模型、Prometheus、SSH 或公共网络，也不得写入真实数据库和日志。
 执行 [离线自动化测试](docs/testing.md#2-离线自动化测试) 中的容器命令；test 目标自带合成身份、关闭追踪与 Node 运行时。
 同时核对编译、依赖与差异门禁。
 需要定向检查时使用该页提供的组合，不在此维护另一份可能漏项的命令清单。

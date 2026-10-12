@@ -27,7 +27,7 @@ def request(path, token=None, data=None, method=None, expected=200):
 
 def main():
     secrets = json.loads(Path("/run/assistant-secrets/assistant.json").read_text())
-    assert not secrets.get("DEEPSEEK_API_KEY"), "Isolated key-free stack required"
+    assert not secrets.get("MODEL_API_KEY"), "Isolated key-free stack required"
     tokens = json.loads(secrets["OPS_API_TOKENS"])
     admin = next(k for k,v in tokens.items() if v == "admin")
     webhook = next(k for k,v in tokens.items() if v == "alertmanager")
@@ -73,8 +73,17 @@ def main():
     # Add a static second fixture target through the same disk-apply boundary used in deployment.
     if not any(host["host_id"] == "restricted-node" for host in request("/hosts", admin)):
         host_file = Path("/app/config/hosts.yaml")
-        with host_file.open("a", encoding="utf-8") as handle:
-            handle.write('\n  - id: restricted-node\n    name: Restricted test node\n    enabled: true\n    prometheus: {job: prometheus, instance: "prometheus:9090"}\n    allow: {diagnostics: [], rule_actions: [], agent_actions: []}\n')
+        from ruamel.yaml import YAML
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        doc = yaml.load(host_file.read_text(encoding="utf-8"))
+        doc["hosts"].append({
+            "id": "restricted-node", "name": "Restricted test node", "enabled": True,
+            "prometheus": {"job": "prometheus", "instance": "prometheus:9090"},
+            "allow": {"diagnostics": [], "rule_actions": [], "agent_actions": []},
+        })
+        with host_file.open("w", encoding="utf-8") as handle:
+            yaml.dump(doc, handle)
         snapshot = request("/admin/config", admin)
         request("/admin/config/apply", admin, {"revision": snapshot["revision"]}, "POST")
     first = credential("tokens", {"identity": "access-alice"})

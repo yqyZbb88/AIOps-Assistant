@@ -3,7 +3,7 @@
 职责分层：
 - 命令级「模板 + 参数 schema + 校验 + 构建」（通用机制）在 src/plugins/common/cmddef.py，
   读/写目录共用；本模块做只读侧适配：
-    1) config 级（enabled/provider/target/output_limit/commands 顶层）仍在此解析；
+    1) config 级（enabled/provider/output_limit/commands 顶层）仍在此解析；
     2) 逐命令调用 cmddef.parse_command_def(allow_sudo=False)，CmdDefError → DiagnosticsConfigError
        （只读目录**不允许 sudo**，声明 sudo: true 直接关闭能力）；
     3) 运行期 validated_params / build_command 委托 cmddef，把 ParamError 翻译为 DiagnosticError
@@ -22,7 +22,6 @@ from typing import Any, Mapping
 from src.interfaces.diagnostic import CommandSpec, DiagnosticError, ParamSpec
 from src.plugins.common import cmddef as _cmddef
 from src.plugins.common.cmddef import CmdDef, CmdDefError, ParamError
-from src.plugins.common.endpoint import DEFAULT_CONNECT_TIMEOUT
 from src.utils.config_loader import ROOT_DIR, parse_yaml
 
 logger = logging.getLogger("aiops_assistant.diagnostics.config")
@@ -39,24 +38,9 @@ class DiagnosticsConfigError(ValueError):
 # 配置模型
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
-class DiagnosticsTarget:
-    """目标主机（连接凭据只在此处，构造后留在实例内，模型上下文永不出现）。"""
-
-    host: str = ""
-    port: int = 22
-    username: str = "root"
-    password: str = ""
-    key_filename: str = ""
-    known_hosts: str = ""
-    #: 连接与命令超时；默认值来自 SSH 层唯一的那处定义（见 common/endpoint.py）
-    connect_timeout: int = DEFAULT_CONNECT_TIMEOUT
-
-
-@dataclass(frozen=True)
 class DiagnosticsConfig:
     enabled: bool = True
     provider: str = "ssh"
-    target: DiagnosticsTarget = DiagnosticsTarget()
     output_limit: int = 4000
     commands: tuple[CmdDef, ...] = field(default_factory=tuple)
 
@@ -80,31 +64,6 @@ def _as_int(value: Any, what: str, *, minimum: int | None = None) -> int:
     return num
 
 
-def _parse_target(data: Any) -> DiagnosticsTarget:
-    if not isinstance(data, Mapping):
-        raise DiagnosticsConfigError("target 必须是映射（host/port/username/password 等）")
-    host = _as_str(data.get("host"), "target.host")
-    if not host:
-        raise DiagnosticsConfigError("target.host 不能为空（需与 .env 中 SSH 密码变量对应的主机）")
-    password = data.get("password", "") or ""
-    key_filename = data.get("key_filename", "") or ""
-    known_hosts = data.get("known_hosts", "") or ""
-    if not password and not key_filename:
-        logger.warning("diagnostics.target 未配置 password/key_filename，连接将走 agent/默认密钥或失败")
-    return DiagnosticsTarget(
-        host=host,
-        port=_as_int(data.get("port", 22), "target.port", minimum=1),
-        username=_as_str(data.get("username", "root"), "target.username") or "root",
-        password=str(password),
-        key_filename=str(key_filename),
-        known_hosts=str(known_hosts),
-        connect_timeout=_as_int(
-            data.get("connect_timeout", DEFAULT_CONNECT_TIMEOUT),
-            "target.connect_timeout",
-            minimum=1,
-        ),
-    )
-
 
 def _parse_command(key: str, spec: Any) -> CmdDef:
     """逐命令委托 common.cmddef；只读目录不允许 sudo，错误统一为 DiagnosticsConfigError。"""
@@ -122,7 +81,8 @@ def build_config(data: Mapping[str, Any]) -> DiagnosticsConfig:
         raise DiagnosticsConfigError("enabled 必须是布尔值")
     provider = _as_str(data.get("provider", "ssh"), "provider") or "ssh"
     output_limit = _as_int(data.get("output_limit", 4000), "output_limit", minimum=1)
-    target = _parse_target(data.get("target")) if enabled else DiagnosticsTarget()
+    if "target" in data:
+        raise DiagnosticsConfigError("旧全局 target 已移除，请先运行 migrate-config")
 
     raw_cmds = data.get("commands") or {}
     if enabled and not isinstance(raw_cmds, Mapping):
@@ -136,7 +96,6 @@ def build_config(data: Mapping[str, Any]) -> DiagnosticsConfig:
     return DiagnosticsConfig(
         enabled=enabled,
         provider=provider,
-        target=target,
         output_limit=output_limit,
         commands=commands,
     )
@@ -148,7 +107,7 @@ def parse_diagnostics(text: str) -> DiagnosticsConfig:
         import yaml
     except ImportError as exc:  # pragma: no cover - 核心依赖缺失路径
         raise DiagnosticsConfigError("缺少可选依赖 pyyaml，无法解析诊断配置") from exc
-    # 先做环境变量插值（target.password 的 ${SSH_PASSWORD_...} 在解析前替换，规则同 rules.yaml）
+    # 先做配置环境变量插值，规则同 rules.yaml；连接目标由主机清单提供。
     data = parse_yaml(text) or {}
     return build_config(data)
 
@@ -172,13 +131,6 @@ def load_diagnostics_config(path: str | Path | None = None) -> DiagnosticsConfig
     if not config.enabled:
         logger.info("diagnostics.enabled=false，只读诊断能力关闭")
         return None
-    if not config.target.host:
-        logger.warning("diagnostics.target.host 为空，只读诊断能力关闭")
-        return None
-    logger.info(
-        "已加载诊断配置: 命令 %d 条，目标 %s@%s",
-        len(config.commands), config.target.username, config.target.host,
-    )
     return config
 
 
