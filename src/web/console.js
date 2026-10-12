@@ -45,6 +45,7 @@ const state = {
   selectedHostId: "", sessions: [], selectedSessionId: "", approvals: [],
   history: {alerts: [], remediations: [], advice: []}, inspections: [], executions: [],
   health: null, connected: false, busy: new Set(), refreshTimer: null,
+  overviewUpdatedAt: null, overviewError: "",
   confirmAction: null, selectedMetricId: "cpu.usage",
   isAdmin: false, admin: null, adminDirty: false,
   adminSection: "general", adminCatalog: "rule_actions",
@@ -228,8 +229,10 @@ function applyPreferences() {
   document.documentElement.dataset.theme = state.prefs.theme;
   document.documentElement.dataset.density = state.prefs.density;
   document.querySelector(".app-shell").classList.toggle("sidebar-collapsed", state.prefs.sidebarCollapsed);
-  $("sidebar-toggle").textContent = state.prefs.sidebarCollapsed ? "›" : "‹";
+  $("sidebar-toggle").classList.toggle("is-collapsed", state.prefs.sidebarCollapsed);
   $("sidebar-toggle").setAttribute("aria-label", state.prefs.sidebarCollapsed ? "展开导航" : "收起导航");
+  $("sidebar-toggle").setAttribute("aria-expanded", String(!state.prefs.sidebarCollapsed));
+  $("sidebar-toggle").title = state.prefs.sidebarCollapsed ? "展开导航" : "收起导航";
   const grid = document.querySelector(".dashboard-grid");
   state.prefs.widgetOrder.forEach(function (id) {
     const widget = grid.querySelector('[data-widget="' + id + '"]');
@@ -295,6 +298,10 @@ function updateControls() {
   const hostReady = state.connected && Boolean(state.selectedHostId);
   const sessionReady = hostReady && Boolean(state.selectedSessionId);
   const sending = state.busy.has("chat");
+  $("refresh").disabled = state.busy.has("refresh");
+  $("refresh").setAttribute("aria-busy", String(state.busy.has("refresh")));
+  $("refresh").setAttribute("aria-label", state.busy.has("refresh") ? "正在刷新数据" : "刷新当前数据");
+  renderOverviewContext();
   $("global-host").disabled = !state.connected || state.busy.has("refresh");
   $("new-session").disabled = !hostReady;
   $("session-menu-button").disabled = !sessionReady;
@@ -491,12 +498,16 @@ async function refreshAll(showMessage) {
     await Promise.all([loadAllHostStatuses(), loadSessions(), loadApprovals(), loadRecords(), loadAdminAccess()]);
     if (token !== sessionStorage.getItem(TOKEN_KEY)) return;
     updateConnection("online", "已连接");
+    state.overviewUpdatedAt = new Date();
+    state.overviewError = "";
     renderOverview();
     if (state.view === "hosts") await loadSelectedTrend();
     if (showMessage !== false) showNotice("数据已刷新 · " + new Date().toLocaleTimeString(), "success");
   } catch (error) {
     if (error.connectionChanged || token !== sessionStorage.getItem(TOKEN_KEY)) return;
     updateConnection("error", error.status === 401 ? "Token 无效" : "连接异常");
+    state.overviewError = error.status === 401 ? "连接已失效，请重新连接" : "刷新失败，请检查连接后重试";
+    renderOverview();
     showNotice(error.status === 401 ? "Token 无效或已失效，请重新连接。" : error.message, "error");
   } finally {
     setBusy("refresh", false);
@@ -509,14 +520,26 @@ async function selectHost(hostId) {
   if (!state.hosts.some(function (host) { return host.host_id === hostId && host.enabled; })) return;
   state.selectedHostId = hostId;
   state.selectedSessionId = "";
+  state.favoriteGeneration++;
+  replace("favorite-trends", node("div", "chart-empty", "正在加载当前主机趋势…"));
+  $("favorite-trends").setAttribute("aria-busy", "true");
+  replace("overview-recent", node("div", "chart-empty", "正在加载当前主机动态…"));
   renderHostSelectors();
   renderHosts();
   setBusy("host", true);
   try {
     await Promise.all([loadHostStatus(), loadSessions(), loadRecords()]);
+    if (!state.connected || state.selectedHostId !== hostId) return;
     renderOverview();
     if (state.view === "hosts") await loadSelectedTrend();
-  } catch (error) { showNotice(error.message, "error"); }
+  } catch (error) {
+    if (error.connectionChanged || state.selectedHostId !== hostId) return;
+    showNotice(error.message, "error");
+    ["favorite-trends", "overview-recent"].forEach(function (id) {
+      replace(id, overviewState("主机数据加载失败", "请刷新重试；当前不显示上一主机的数据。"));
+    });
+    $("favorite-trends").setAttribute("aria-busy", "false");
+  }
   finally { setBusy("host", false); }
 }
 
@@ -603,59 +626,155 @@ function renderAlertItems(container, alerts, emptyText) {
   });
 }
 
-function statCard(label, value, tone) {
+function statCard(label, value, tone, detail) {
   const card = node("div", "stat-card " + (tone || ""));
   card.append(node("span", "", label), node("strong", "", value));
+  if (detail) card.append(node("small", "stat-detail", detail));
   return card;
 }
 
+function renderOverviewContext() {
+  const update = $("overview-update");
+  if (!update) return;
+  const updated = state.overviewUpdatedAt ? "摘要更新 " + state.overviewUpdatedAt.toLocaleTimeString() : "尚未完成刷新";
+  if (state.busy.has("refresh")) update.textContent = "正在刷新运行数据…";
+  else if (state.overviewError) update.textContent = state.overviewError + " · " + updated;
+  else if (state.connected) {
+    const interval = state.prefs.refreshSeconds ? "每 " + state.prefs.refreshSeconds + " 秒自动刷新" : "手动刷新";
+    update.textContent = updated + " · " + interval;
+  } else update.textContent = "未连接 · 连接后加载运行数据";
+  update.className = state.overviewError ? "overview-update error" : "overview-update";
+  const host = currentHost();
+  document.querySelectorAll(".overview-selected-host").forEach(function (label) {
+    label.textContent = !host && state.connected && label.id === "overview-recent-scope"
+      ? "范围：全部授权主机的历史记录"
+      : "当前主机：" + (host ? host.name + " · " + host.host_id : "尚未选择");
+  });
+}
+
+function overviewState(title, detail, actionLabel, action) {
+  const box = node("div", "overview-state");
+  box.append(node("strong", "", title), node("p", "", detail));
+  if (action) {
+    const button = node("button", "text-button", actionLabel);
+    button.type = "button";
+    button.addEventListener("click", action);
+    box.append(button);
+  }
+  return box;
+}
+
 function renderOverview() {
+  const focused = document.activeElement;
+  const focusKey = focused && focused.dataset.overviewFocus;
+  renderOverviewContext();
   const enabled = state.hosts.filter(function (host) { return host.enabled; });
   const reachable = enabled.filter(function (host) {
     const status = state.hostStatuses.get(host.host_id);
     return status && status.exporter && status.exporter.state === "reachable";
   }).length;
-  const activeAlerts = Array.from(state.hostStatuses.values()).reduce(function (sum, item) {
-    return sum + (Array.isArray(item.active_alerts) ? item.active_alerts.length : 0);
+  // 活动告警取授权启用主机的实时状态，历史告警只进入最近动态。
+  // Exporter 不可达时后端不查告警，因此空数组不能视为已确认无告警。
+  const missingAlerts = enabled.filter(function (host) {
+    const status = state.hostStatuses.get(host.host_id);
+    return !status || !status.exporter || status.exporter.state !== "reachable" || status.alerts_state === "query_error";
+  }).length;
+  const activeAlerts = enabled.reduce(function (sum, host) {
+    const status = state.hostStatuses.get(host.host_id);
+    return sum + (status && Array.isArray(status.active_alerts) ? status.active_alerts.length : 0);
   }, 0);
+  const ready = state.health && state.health.ready;
+  const known = state.connected;
+  const coverage = known && enabled.length > 0;
+  let alertValue = "—", alertTone = "", alertDetail = "连接后查询";
+  if (coverage) {
+    alertValue = missingAlerts && !activeAlerts ? "—" : activeAlerts + (missingAlerts ? "+" : "");
+    alertTone = missingAlerts || activeAlerts ? "warn" : "good";
+    alertDetail = missingAlerts ? missingAlerts + " 台主机告警数据未确认" : "实时查询 · 含触发中与待触发";
+  } else if (known) alertDetail = "暂无启用主机";
   const stats = $("overview-stats");
   stats.replaceChildren(
-    statCard("平台就绪", state.health && state.health.ready ? "是" : "否", state.health && state.health.ready ? "good" : "bad"),
-    statCard("Exporter 可达", reachable + " / " + enabled.length, reachable === enabled.length && enabled.length ? "good" : "warn"),
-    statCard("活动告警", activeAlerts, activeAlerts ? "warn" : "good"),
-    statCard("待审批", state.approvals.length, state.approvals.length ? "warn" : "good")
+    statCard("平台就绪", !state.health ? "—" : ready ? "就绪" : "未就绪",
+      !state.health ? "" : ready ? "good" : "bad", "公开就绪探针 · 独立于身份连接"),
+    statCard("Exporter 可达", coverage ? reachable + " / " + enabled.length : "—",
+      coverage ? reachable === enabled.length ? "good" : "warn" : "",
+      known ? enabled.length ? "可达 / 已启用主机" : "暂无启用主机" : "连接后查询"),
+    statCard("活动告警", alertValue, alertTone, alertDetail),
+    statCard("待审批", known ? state.approvals.length : "—",
+      known ? state.approvals.length ? "warn" : "good" : "", known ? "当前身份可见的申请" : "连接后查询")
   );
+  if (!known) {
+    const title = state.overviewError ? "运行数据暂不可用" : "连接后查看运行数据";
+    const detail = state.overviewError ? "本次查询未完成，当前不显示缓存数据作为实时结果。" : "使用 API Token 连接，查看你有权访问的主机与待办。";
+    ["overview-hosts", "overview-attention", "favorite-trends", "overview-recent"].forEach(function (id) {
+      const connect = id === "overview-hosts" ? function () { $("open-auth").click(); } : null;
+      replace(id, overviewState(title, detail, state.overviewError ? "重新连接" : "连接 Assistant", connect));
+    });
+    $("overview-host-scope").textContent = "全部授权主机";
+    $("favorite-trends").setAttribute("aria-busy", "false");
+    return;
+  }
   const hostBox = $("overview-hosts");
   hostBox.replaceChildren();
-  if (!state.hosts.length) hostBox.append(empty("连接后加载主机"));
+  $("overview-host-scope").textContent = "已登记 " + state.hosts.length + " 台 · 已启用 " + enabled.length + " 台" + (state.hosts.length > 6 ? " · 显示前 6 台" : "");
+  if (!state.hosts.length) hostBox.append(overviewState("暂无可见主机", "请联系管理员登记主机并授予访问权限。"));
   state.hosts.slice(0, 6).forEach(function (host) {
     const status = state.hostStatuses.get(host.host_id);
-    const exporter = status && status.exporter ? status.exporter.state : (host.enabled ? "unknown" : "disabled");
-    const row = node("div", "mini-host");
-    const main = node("div", "mini-host-main");
+    const exporter = !host.enabled ? "disabled" : status && status.exporter ? status.exporter.state : "unknown";
+    const row = node("button", "mini-host");
+    row.type = "button";
+    row.disabled = !host.enabled;
+    row.dataset.overviewFocus = "host:" + host.host_id;
+    row.setAttribute("aria-label", "查看主机 " + host.name + "（" + host.host_id + "）");
+    row.addEventListener("click", async function () { await selectHost(host.host_id); navigate("hosts"); });
+    const main = node("span", "mini-host-main");
     main.append(node("strong", "", host.name), node("span", "", host.host_id));
-    const values = node("div", "mini-host-metrics");
+    const values = node("span", "mini-host-metrics");
     values.append(node("span", "", "CPU " + formatValue(metricValue(status, "cpu.usage"), "%")), node("span", "", "MEM " + formatValue(metricValue(status, "memory.usage"), "%")));
-    row.append(main, values, badge(exporter, exporter));
+    const labels = {reachable: "可达", unreachable: "不可达", query_error: "查询失败", unknown: "未确认", no_data: "无数据", disabled: "已停用"};
+    row.append(main, values, badge(labels[exporter] || "未确认", exporter));
     hostBox.append(row);
   });
   const attention = $("overview-attention");
   attention.replaceChildren();
   const items = state.approvals.map(function (item) {
-    return {title: "待审批 · " + (item.host_id || "未知主机"), detail: item.user || "未认证申请人", tone: "pending"};
-  }).concat(state.history.alerts.slice(0, 5).map(function (item) {
-    return {title: item.alertname || "告警", detail: item.host_id || item.instance || "未知主机", tone: item.status || item.severity};
-  })).slice(0, 6);
-  if (!items.length) attention.append(empty("当前没有需要处理的项目"));
-  items.forEach(function (item) {
+    return {title: "待审批 · " + (item.host_id || "未知主机"), detail: item.user || "未认证申请人", tone: "pending", label: "待审批", view: "approvals", focusKey: "approval:" + item.approval_id};
+  });
+  enabled.forEach(function (host) {
+    const status = state.hostStatuses.get(host.host_id);
+    (status && status.active_alerts || []).forEach(function (alert, index) {
+      items.push({title: alert.alertname || "活动告警", detail: host.name + " · " + (alert.summary || host.host_id), tone: alert.severity === "critical" ? "critical" : "warning", label: alert.state === "pending" ? "待触发" : "触发中", hostId: host.host_id, focusKey: "alert:" + host.host_id + ":" + alert.alertname + ":" + index});
+    });
+  });
+  if (missingAlerts) attention.append(overviewState("部分主机告警数据未确认", missingAlerts + " 台主机不可达或查询失败，请在主机详情检查采集状态。"));
+  if (!items.length && !missingAlerts) attention.append(overviewState("暂无待审批或活动告警", enabled.length ? "已完成当前启用主机的活动告警查询，历史事件可在运维记录中查看。" : "当前没有启用主机；登记并启用主机后可查看活动告警。"));
+  items.slice(0, 6).forEach(function (item) {
     const row = node("div", "attention-item");
     const copy = node("div", "record-main");
     copy.append(node("strong", "", item.title), node("span", "", item.detail));
-    row.append(copy, badge(item.tone || "unknown", item.tone));
+    const action = node("button", "text-button", item.view ? "查看审批" : "查看主机");
+    action.type = "button";
+    action.dataset.overviewFocus = item.focusKey;
+    action.setAttribute("aria-label", action.textContent + "：" + item.title);
+    action.addEventListener("click", async function () {
+      if (item.hostId) await selectHost(item.hostId);
+      navigate(item.view || "hosts");
+    });
+    const aside = node("div", "attention-actions");
+    aside.append(badge(item.label, item.tone), action);
+    row.append(copy, aside);
     attention.append(row);
   });
+  if (items.length > 6) attention.append(node("p", "panel-description", "显示前 6 项；完整申请见审批，完整活动告警见各主机详情。"));
   renderRecentOverview();
   if (state.connected && state.selectedHostId) loadFavoriteTrends();
+  else replace("favorite-trends", overviewState("尚未选择主机", "选择已启用主机后查看收藏指标的真实趋势。", "查看主机", function () { navigate("hosts"); }));
+  // 定时刷新会重建摘要行；只恢复仍然可见的同一操作，避免键盘焦点跳回页面起点。
+  if (focusKey) {
+    const replacement = Array.from(document.querySelectorAll("#view-overview [data-overview-focus]"))
+      .find(function (button) { return button.dataset.overviewFocus === focusKey && !button.disabled; });
+    if (replacement) replacement.focus({preventScroll: true});
+  }
 }
 
 function renderRecentOverview() {
@@ -740,7 +859,13 @@ function trendCard(metric, summary, large) {
 async function loadFavoriteTrends() {
   const box = $("favorite-trends"), hostId = state.selectedHostId, minutes = state.prefs.trendMinutes;
   const generation = ++state.favoriteGeneration;
-  if (!hostId) return replace("favorite-trends", empty("请选择主机"));
+  if (!hostId) {
+    box.setAttribute("aria-busy", "false");
+    return replace("favorite-trends", empty("请选择主机"));
+  }
+  // 切换主机或范围时先移除旧曲线，避免新标题下显示上一查询的采样。
+  box.setAttribute("aria-busy", "true");
+  replace("favorite-trends", node("div", "chart-empty", "正在加载收藏指标趋势…"));
   const cards = await Promise.all(state.prefs.favoriteMetrics.map(async function (id) {
     const metric = METRIC_MAP.get(id);
     try {
@@ -748,12 +873,16 @@ async function loadFavoriteTrends() {
       return trendCard(metric, data.trend, false);
     } catch (error) {
       const card = node("div", "trend-card");
-      card.append(node("strong", "", metric.label), empty("趋势查询失败：" + error.message));
+      const message = node("p", "trend-error", "趋势查询失败。请检查监控服务连接后，使用顶部刷新重试。");
+      const details = node("details", "record-json");
+      details.append(node("summary", "", "查看错误详情"), node("pre", "", error.message));
+      card.append(node("strong", "", metric.label), message, details);
       return card;
     }
   }));
   if (generation !== state.favoriteGeneration || hostId !== state.selectedHostId || minutes !== state.prefs.trendMinutes || !state.connected) return;
   box.replaceChildren.apply(box, cards);
+  box.setAttribute("aria-busy", "false");
 }
 
 function trendStep(minutes) { return Math.max(15, Math.ceil(minutes * 60 / 240)) + "s"; }
@@ -1846,6 +1975,7 @@ function clearConnectionData() {
   state.hosts = []; state.hostStatuses.clear(); state.sessions = []; state.approvals = [];
   state.history = {alerts: [], remediations: [], advice: []};
   state.inspections = []; state.executions = [];
+  state.overviewUpdatedAt = null; state.overviewError = "";
   state.isAdmin = false; state.admin = null; state.adminDirty = false;
   state.selectedHostId = ""; state.selectedSessionId = ""; state.confirmAction = null;
   $("chat-message").value = "";

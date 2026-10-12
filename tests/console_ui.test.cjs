@@ -90,9 +90,131 @@ function setup() {
   const source = fs.readFileSync(path.join(__dirname, "../src/web/console.js"), "utf8")
     .replace(/\ninitialize\(\);\s*$/, "\n");
   const context = {document, getComputedStyle: () => ({marginTop: "16px"}), localStorage: {getItem: () => null}, console};
-  vm.runInNewContext(source + "\nglobalThis.uiTest = {renderAdminHostAccess, renderAdminSecurity, loadHosts, renderCredentials, changeCredential, createTrendPlot, trendStep, clearCredentialInputs, loadFavoriteTrends, createSummarySvg, trendCard, appendSnapshot, appendRecordDetail, activateAdminSection, activateAdminCatalog, bindAdminTablist, clearAdminView, formatValue, loadHostStatus, loadConversation, loadRecords, loadSessions, request, bindEvents, prepareDiagnostic, sendChat, refreshAll, loadSelectedTrend, METRIC_MAP, state};", context);
+  vm.runInNewContext(source + "\nglobalThis.uiTest = {renderOverview, renderOverviewContext, selectHost, renderAdminHostAccess, renderAdminSecurity, loadHosts, renderCredentials, changeCredential, createTrendPlot, trendStep, clearCredentialInputs, loadFavoriteTrends, createSummarySvg, trendCard, appendSnapshot, appendRecordDetail, activateAdminSection, activateAdminCatalog, bindAdminTablist, clearAdminView, formatValue, loadHostStatus, loadConversation, loadRecords, loadSessions, request, bindEvents, prepareDiagnostic, sendChat, refreshAll, loadSelectedTrend, METRIC_MAP, state};", context);
   return {ui: context.uiTest, tabs, panes, catalogTabs, catalogPanes, elements, context};
 }
+
+function setupOverview() {
+  const env = setup();
+  for (const id of ["overview-update", "overview-stats", "overview-hosts", "overview-host-scope", "overview-attention", "overview-recent", "favorite-trends", "open-auth"]) {
+    env.elements.set(id, new Element("div"));
+  }
+  return env;
+}
+
+function contents(element) {
+  return all(element, () => true).map((item) => item.textContent).join(" ");
+}
+
+test("disconnected overview never describes unloaded alerts or approvals as healthy zero", () => {
+  const {ui, elements} = setupOverview();
+  ui.renderOverview();
+  const stats = elements.get("overview-stats").children;
+  for (const index of [1, 2, 3]) {
+    assert.equal(stats[index].children[1].textContent, "—");
+    assert.ok(!stats[index].className.includes("good"));
+  }
+  assert.ok(contents(elements.get("overview-attention")).includes("连接后查看运行数据"));
+  assert.ok(!contents(elements.get("overview-attention")).includes("暂无待审批或活动告警"));
+});
+
+test("overview separates live authorized-host alerts from current-host history", () => {
+  const {ui, elements} = setupOverview();
+  ui.state.connected = true;
+  ui.state.hosts = [{host_id: "node-a", name: "A", enabled: true}, {host_id: "disabled", name: "Disabled", enabled: false}];
+  ui.state.hostStatuses.set("node-a", {exporter: {state: "reachable"}, active_alerts: [{alertname: "LiveCPU", state: "firing", severity: "critical"}]});
+  ui.state.hostStatuses.set("disabled", {exporter: {state: "reachable"}, active_alerts: [{alertname: "OldDisabled"}]});
+  ui.state.hostStatuses.set("revoked", {active_alerts: [{alertname: "PrivateRevoked"}]});
+  ui.state.history.alerts = [{alertname: "ResolvedHistory", status: "resolved"}];
+  ui.renderOverview();
+  const attention = contents(elements.get("overview-attention"));
+  assert.ok(attention.includes("LiveCPU"));
+  assert.ok(!attention.includes("ResolvedHistory"));
+  assert.ok(!attention.includes("OldDisabled"));
+  assert.ok(!attention.includes("PrivateRevoked"));
+  assert.equal(elements.get("overview-stats").children[2].children[1].textContent, "1");
+  assert.ok(contents(elements.get("overview-recent")).includes("ResolvedHistory"));
+  assert.equal(elements.get("overview-hosts").children[0].tagName, "button");
+  assert.equal(elements.get("overview-hosts").children[1].disabled, true);
+});
+
+test("incomplete alert queries remain unknown and do not claim all-clear", () => {
+  for (const status of [{exporter: {state: "unreachable"}, active_alerts: []}, {exporter: {state: "reachable"}, alerts_state: "query_error", active_alerts: []}]) {
+    const {ui, elements} = setupOverview();
+    ui.state.connected = true;
+    ui.state.hosts = [{host_id: "node-a", name: "A", enabled: true}];
+    ui.state.hostStatuses.set("node-a", status);
+    ui.renderOverview();
+    assert.equal(elements.get("overview-stats").children[2].children[1].textContent, "—");
+    assert.ok(contents(elements.get("overview-attention")).includes("数据未确认"));
+    assert.ok(!contents(elements.get("overview-attention")).includes("暂无待审批或活动告警"));
+  }
+});
+
+test("complete zero alerts are healthy; a failed refresh hides stale operational data", () => {
+  const {ui, elements} = setupOverview();
+  ui.state.connected = true;
+  ui.state.hosts = [{host_id: "node-a", name: "A", enabled: true}];
+  ui.state.hostStatuses.set("node-a", {exporter: {state: "reachable"}, active_alerts: []});
+  ui.renderOverview();
+  assert.equal(elements.get("overview-stats").children[2].children[1].textContent, "0");
+  assert.ok(elements.get("overview-stats").children[2].className.includes("good"));
+  ui.state.connected = false;
+  ui.state.overviewError = "刷新失败，请检查连接后重试";
+  ui.renderOverview();
+  assert.equal(elements.get("overview-stats").children[2].children[1].textContent, "—");
+  assert.ok(contents(elements.get("overview-hosts")).includes("暂不可用"));
+  assert.ok(contents(elements.get("overview-update")).includes("刷新失败"));
+});
+
+test("favorite trends clear prior host pixels immediately and ignore superseded responses", async () => {
+  const {ui, elements, context} = setupOverview();
+  const box = elements.get("favorite-trends");
+  box.append(new Element("old-host-chart"));
+  ui.state.connected = true;
+  ui.state.selectedHostId = "node-a";
+  ui.state.prefs.favoriteMetrics = ["cpu.usage"];
+  let complete;
+  context.request = () => new Promise((done) => { complete = done; });
+  const pending = ui.loadFavoriteTrends();
+  assert.equal(all(box, (item) => item.tagName === "old-host-chart").length, 0);
+  assert.equal(box.getAttribute("aria-busy"), "true");
+  ui.state.selectedHostId = "node-b";
+  const current = new Element("current-host-chart");
+  box.replaceChildren(current);
+  complete({trend: {points: 1, min: 1, max: 1, avg: 1, latest: 1}});
+  await pending;
+  assert.equal(box.children[0], current);
+});
+
+test("host selection removes prior trends before waiting for host APIs", async () => {
+  const {ui, elements, context} = setupOverview();
+  ui.state.connected = true;
+  ui.state.hosts = [{host_id: "node-a", enabled: true}, {host_id: "node-b", enabled: true}];
+  ui.state.selectedHostId = "node-a";
+  let complete;
+  context.loadHostStatus = () => new Promise((done) => { complete = done; });
+  context.loadSessions = async () => {};
+  context.loadRecords = async () => {};
+  context.renderHostSelectors = context.renderHosts = context.setBusy = () => {};
+  const pending = ui.selectHost("node-b");
+  assert.ok(contents(elements.get("favorite-trends")).includes("正在加载当前主机"));
+  assert.ok(contents(elements.get("overview-recent")).includes("正在加载当前主机"));
+  ui.state.selectedHostId = "node-a";
+  complete();
+  await pending;
+});
+
+test("overview refresh preserves keyboard focus on a surviving host action", () => {
+  const {ui, elements, context} = setupOverview();
+  ui.state.connected = true;
+  ui.state.hosts = [{host_id: "node-a", name: "A", enabled: true}];
+  ui.renderOverview();
+  context.document.activeElement = elements.get("overview-hosts").children[0];
+  context.document.querySelectorAll = (selector) => selector === "#view-overview [data-overview-focus]" ? elements.get("overview-hosts").children : [];
+  ui.renderOverview();
+  assert.equal(elements.get("overview-hosts").children[0].focused, true);
+});
 
 test("equal and partially equal samples merge SVG markers without overlapping labels", () => {
   const {ui} = setup();

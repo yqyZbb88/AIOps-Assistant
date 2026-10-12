@@ -8,22 +8,23 @@
   <link rel="stylesheet" href="/console-assets/console.css">
 </head>
 <body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
   <!-- 页面只提供公开空壳；主机、告警、审批与管理配置均由 JS 通过同源受保护 API 加载。 -->
   <div class="app-shell">
     <aside id="sidebar" class="sidebar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">AO</span>
         <div class="brand-copy"><strong>AIOps Assistant</strong><span>Operations Console</span></div>
-        <button id="sidebar-toggle" class="icon-button sidebar-toggle" type="button" aria-label="收起导航" title="收起导航">‹</button>
+        <button id="sidebar-toggle" class="icon-button sidebar-toggle" type="button" aria-label="收起导航" aria-expanded="true" aria-controls="primary-navigation" title="收起导航"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button>
       </div>
-      <nav class="primary-nav" aria-label="主要导航">
-        <button class="nav-item active" type="button" data-view="overview" aria-current="page"><span class="nav-icon">⌂</span><span class="nav-label">总览</span></button>
-        <button class="nav-item" type="button" data-view="hosts"><span class="nav-icon">▦</span><span class="nav-label">主机</span></button>
-        <button class="nav-item" type="button" data-view="assistant"><span class="nav-icon">◎</span><span class="nav-label">问答诊断</span></button>
-        <button class="nav-item" type="button" data-view="approvals"><span class="nav-icon">✓</span><span class="nav-label">审批</span><span id="nav-approval-count" class="nav-count hidden">0</span></button>
-        <button class="nav-item" type="button" data-view="records"><span class="nav-icon">≡</span><span class="nav-label">运维记录</span></button>
-        <button id="admin-nav" class="nav-item hidden" type="button" data-view="admin"><span class="nav-icon">◇</span><span class="nav-label">系统管理</span></button>
-        <button class="nav-item" type="button" data-view="settings"><span class="nav-icon">⚙</span><span class="nav-label">个性化</span></button>
+      <nav id="primary-navigation" class="primary-nav" aria-label="主要导航">
+        <button class="nav-item active" type="button" data-view="overview" aria-current="page" aria-label="总览" title="总览"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3Z M9 20v-7h6v7"/></svg><span class="nav-label">总览</span></button>
+        <button class="nav-item" type="button" data-view="hosts" aria-label="主机" title="主机"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.01 M7 17h.01 M11 6h6 M11 17h6"/></svg><span class="nav-label">主机</span></button>
+        <button class="nav-item" type="button" data-view="assistant" aria-label="问答诊断" title="问答诊断"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11a8 8 0 0 1-8 8H7l-4 3V11a9 9 0 0 1 18 0Z M7 10h10 M7 14h6"/></svg><span class="nav-label">问答诊断</span></button>
+        <button class="nav-item" type="button" data-view="approvals" aria-label="审批" title="审批"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z m-4 9 3 3 5-6"/></svg><span class="nav-label">审批</span><span id="nav-approval-count" class="nav-count hidden">0</span></button>
+        <button class="nav-item" type="button" data-view="records" aria-label="运维记录" title="运维记录"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18H6Z M9 8h6 M9 12h6 M9 16h4"/></svg><span class="nav-label">运维记录</span></button>
+        <button id="admin-nav" class="nav-item hidden" type="button" data-view="admin" aria-label="系统管理" title="系统管理"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16 M4 12h16 M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></svg><span class="nav-label">系统管理</span></button>
+        <button class="nav-item" type="button" data-view="settings" aria-label="个性化" title="个性化"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4Z M14 4h6v6h-6Z M4 14h6v6H4Z M14 14h6v6h-6Z"/></svg><span class="nav-label">个性化</span></button>
       </nav>
       <div class="sidebar-foot">
         <span id="connection-dot" class="connection-dot offline"></span><span id="connection-label" class="nav-label">未连接</span>
@@ -31,37 +32,38 @@
     </aside>
     <div class="app-main">
       <header class="topbar">
-        <div><p id="view-eyebrow" class="eyebrow">OPERATIONS OVERVIEW</p><h1 id="view-title">运行总览</h1></div>
+        <div><p id="view-eyebrow" class="sr-only">OPERATIONS OVERVIEW</p><h1 id="view-title">运行总览</h1></div>
         <div class="topbar-actions">
           <label class="host-picker" for="global-host"><span>当前主机</span><select id="global-host" disabled><option value="">连接后选择</option></select></label>
-          <button id="refresh" class="icon-button" type="button" aria-label="刷新当前数据" title="刷新当前数据">↻</button>
+          <button id="refresh" class="icon-button" type="button" aria-label="刷新当前数据" title="刷新当前数据"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5 M20 12a8 8 0 1 0-2 5 M20 12a8 8 0 0 0-2-5"/></svg></button>
           <button id="open-auth" class="auth-button" type="button"><span id="auth-state">连接</span></button>
         </div>
       </header>
       <div id="notice-anchor" class="notice-anchor" hidden aria-hidden="true"></div>
       <div id="notice" class="notice hidden" role="status" aria-live="polite"><span id="notice-text"></span><button id="notice-close" class="icon-button" type="button" aria-label="关闭通知">×</button></div>
-      <main>
+      <main id="main-content" tabindex="-1">
         <section id="view-overview" class="view active" data-view-panel="overview">
-          <div class="hero">
-            <div><p class="eyebrow">CONTROL PLANE</p><h2>把异常、诊断与处置放在同一上下文</h2><p>所有操作都绑定一台登记主机。模型只选择受控工具，写动作仍需人工审批。</p></div>
-            <div class="hero-actions"><button type="button" data-go="assistant">开始问答</button><button type="button" class="secondary" data-go="hosts">查看主机</button></div>
+          <div class="overview-intro">
+            <div><h2>运行态势</h2><p>先确认主机与异常，再进入诊断和处置。</p></div>
+            <div class="overview-actions"><button type="button" class="secondary" data-go="hosts">查看主机</button><button type="button" data-go="assistant">开始问答</button></div>
           </div>
-          <div id="overview-stats" class="stat-grid" aria-live="polite"></div>
+          <div class="overview-context"><span>主机与活动告警：全部授权主机</span><span id="overview-update" role="status" aria-live="polite">连接后加载运行数据</span></div>
+          <div id="overview-stats" class="stat-grid" aria-label="运行状态摘要"></div>
           <div class="dashboard-grid">
             <section class="panel dashboard-widget" data-widget="hosts">
-              <div class="panel-head"><div><p class="panel-kicker">FLEET</p><h2>主机状态</h2></div><button class="text-button" type="button" data-go="hosts">全部主机</button></div>
+              <div class="panel-head"><div><h2>主机状态</h2><p id="overview-host-scope" class="panel-description">全部授权主机</p></div><button class="text-button" type="button" data-go="hosts">全部主机</button></div>
               <div id="overview-hosts" class="panel-body skeleton-block">连接后加载主机状态</div>
             </section>
             <section class="panel dashboard-widget" data-widget="attention">
-              <div class="panel-head"><div><p class="panel-kicker">ATTENTION</p><h2>需要关注</h2></div><button class="text-button" type="button" data-go="approvals">处理审批</button></div>
+              <div class="panel-head"><div><h2>需要关注</h2><p class="panel-description">待审批申请与实时活动告警</p></div><button class="text-button" type="button" data-go="approvals">处理审批</button></div>
               <div id="overview-attention" class="panel-body skeleton-block">连接后加载告警与审批</div>
             </section>
             <section class="panel dashboard-widget wide" data-widget="trends">
-              <div class="panel-head"><div><p class="panel-kicker">FAVORITES</p><h2>收藏指标趋势</h2></div><span id="overview-range" class="subtle"></span></div>
-              <div id="favorite-trends" class="chart-grid skeleton-block">选择主机后加载趋势</div>
+              <div class="panel-head"><div><h2>收藏指标趋势</h2><p class="panel-description overview-selected-host">当前主机：尚未选择</p></div><span id="overview-range" class="subtle"></span></div>
+              <div id="favorite-trends" class="chart-grid skeleton-block" aria-label="收藏指标趋势">选择主机后加载趋势</div>
             </section>
             <section class="panel dashboard-widget wide" data-widget="recent">
-              <div class="panel-head"><div><p class="panel-kicker">RECENT</p><h2>最近运维动态</h2></div><button class="text-button" type="button" data-go="records">查看记录</button></div>
+              <div class="panel-head"><div><h2>最近运维动态</h2><p id="overview-recent-scope" class="panel-description overview-selected-host">当前主机：尚未选择</p></div><button class="text-button" type="button" data-go="records">查看记录</button></div>
               <div id="overview-recent" class="panel-body skeleton-block">连接后加载记录</div>
             </section>
           </div>
@@ -236,16 +238,16 @@
       </main>
     </div>
   </div>
-  <dialog id="auth-dialog">
+  <dialog id="auth-dialog" aria-labelledby="auth-dialog-title">
     <form id="auth-form" method="dialog">
-      <div class="dialog-head"><div><p class="panel-kicker">AUTHENTICATION</p><h2>连接 Assistant</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭">×</button></div>
+      <div class="dialog-head"><div><h2 id="auth-dialog-title">连接 Assistant</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭">×</button></div>
       <label for="token">Bearer Token</label>
-      <input id="token" type="password" autocomplete="off" placeholder="仅保存在当前标签页" required>
+      <input id="token" name="token" type="password" autocomplete="off" spellcheck="false" placeholder="输入 API Token…" required>
       <p class="safety-note">页面不会显示、记录或持久化 Token。</p>
       <div class="dialog-actions"><button id="disconnect" class="secondary" type="button">断开并清除</button><button type="submit">连接</button></div>
     </form>
   </dialog>
-  <dialog id="session-dialog">
+  <dialog id="session-dialog" aria-labelledby="session-dialog-title">
     <form id="session-form" method="dialog">
       <div class="dialog-head"><div><p class="panel-kicker">SESSION</p><h2 id="session-dialog-title">新建会话</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭">×</button></div>
       <p id="session-dialog-host" class="subtle"></p>
@@ -255,7 +257,7 @@
       <div class="dialog-actions"><button class="secondary dialog-close" type="button">取消</button><button type="submit">保存</button></div>
     </form>
   </dialog>
-  <dialog id="confirm-dialog">
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
     <form id="confirm-form" method="dialog">
       <div class="dialog-head"><div><p class="panel-kicker">CONFIRM</p><h2 id="confirm-title">确认操作</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭">×</button></div>
       <p id="confirm-message"></p>

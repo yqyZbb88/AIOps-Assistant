@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-12T14:13:07+08:00",
+  "title": "Design System: AIOps-Assistant",
+  "extensions": {
+    "colorMeta": {
+      "dark-accent": { "role": "primary", "displayName": "深色主题浅青绿强调" },
+      "light-accent": { "role": "primary", "displayName": "浅色主题深青绿强调" },
+      "dark-bg": { "role": "neutral", "displayName": "深色主题冷蓝底" },
+      "light-bg": { "role": "neutral", "displayName": "浅色主题清浅中性底" }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "顶栏标题", "purpose": "当前视图名称。" },
+      "title": { "displayName": "运行态势标题", "purpose": "总览紧凑介绍标题；面板 h2 沿用约18px既有字号。" },
+      "body": { "displayName": "系统正文", "purpose": "中文说明和常规控件。" },
+      "label": { "displayName": "总览标签", "purpose": "数据范围、面板描述与摘要标签。" },
+      "stat": { "displayName": "总览数值", "purpose": "连续摘要中的状态与数值，使用等宽数字。" }
+    },
+    "shadows": [
+      { "name": "overlay-dark", "value": "0 18px 48px #0005", "purpose": "深色 --shadow；通知、弹出菜单和旧审批卡。" },
+      { "name": "overlay-light", "value": "0 18px 48px #25444b18", "purpose": "浅色及跟随系统浅色 --shadow。" },
+      { "name": "legacy-panel", "value": "0 12px 32px #0002", "purpose": "尚未迁移的通用面板；首批总览明确关闭。" },
+      { "name": "dialog", "value": "0 28px 90px #000a", "purpose": "现有原生对话框。" }
+    ],
+    "motion": [
+      { "name": "button-transition", "value": "border-color .15s, background .15s", "purpose": "既有按钮边界与背景状态变化。" },
+      { "name": "sidebar-transition", "value": "grid-template-columns .2s", "purpose": "桌面侧栏展开/收起。" },
+      { "name": "legacy-enter", "value": ".18s ease-out", "purpose": "保留的视图/消息进入动画；reduced-motion 下关闭。" }
+    ],
+    "breakpoints": [
+      { "name": "summary-two-columns", "value": "1100px" },
+      { "name": "mobile-navigation", "value": "780px" },
+      { "name": "narrow-content", "value": "520px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "主按钮",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "原有主操作；主题前景继承 --on-accent。",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">开始问答</button>",
+      "css": ".ds-btn-primary{font:650 14px/1.5 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif;padding:.66rem .9rem;border:1px solid var(--line);border-radius:var(--radius-control);background:var(--accent);color:var(--on-accent);cursor:pointer;transition:border-color .15s,background .15s}.ds-btn-primary:hover:not(:disabled){border-color:var(--accent)}.ds-btn-primary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-btn-primary:disabled{opacity:.42;cursor:not-allowed}@media(max-width:780px){.ds-btn-primary{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-btn-primary{transition:none}}"
+    },
+    {
+      "name": "次按钮",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "次级入口，悬停使用淡强调底色。",
+      "html": "<button class=\"ds-btn-secondary\" type=\"button\">查看主机</button>",
+      "css": ".ds-btn-secondary{font:650 14px/1.5 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif;padding:.66rem .9rem;border:1px solid var(--line);border-radius:var(--radius-control);background:transparent;color:var(--text);cursor:pointer;transition:border-color .15s,background .15s}.ds-btn-secondary:hover:not(:disabled){border-color:var(--accent);background:var(--accent-soft)}.ds-btn-secondary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-btn-secondary:disabled{opacity:.42;cursor:not-allowed}@media(max-width:780px){.ds-btn-secondary{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-btn-secondary{transition:none}}"
+    },
+    {
+      "name": "文字按钮",
+      "kind": "button",
+      "refersTo": "button-text",
+      "description": "面板中的原有跳转入口。",
+      "html": "<button class=\"ds-btn-text\" type=\"button\">全部主机</button>",
+      "css": ".ds-btn-text{font:650 14px/1.5 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif;padding:.3rem;border:0;border-radius:var(--radius-control);background:transparent;color:var(--accent);cursor:pointer;transition:background .15s}.ds-btn-text:hover:not(:disabled){background:var(--accent-soft)}.ds-btn-text:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-btn-text:disabled{opacity:.42;cursor:not-allowed}@media(max-width:780px){.ds-btn-text{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-btn-text{transition:none}}"
+    },
+    {
+      "name": "文本输入",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "沿用原生标签、输入与主题表面，不增加新表单行为。",
+      "html": "<label class=\"ds-input-label\">会话名称<input class=\"ds-input\" maxlength=\"64\" placeholder=\"例如：磁盘告警排查\"></label>",
+      "css": ".ds-input-label{display:block;color:var(--muted);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif}.ds-input{display:block;width:100%;margin-top:.3rem;padding:.68rem .75rem;border:1px solid var(--line);border-radius:var(--radius-control);background:var(--panel-2);color:var(--text);font:inherit;caret-color:var(--accent)}.ds-input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    },
+    {
+      "name": "导航项",
+      "kind": "nav",
+      "refersTo": "navigation",
+      "description": "线性 SVG、中文名称、选中背景与 aria-current；示例仅展示现有总览入口。",
+      "html": "<nav class=\"ds-nav\" aria-label=\"主要导航\"><button class=\"ds-nav-item\" type=\"button\" aria-current=\"page\" aria-label=\"总览\" title=\"总览\"><svg class=\"ds-nav-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m3 10 9-7 9 7v10H3Z M9 20v-7h6v7\"/></svg><span class=\"ds-nav-label\">总览</span></button></nav>",
+      "css": ".ds-nav{padding-left:.75rem}.ds-nav-item{position:relative;display:grid;grid-template-columns:2rem 1fr auto;align-items:center;gap:.45rem;padding:.66rem .9rem;text-align:left;border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:var(--radius-control);background:var(--accent-soft);color:var(--text);font:650 14px/1.5 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif;cursor:pointer;transition:border-color .15s,background .15s}.ds-nav-item:before{content:\"\";position:absolute;left:-.78rem;width:3px;height:1.5rem;border-radius:0 3px 3px 0;background:var(--accent)}.ds-nav-item:hover{background:var(--accent-soft);border-color:var(--accent)}.ds-nav-item:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-nav-icon{width:1.2rem;height:1.2rem;fill:none;stroke:currentColor;stroke-width:1.65;stroke-linecap:round;stroke-linejoin:round;justify-self:center}@media(max-width:780px){.ds-nav-item{min-height:44px}}@media(prefers-reduced-motion:reduce){.ds-nav-item{transition:none}}"
+    },
+    {
+      "name": "总览状态徽标",
+      "kind": "chip",
+      "refersTo": "overview-badge",
+      "description": "非交互状态标签；以文字说明未确认，避免假造健康样本。",
+      "html": "<span class=\"ds-badge\">未确认</span>",
+      "css": ".ds-badge{display:inline-flex;align-items:center;padding:.17rem .45rem;border:1px solid color-mix(in srgb,currentColor 30%,var(--line));border-radius:5px;color:var(--red);font:600 .75rem/1.4 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif;white-space:nowrap}"
+    },
+    {
+      "name": "总览面板",
+      "kind": "card",
+      "refersTo": "overview-panel",
+      "description": "已迁移的平面总览面板和真实未连接空态；不代表旧页面已迁移。",
+      "html": "<section class=\"ds-panel\"><header class=\"ds-panel-head\"><h2 class=\"ds-panel-title\">主机状态</h2><p class=\"ds-panel-description\">全部授权主机</p></header><div class=\"ds-panel-state\"><strong class=\"ds-state-title\">连接后查看运行数据</strong><p class=\"ds-state-description\">使用 API Token 连接，查看你有权访问的主机与待办。</p></div></section>",
+      "css": ".ds-panel{min-width:0;padding:var(--space-4);border:1px solid var(--line);border-radius:var(--radius-panel);background:var(--panel);color:var(--text);box-shadow:none;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",\"Microsoft YaHei\",sans-serif}.ds-panel-head{padding-bottom:var(--space-3);margin-bottom:var(--space-1);border-bottom:1px solid var(--line)}.ds-panel-title{margin:0;font-size:1.12rem}.ds-panel-description{margin:var(--space-1) 0 0;color:var(--muted);font-size:var(--text-label)}.ds-panel-state{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;min-height:8rem;padding:var(--space-6) var(--space-2);color:var(--muted)}.ds-state-title{color:var(--text);font-size:.875rem;font-weight:600}.ds-state-description{max-width:64ch;margin:var(--space-2) 0 0;font-size:var(--text-label);overflow-wrap:anywhere}@media(max-width:520px){.ds-panel{padding:var(--space-3)}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "运行值守台",
+    "overview": "沿用已经确认的专业运维方向：清晰、高效、可靠、现代。公共壳层保留深浅主题、青绿强调色和系统字体；首批运行总览以紧凑摘要、平面面板和细分隔线组织信息，让用户先确认主机、异常与待办，再进入原有诊断和处置流程。这里的名称描述既有方向，不引入新的品牌或视觉世界。\n\n本规范从 `src/web/console.css`、`console.html`、`console.js` 的实际实现提取，产品约束见 `PRODUCT.md`。公共壳层和运行总览已采用下面的首批规则；主机、问答、审批、记录、管理与个性化尚未完成逐页迁移，仍有旧渐变面板、英文眉题和后置覆盖链。不可据此宣称全站已平面化或所有组件已经统一。",
+    "keyCharacteristics": [
+      "深浅主题共用语义变量，青绿强调色用于操作、选中和已确认的良好状态。",
+      "首批总览平面、紧凑，摘要、对象列表和趋势各有明确层级。",
+      "未知、部分失败、真实零分别表达；范围与刷新信息就近可见。",
+      "沿用原生控件、线性 SVG、键盘焦点和现有密度偏好。"
+    ],
+    "rules": [
+      { "name": "The 主题语义 Rule", "body": "组件使用 `var(--accent)`、`var(--on-accent)` 等现有语义变量；深浅主题必须成对检查。", "section": "colors" },
+      { "name": "The 首批平面 Rule", "body": "新增或调整首批总览内容时，继续使用现有平面表面和细分隔；其他视图的材质变更需要逐页迁移与验证。", "section": "elevation" }
+    ],
+    "dos": [
+      "**Do** 使用现有语义变量并检查深浅主题，强调色底上使用 `--on-accent`。",
+      "**Do** 在首批总览保持平面面板、紧凑层级、连续摘要与细分隔线。",
+      "**Do** 就近标明全部授权主机、当前主机、当前身份可见申请与刷新状态。",
+      "**Do** 区分未知、部分失败、真实零、无数据和不适用，保留恢复入口与折叠技术详情。",
+      "**Do** 保留原生控件、键盘焦点、手机导航文字、安全区和 reduced-motion 行为。"
+    ],
+    "donts": [
+      "**Don't** 把未完成查询、不可达或空响应显示成已确认正常或真实零。",
+      "**Don't** 在切换主机后继续显示上一主机趋势，或把历史告警混成实时关注项。",
+      "**Don't** 为首批总览重新加入宣传性大标题、渐变面板、重阴影或装饰动画。",
+      "**Don't** 引入新字体、新配色、框架或大型依赖来替代现有系统。",
+      "**Don't** 宣称其他视图已经完成迁移，或把尚待验证的全站无障碍与业务行为写成已验收事实。"
+    ]
+  }
+}
