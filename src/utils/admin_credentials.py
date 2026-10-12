@@ -43,11 +43,13 @@ def atomic_private(path: Path, text: str) -> None:
 
 
 class CredentialStore:
+    """本地页面凭据存储；版本化 SSH 资产保留旧快照引用，不自动清理。"""
     def __init__(self, directory: Path):
         self.directory = directory
         self.path = directory / "state.json"
 
     def read(self) -> dict:
+        """读取并校验状态结构；缺文件返回空状态，损坏或类型错误拒绝加载。"""
         if not self.path.exists():
             return {"version": 1, "tokens": {}, "ssh": {}, "model": None}
         try:
@@ -122,6 +124,7 @@ def validate_model(data: dict) -> dict:
 
 
 def validate_ssh(data: dict, existing: dict | None) -> dict:
+    """校验凭据及 known_hosts；保留未修改材料，拒绝任意文件路径和含糊认证方式。"""
     if set(data) - {"username", "method", "password", "private_key", "known_hosts"}:
         raise AdminConfigError("SSH 凭据包含未知字段")
     username = data.get("username")
@@ -174,10 +177,12 @@ def validate_ssh(data: dict, existing: dict | None) -> dict:
 
 
 class AdminCredentials:
+    """在配置管理锁和运行切换屏障内更新页面凭据，复用 revision 与候选校验。"""
     def __init__(self, manager):
         self.manager = manager
 
     def snapshot(self):
+        """返回凭据元信息和 revision，不返回 Token、密码、私钥或模型密钥。"""
         with self.manager._lock:
             manager = self.manager
             state = manager.credential_store.read()
@@ -200,6 +205,11 @@ class AdminCredentials:
                         "configured": bool(current.get("api_key")), "managed": state["model"] is not None}}
 
     def change(self, revision, kind, key, action, data, actor):
+        """校验 revision、构造候选、保存凭据及关联并提交运行快照。
+
+        普通异常恢复文件与状态；跨文件修改不提供断电事务保证。新 Token 仅当次
+        响应返回，保存本身不执行真实模型/SSH 请求。
+        """
         manager = self.manager
         with manager._lock:
             if revision != manager.revision():

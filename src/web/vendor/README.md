@@ -1,15 +1,13 @@
 # Marked
 
-- Version: **18.1.0** (MIT)
-- Upstream: https://github.com/markedjs/marked
-- Release: https://registry.npmjs.org/marked/-/marked-18.1.0.tgz
-- Release integrity: `sha512-PamYXWWWg2nboG3oX5Ffzpy3EFZROqZJK9hSlMmUnekp7TxPs5DcT95vwd46m73/exfKCRVMtgXoPMI4FEJL6w==`
+- 版本： **18.1.0** (MIT)
+- 上游：[Marked](https://github.com/markedjs/marked)
+- 发布包：[18.1.0](https://registry.npmjs.org/marked/-/marked-18.1.0.tgz)
+- 发布包完整性： `sha512-PamYXWWWg2nboG3oX5Ffzpy3EFZROqZJK9hSlMmUnekp7TxPs5DcT95vwd46m73/exfKCRVMtgXoPMI4FEJL6w==`
 
-`marked.umd.js` is the unmodified browser distribution; `marked.LICENSE` is
-the upstream license. No install or frontend build step is required. Only the
-explicit script asset is publicly served, not this directory.
+`marked.umd.js` 是未经修改的浏览器发行文件，`marked.LICENSE` 保留上游许可。
+无需安装或前端构建。服务仅公开指定脚本，不公开整个目录。
 
-The console uses `marked.lexer()` only. `../markdown.js` creates a restricted DOM
-from its tokens and never uses Marked's HTML output. When updating, verify the
-release integrity, retain the license, and run Markdown security/runtime tests
-and the real-browser checks before changing the pinned version.
+控制台仅调用 `marked.lexer()`，由 `../markdown.js` 通过允许列表构建 DOM，不使用
+Marked 的 HTML 输出。升级时核对发布包完整性、保留许可，并执行 Markdown 安全、
+运行时与真实浏览器验收，再更新固定版本。

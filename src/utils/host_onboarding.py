@@ -97,6 +97,7 @@ class HostOnboarding:
         return targets
 
     def options(self) -> dict[str, Any]:
+        """返回登记选项及发现目标，不包含原始凭据或完整 Prometheus 响应。"""
         manager = self.manager
         docs = manager._load_docs()
         mode = self._mode()
@@ -237,6 +238,10 @@ class HostOnboarding:
         }
 
     def ssh_check(self, revision: str, draft: Mapping[str, Any]) -> dict[str, Any]:
+        """只验证候选 SSH 主机密钥与认证，成功返回绑定 revision/目标的 5 分钟票据。
+
+        不执行命令或自动授权；连接失败映射为 AdminConfigError。
+        """
         manager = self.manager
         preview = self.preview(revision, draft)
         docs = manager._load_docs()
@@ -306,6 +311,10 @@ class HostOnboarding:
         return yaml.safe_dump(current, allow_unicode=True, sort_keys=False)
 
     def add(self, revision: str, draft: Mapping[str, Any], actor: str) -> dict[str, Any]:
+        """在管理锁内校验并登记主机和必要的 managed 目标，普通异常按管理器边界回滚。
+
+        相同登记可幂等返回；诊断授权要求本候选的有效 SSH 票据，不自动增加写权限。
+        """
         manager = self.manager
         with manager._lock:
             docs = manager._load_docs()

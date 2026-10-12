@@ -1,5 +1,6 @@
 """聊天始终验证 Token、会话归属与固定主机访问权。
-会话存储不可用时返回 503，禁止回退到无主机范围的聊天。"""
+会话存储不可用时返回 503，禁止回退到无主机范围的聊天。
+"""
 from __future__ import annotations
 
 import logging
@@ -21,15 +22,9 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     """/chat 请求体。
 
-    **两段式：先 `POST /sessions` 建会话拿 id，之后每轮都带上它。**
-
-    - `message`：本轮用户输入。
-    - `session_id`：**必填**。须已存在且属于调用者。未知或无权访问一律 404
-      （两者同形，不泄露「这个 id 存在，只是不是你的」）。
-
-    **调用者身份不在请求体中**。服务端始终从 Bearer Token
-    推断身份；关闭时身份为 `None`，不按身份隔离。额外的 `user` 或
-    `session_name` 字段会被忽略，不作为可信输入。
+    message 与既有 session_id 必填，先通过 POST /sessions 创建会话。
+    身份始终来自 Bearer Token；额外 user/session_name 字段被忽略。未知或越权
+    会话统一为 404，存储不可用为 503，不提供关闭鉴权的分支。
     """
 
     message: str = Field(..., min_length=1, description="用户输入的消息")
@@ -60,7 +55,7 @@ class ChatResponse(BaseModel):
 
     reply: str = Field(..., description="机器人回复")
     session_id: str | None = Field(
-        None, description="本次使用的会话 id（无会话存储时为 null）"
+        None, description="本次使用的既有会话 id；存储不可用时接口返回 503"
     )
     session_name: str | None = Field(
         None, description="本次使用的会话的标签（未命名会话为 null，只读不改）"

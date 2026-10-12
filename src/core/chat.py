@@ -176,21 +176,10 @@ class ChatService:
         session_id: str | None = None,
         user: str | None = None,
     ) -> ChatReply:
-        """带会话的一轮：Agent-first → 关键词兜底，并把这一轮写进会话表。
+        """按会话调用 Agent 或关键词兜底，并单独处理历史写入。
 
-        `user` 是**调用者的身份**，由上层从有效密钥推出（None 仅供可信内部旧入口）——它只用于
-        (a) 新建会话时记归属、(b) 校验 `session_id` 是不是自己的，**绝不参与选中会话**
-        （选中只认 id；把身份当会话键会让同一个人开两个话题时互相污染）。
-
-        三个刻意的结构选择：
-
-        1. **落库放在 Agent 的 try/except 之外**。上面那条 catch-all 会吞掉一切异常并
-           回落关键词，若把 DB 写也圈进去，任何持久化 bug 都会被归类成「LLM 抖动」而永远
-           查不出来。这里 Agent 调用单独包 try，落库在 try 外、有自己的错误处理。
-        2. **关键词兜底的回答同样落库**。落库若只发生在 Agent 分支里，那么「没装 langchain /
-           没 key」的降级部署里会话表永远是空的，同一功能在两套部署下行为不同——而这个
-           仓库把降级部署当一等公民（有专门的 no-langchain 回归测试）。
-        3. **持久化不可用时只是不落库**，聊天照常（`_sessions is None` → 全程跳过）。
+        user 只校验归属，选中会话只认 session_id。模型与存储异常分开处理，避免把
+        写库失败误当模型失败。无存储兼容仅供内部调用；HTTP 预先要求可验证会话。
         """
         message = redact_text(message)
         sid, sname, host_id = self._resolve_session(session_id, user)
@@ -228,17 +217,9 @@ class ChatService:
         session_id: str | None = None,
         user: str | None = None,
     ) -> TurnResult:
-        """让 Agent 跑一轮，**三级分派**：
+        """按可选协议传入审批上下文、历史，或退回单轮 reply。
 
-        1. `ApprovalContextCapable` → 连会话上下文一起传。`/approvals` 的身份隔离与
-           `approval_decisions` 的 `session_id` 都靠这一级——Agent 自己既不知道当前是
-           哪个会话，也不知道调用者是谁，只能由这里送进去；
-        2. `HistoryCapable` → 只传历史（老实现，行为不变）；
-        3. 其余 → 退回单轮 `reply`。
-
-        **必须靠 isinstance 分派，不能给既有方法加 kwarg**：runtime_checkable 只查
-        方法名不查签名，加 kwarg 时只实现旧签名的对象会被误判为支持，然后在调用处
-        TypeError。这也是新能力一律「新方法名 + 新 Protocol」的原因。
+        runtime_checkable 不检查方法签名，新能力使用独立方法名，避免旧实现被误判。
         """
         if isinstance(assistant, ApprovalContextCapable):
             return assistant.reply_turn_ctx(
@@ -267,20 +248,10 @@ class ChatService:
     def _resolve_session(
         self, session_id: str | None, user: str | None
     ) -> tuple[str | None, str, str]:
-        """确定本轮用哪个会话，返回 (session_id, session_name, host_id)；存储不可用 → (None, "", "")。
+        """返回 (session_id, name, host_id)，内部无存储调用返回 (None, "", "")。
 
-        **给了 `session_id`：必须已存在且属于调用者。**
-
-        - 不存在 → `SessionNotFoundError`（api 转 404）。不静默重建，否则 `DELETE` 形同虚设。
-        - **归属不匹配也一律 404**（不是 403）：与「未知 id」同形，不泄露
-          「这个 id 存在，只是不属于你」。判定用 `interfaces.is_owner`——那是唯一的
-          归属实现，api 层的 `/sessions/*` 用的是同一个。
-        - `user is None` 仅用于可信内部旧入口；HTTP 不能传入匿名身份。
-
-        **没给 `session_id`：建一段新会话。** 这条路径**不是** `/chat` 走的——那边
-        `session_id` 是必填字段、建会话只认 `POST /sessions`。它服务的是**旧的单轮入口**
-        （`OpsAgent.chat()` / `ChatService.reply()`，降级部署与既有调用方还在用），
-        保留是为了不让那批调用方凭空失去落盘能力。
+        已给 ID 必须存在且属于调用者，否则 SessionNotFoundError，不静默重建。未给 ID
+        的内部兼容路径可创建会话；HTTP /chat 要求既有 ID，身份及主机访问由边界验证。
         """
         store = self._sessions
         if store is None:
@@ -353,12 +324,7 @@ class ChatService:
     # 人工审批转发（写命令能力为可选；不支持时给出明确语义）
     # ------------------------------------------------------------------
     def pending_approvals(self, *, strict: bool = False) -> list[PendingApproval]:
-        """当前待人工决策的写命令调用；Agent 未构建/不支持审批时返回空列表。
-
-        **刻意走已建好的 self._assistant**，不调用 _ensure_assistant()：
-        审批查询是旁路操作，不该为它触发 Agent 构建，也不该在构建失败时
-        把 _agent_broken 置位（否则一次空查询就会拖垮后续聊天）。
-        """
+        """查询已构建 Agent 的申请，不为审批旁路触发 Agent 构造。"""
         result: list[PendingApproval] = []
         for assistant in self._all_assistants():
             if not isinstance(assistant, ApprovalCapable):
@@ -379,11 +345,9 @@ class ChatService:
         reason: str = "",
         decided_by: str | None = None,
     ) -> ApprovalOutcome:
-        """提交一次审批决策；Agent 不支持审批时抛 ApprovalError（由 api 转 503/404）。
+        """提交审批并回填原 pending 轮次，处理完成、链式申请和未知结果。
 
-        决策跑完后要**回填会话表**：中断那轮的最终回答是在这里才产生的，不回填的话
-        历史里就会永远留一条「待审批」没有下文。三个出口都要处理——
-        跑完（final）/ 又触发下一条（链式 pending）/ 抛错（保持 pending 不动）。
+        决策提交后续跑失败不恢复原申请；下一条申请保存失败时取消下一条，避免重放原决策。
         """
         candidates = [
             candidate
@@ -457,11 +421,7 @@ class ChatService:
         return outcome
 
     def cancel_pending(self, approval_id: str) -> bool:
-        """作废一条待审批项（会话被删除时用）。Agent 不支持时返回 False。
-
-        与 pending_approvals/decide 同款：走**已建好的** `self._assistant`，
-        不触发 Agent 构建、不置 `_agent_broken`。
-        """
+        """通过已构建 Agent 取消申请；不触发构造，未知或不支持时返回 False。"""
         for assistant in self._all_assistants():
             if not isinstance(assistant, ApprovalCancellable):
                 continue

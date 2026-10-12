@@ -30,7 +30,8 @@ Compose 首次构建与拉取镜像需要可用的仓库网络。仅运行 Compo
 docker build --target test -t aiops-regression:0.6.2 .
 docker run --rm --network none aiops-regression:0.6.2
 docker run --rm --network none --entrypoint node aiops-regression:0.6.2 --check src/web/console.js
-docker run --rm --network none --entrypoint node aiops-regression:0.6.2 --test tests/console_ui.test.cjs
+docker run --rm --network none --entrypoint node aiops-regression:0.6.2 --check src/web/markdown.js
+docker run --rm --network none --entrypoint node aiops-regression:0.6.2 --test tests/console_ui.test.cjs tests/console_markdown.test.cjs
 docker run --rm --network none --entrypoint python aiops-regression:0.6.2 -m compileall -q src scripts tests
 git diff --check
 ```
@@ -54,13 +55,13 @@ docker run --rm --network none aiops-regression:0.6.2 -q tests/test_admin_creden
 
 相关修正完成后执行完整回归，CI 使用同一 test 目标。
 
-## 3. 建立独立 Compose 测试栈
-
 通用模型回归 `test_model_initialization.py` 使用回环 HTTP 服务检验真实 Chat Completions
 请求、两种输出长度字段、文本响应、完整工具回合和超时。测试不访问公共模型。
 `test_config_migration.py` 覆盖预览、新旧冲突、页面配置、材料缺失、写入回滚、
 备份失败、迁移中断和重复执行。SSH 回归保留主机隔离、白名单、审批及主机密钥拒绝。
 前端回归同时检查通用模型字段和敏感输入清理。
+
+## 3. 建立独立 Compose 测试栈
 
 测试栈使用项目名 `aiops-local-test`、目录 `.runtime/local-test` 和独立端口。
 不要把已有部署的数据复制到这个目录，也不要将后面的停止、重建、告警或故障操作用于真实服务。
@@ -78,7 +79,7 @@ $env:PROMETHEUS_HOST_PORT = '19090'
 $env:ALERTMANAGER_HOST_PORT = '19093'
 $env:NODE_EXPORTER_HOST_PORT = '19100'
 
-foreach ($testEnvName in @('MODEL_API_KEY', 'MODEL_BASE_URL', 'MODEL_NAME')) {
+foreach ($testEnvName in @('MODEL_API_KEY', 'MODEL_BASE_URL', 'MODEL_NAME', 'MODEL_TIMEOUT', 'MODEL_MAX_RETRIES', 'MODEL_MAX_TOKENS', 'MODEL_TOKEN_LIMIT_PARAM', 'OPS_REDACTION_SECRETS')) {
     Remove-Item -LiteralPath "Env:$testEnvName" -ErrorAction SilentlyContinue
 }
 ```
@@ -90,12 +91,15 @@ export AIOPS_RUNTIME_DIR=./.runtime/local-test
 export AIOPS_IMAGE=aiops-assistant:local-test
 export ASSISTANT_HOST_PORT=18000 GRAFANA_HOST_PORT=13000
 export PROMETHEUS_HOST_PORT=19090 ALERTMANAGER_HOST_PORT=19093 NODE_EXPORTER_HOST_PORT=19100
-unset MODEL_API_KEY MODEL_BASE_URL MODEL_NAME
+unset MODEL_API_KEY MODEL_BASE_URL MODEL_NAME MODEL_TIMEOUT MODEL_MAX_RETRIES
+unset MODEL_MAX_TOKENS MODEL_TOKEN_LIMIT_PARAM OPS_REDACTION_SECRETS
 ```
 
 所有测试栈命令都显式使用 `-p aiops-local-test --env-file .env.example`。
 `--env-file` 避免读取根 `.env` 的业务密钥；进程环境变量仍优先，所以先清除上面的凭据。
 换终端后须重新设置测试目录、镜像和端口，否则不要继续执行测试栈命令。
+init 仍会只读检查根 `.env` 的旧字段；若当前工作副本含遗留输入，使用独立干净源码
+检出执行测试，不改动真实部署的根环境文件来绕过检查。
 
 ```bash
 docker compose version
@@ -120,45 +124,38 @@ docker compose -p aiops-local-test --env-file .env.example ps --all
 或 macOS 宿主机指标。若在服务器终端执行测试，从个人电脑浏览器访问时需使用相应 SSH 隧道
 或已配置的代理地址，不能把个人电脑的 `127.0.0.1` 当作服务器。
 
-## 4. 自动验证告警链路与重建持久化
+## 4. 自动验证权限、告警链路与重建持久化
 
-先完成本节，再修改测试配置。冒烟脚本会写入测试会话、发送一条本地 Alertmanager 告警、
-在主机 YAML 中追加注释，并校验重建后凭据和配置的哈希；只允许在上述独立测试栈运行。
-它不调用真实模型或 SSH。
+本节必须按顺序执行，再进行后续页面修改。两个脚本会创建合成身份、主机、凭据、会话、
+配置注释及状态文件，向本地 Alertmanager 投递告警；不连接真实模型/SSH。只用于可丢弃栈。
+用户权限脚本先登记测试主机，部署脚本随后记录配置哈希，顺序颠倒会使重建校验失败。
 
-使用 `cp` 而非终端输入重定向，以下命令可同时用于 PowerShell 和 Bash：
+首次验证（cp 与 exec 可用于 PowerShell/Bash）：
 
 ```bash
+docker compose -p aiops-local-test --env-file .env.example cp tests/compose_access_smoke.py assistant:/tmp/compose_access_smoke.py
+docker compose -p aiops-local-test --env-file .env.example exec -T assistant python /tmp/compose_access_smoke.py
 docker compose -p aiops-local-test --env-file .env.example cp tests/compose_smoke.py assistant:/tmp/compose_smoke.py
 docker compose -p aiops-local-test --env-file .env.example exec -T -e PYTHONPATH=/app assistant python /tmp/compose_smoke.py
 ```
 
-预期退出码为 0，最后显示：
+两次退出码均应为 0。权限脚本验证两用户私有会话、主机范围、跨主机 9 类查询和 Token
+轮换；部署脚本验证 ready、鉴权、17 项即时/趋势、页面凭据、关键词聊天及真实本地
+Alertmanager → Assistant → SQLite 归档。不要在此时编辑主机或凭据。
 
-```text
-PASS: readiness, auth, all 17 instant/trend queries, managed credentials, chat and webhook fixture
-```
-
-脚本同时验证：公开 `/ready`、匿名业务请求 401、管理员访问管理配置、Alertmanager 身份不能
-访问管理配置、管理员不能冒充 webhook 身份、Exporter 被正常抓取、关键词聊天、真实
-Alertmanager → Assistant → SQLite 告警归档，并验证全部 17 项即时/趋势 API 与页面凭据保存。
-
-重建后重新复制脚本，因为容器 `/tmp` 不持久化：
+整栈重建，然后先验证部署持久化、再验证用户权限；/tmp 不持久化，必须重新复制：
 
 ```bash
 docker compose -p aiops-local-test --env-file .env.example up -d --force-recreate --wait --wait-timeout 180
 docker compose -p aiops-local-test --env-file .env.example cp tests/compose_smoke.py assistant:/tmp/compose_smoke.py
 docker compose -p aiops-local-test --env-file .env.example exec -T -e PYTHONPATH=/app assistant python /tmp/compose_smoke.py --verify
+docker compose -p aiops-local-test --env-file .env.example cp tests/compose_access_smoke.py assistant:/tmp/compose_access_smoke.py
+docker compose -p aiops-local-test --env-file .env.example exec -T assistant python /tmp/compose_access_smoke.py --verify
 ```
 
-预期退出码为 0，显示：
-
-```text
-PASS: credentials, config, session and chat survived recreation
-```
-
-验证成功会删除脚本创建的测试会话和状态文件。若失败，保留数据与日志，按失败断言定位；
-不要在两次校验之间编辑主机清单或更换凭据，也不要删除部署目录来获得“通过”。
+预期凭据、配置、会话/消息、ACL 保留；撤权阻止旧会话，恢复授权可读历史，撤销 Token
+返回 401，原管理员与 webhook 仍有效。成功验证会消费状态文件并清理部分测试数据，
+不能重复 --verify。失败保留日志与数据，不删除目录来获得“通过”。
 
 ## 5. 控制台与业务验收
 
@@ -181,7 +178,7 @@ Token 输入控制台连接框，Grafana 用户名为 `admin`。报告中不记�
 | UI-05 | 切换主题、密度、收藏和时间范围，再刷新 | 浏览器偏好保留，服务端主机配置与授权不被改变 |
 | UI-06 | 断开连接，再重新连接 | 页面清除 Token 和已加载的管理表单；重新连接恢复访问；服务端会话不因断开而删除 |
 | CFG-01 | 管理页切换前四个分区并修改草稿，再放弃修改 | 切换时草稿不丢失；放弃后重新加载服务端实际配置 |
-| CFG-02 | 无进行中业务或待审批时，关闭巡检并保存，再重新启用并保存 | 两次保存成功且立即生效；`/ready` 正常；日志反映调度启停，无需重启容器 |
+| CFG-02 | 无进行中业务或待审批时，关闭巡检并保存，再重新启用并保存 | 两次保存成功且立即生效；`/ready` 正常；关闭后不再巡检，启用后按新间隔继续；调度线程保持唯一，无需重启容器 |
 | CFG-03 | 修改一项草稿但不保存，尝试进入新增主机向导 | 页面要求先保存或放弃草稿，不静默丢失修改 |
 | CFG-04 | 使用两个标签页读取同一配置；第一个保存一个开关，第二个提交旧草稿 | 旧 revision 返回 409，不覆盖第一次保存；第二个重载后可正常编辑；最后恢复原开关 |
 | HOST-01 | 有独立测试 Exporter 时，从管理页登记其可达目标，先不配置 SSH | 新主机出现在清单，等待发现和抓取后有监控数据；三类命令授权为空 |
@@ -192,32 +189,10 @@ Token 输入控制台连接框，Grafana 用户名为 `admin`。报告中不记�
 清退测试主机需按 [配置指南](configuration.md)核对规则与历史引用，不能把页面不存在的删除操作
 当作测试失败。新建专用测试栈可在完成测试后整体停止保留证据。
 
-## 安全合成告警演示
-
-本节沿用前面已经建立的独立 `aiops-local-test` 测试栈、环境变量和数据目录。
-不要在已有业务部署演示告警；其处置规则可能自动执行写命令。新测试栈的安全模板没有处置规则，
-写命令关闭。以下命令只修改 Node Exporter textfile 合成指标，不制造真实 CPU 负载：
-
-```bash
-docker compose -p aiops-local-test --env-file .env.example run --rm --no-deps --entrypoint python init scripts/demo_fault.py cpu on --runtime /runtime
-```
-
-Prometheus 的高 CPU 规则包含 `for: 30s`，还需要等待抓取、规则评估和 Alertmanager 分组投递。
-在控制台查看活动告警及告警归档，核对 `HighCPUUsage`、`local-node` 和时间。
-未配置模型时仍可接收和归档，不会生成 AI 分析；合成告警不意味着真实 CPU 使用率升高，
-也不保证产生异常巡检记录。
-
-演示结束恢复指标，重复启动不会自动重置它：
-
-```bash
-docker compose -p aiops-local-test --env-file .env.example run --rm --no-deps --entrypoint python init scripts/demo_fault.py reset --runtime /runtime
-```
-
-等待 resolved 通知并检查归档；其它依赖停止/恢复场景见下一节。
-
 ## 6. 告警和异常恢复
 
-合成告警只修改独立测试栈的 textfile 指标，不制造真实 CPU 负载：
+先确认测试栈没有自动处置规则，写目录关闭。合成告警只修改 textfile 指标，不制造
+真实 CPU 负载；已有业务规则可能对它执行真实写操作：
 
 ```bash
 docker compose -p aiops-local-test --env-file .env.example run --rm --no-deps --entrypoint python init scripts/demo_fault.py cpu on --runtime /runtime
@@ -251,19 +226,18 @@ docker compose -p aiops-local-test --env-file .env.example run --rm --no-deps --
 
 ## 7. AI、SSH 与人工审批（按需执行）
 
-本节使用独立的 Linux 测试主机。模型密钥、SSH 私钥、已确认指纹的 known_hosts 与
-容器路径按 [部署文档](deployment.md#可选配置模型端口与-ssh)准备；使用相同测试项目和
-数据目录，但为此阶段创建单独、被忽略的环境文件（例如 `.runtime/local-ai-test.env`）。
-将此阶段命令中的 `--env-file .env.example` 改为该文件，保持测试端口不变。
-加入模型密钥后重建服务，并在管理页确认 Agent 和告警 AI 开关实际开启。
+本节使用独立 Linux 测试主机，在测试栈管理页登记模型配置、SSH 凭据和经核验的
+known_hosts，再关联目标主机。完整模型需密钥、接口根地址与名称，且支持标准工具调用。
+保存后热生效，使用显式连接按钮核对；按需启用 Agent/LLM。详细操作见
+[部署配置](deployment.md#可选配置模型与端口)。页面凭据不需要写入另一个环境文件。
 
 | 编号 | 操作 | 预期结果 |
 |---|---|---|
 | AI-01 | 新建目标主机会话，询问“结合当前 CPU、内存和告警分析主机状态” | 回答依据工具事实，包含正确主机和数据时间；没有数据时说明缺失，不编造取数结果 |
-| AI-02 | 触发一条未命中处置规则的测试告警 | 告警归档后有对应 AI 分析或明确失败记录；模型失败不抹掉告警历史，也不触发未授权动作 |
+| AI-02 | 触发一条未命中处置规则的测试告警 | 先尝试 AI 分析再最终归档，有对应建议或明确失败日志；模型失败不抹掉告警历史，也不触发未授权动作 |
 | SSH-01 | 通过 SSH 认证检查，只授予 `memory`、`disk` 诊断，再在会话要求查看内存和磁盘 | 只在会话绑定主机执行授权只读命令；结果有时间与输出，不返回连接凭据 |
-| SSH-02 | 使用测试凭据模拟认证失败或未登记主机密钥 | 连接被拒绝并显示明确错误；不自动信任未知密钥；恢复正确凭据并重建后可恢复 |
-| AI-03 | 在专用测试栈中模拟模型不可达或无效密钥，再发起聊天或测试告警 | 请求在配置的超时/重试边界内结束并给出失败或降级结果；公开探针可访问，告警仍归档；恢复配置后能继续使用 |
+| SSH-02 | 使用测试凭据模拟认证失败或未登记主机密钥 | 连接被拒绝并显示明确错误；不自动信任未知密钥；恢复正确凭据并保存后可恢复 |
+| AI-03 | 在专用测试栈中模拟模型不可达或无效密钥，再发起聊天或测试告警 | 单次 SDK 请求遵守超时/重试，整轮结束后给出失败或降级结果；记录整轮耗时，多回合不保证总时限；公开探针可访问，告警仍归档；恢复配置后能继续使用 |
 
 审批测试需要启用 Agent 写命令目录并仅给测试主机授权一个测试动作。
 为避免重启或清理业务服务，可在管理员命令目录中临时配置只写入测试主机系统日志的动作：
@@ -308,9 +282,9 @@ docker compose -p aiops-local-test --env-file .env.example up -d --wait --wait-t
 
 预期：原管理员 Token 仍有效，配置不被模板覆盖，会话/消息/告警/已完成执行记录保留。
 `/alerts/recent` 内存缓冲和未决审批不要求跨重启保留；用 `/alerts/history` 验证告警持久化。
-AI 阶段继续使用对应环境文件，不要在重启时切换配置来源。
+AI 阶段保持相同配置来源与运行目录，不在重启时更换凭据来源。
 
-备份恢复测试按 [数据库备份与恢复](database.md#九备份)在独立测试栈执行：
+备份恢复测试按 [数据库备份与恢复](database.md#备份)在独立测试栈执行：
 
 1. 记录测试会话 ID、告警记录和配置内容，停止测试栈；备份完整测试部署目录及其命名卷。
 2. 在独立副本中验证 SQLite `PRAGMA integrity_check` 返回 `ok`。
@@ -382,6 +356,16 @@ SSH 和无密钥模型配置；重建后验证配置、用户鉴权、原管理�
 真实模型和 SSH 连接由管理员显式按钮另行验收；Docker 不可用时必须记录未执行，不能将
 离线通过当作真实 Prometheus 或容器重建通过。
 
+可在第 4 节完成后执行以下只写测试验收文件的命令，检查真实 Prometheus 引擎：
+
+```bash
+docker compose -p aiops-local-test --env-file .env.example cp tests/prometheus_acceptance.py assistant:/tmp/prometheus_acceptance.py
+docker compose -p aiops-local-test --env-file .env.example exec -T -e PYTHONPATH=/app assistant python /tmp/prometheus_acceptance.py /app/data/metrics-promtool.yml
+docker compose -p aiops-local-test --env-file .env.example cp assistant:/app/data/metrics-promtool.yml .runtime/local-test/metrics-promtool.yml
+docker compose -p aiops-local-test --env-file .env.example cp .runtime/local-test/metrics-promtool.yml prometheus:/tmp/metrics-promtool.yml
+docker compose -p aiops-local-test --env-file .env.example exec -T prometheus promtool test rules /tmp/metrics-promtool.yml
+```
+
 ## 主机告警标签回归
 
 `tests/prometheus_alert_acceptance.py` 生成独立的告警规则验收文件，使用实际部署的
@@ -406,53 +390,31 @@ CI 在隔离 Compose 中执行同样的真实引擎验收。修改任一主机�
 无 host_id 的记录过滤、权限撤销/恢复、Token 轮换/撤销、配置冲突、非法授权回滚、
 角色与申请人/审批人主机权限。前端另验证身份授权编辑、撤权清理和过期响应隔离。
 
-隔离 Compose 自动验收先运行用户权限脚本，再运行上面的 compose_smoke.py，
-避免新增测试主机改变后者记录的配置哈希；重建后分别执行两个脚本的 --verify。
-使用同一隔离项目及环境，不连接模型或 SSH：
+整栈命令统一在第 4 节维护，顺序为权限首次验证 → 部署首次验证 → 重建 →
+部署 --verify → 权限 --verify。状态文件包含合成 Token，只能在受限测试目录保留。
 
-```bash
-docker compose -p aiops-local-test --env-file .env.example cp tests/compose_access_smoke.py assistant:/tmp/compose_access_smoke.py
-docker compose -p aiops-local-test --env-file .env.example exec -T assistant python /tmp/compose_access_smoke.py
-# 然后运行 compose_smoke.py、重建整栈、运行 compose_smoke.py --verify
-docker compose -p aiops-local-test --env-file .env.example cp tests/compose_access_smoke.py assistant:/tmp/compose_access_smoke.py
-docker compose -p aiops-local-test --env-file .env.example exec -T assistant python /tmp/compose_access_smoke.py --verify
-```
+## 旧配置迁移验收
 
-用户脚本会登记 restricted-node 测试目标，创建两个合成身份并授予不同主机，检查跨用户
-读取/聊天/改名/删除均拒绝，跨主机 9 类查询均拒绝，轮换后身份及会话保留。
-重建验证历史与 ACL，再测试撤权阻止旧会话、恢复授权恢复历史、Token 撤销返回 401，
-同时检查原管理员及 webhook 继续有效。状态文件含合成测试 Token，验收后清除，
-只能用于可丢弃栈。成功的 --verify 会消费状态文件，不能重复执行。
+离线 test_config_loader.py 验证旧 auth.enabled、alert.trend_step、app.version 被拒绝；
+test_config_migration.py 验证候选、冲突、备份、写入失败/恢复、中断和重复执行。
+test_deployment.py 验证初始化保留与拒绝遗留字段；管理 API 提交旧字段应 422 且 revision 不变。
 
-## 废弃配置迁移验收
+只在独立测试项目和目录构造旧配置，不导入真实凭据。先记录合成 Token、角色、ACL、
+页面凭据及数据库摘要，停栈后按[显式迁移](deployment.md#一次性配置迁移)预览和执行。
+使用 scripts/stack.py 时，COMPOSE_PROJECT_NAME 必须设为 aiops-local-test，
+AIOPS_RUNTIME_DIR 与测试终端一致；该脚本不接受 Compose 的 -p 参数。
 
-tests/test_config_loader.py 验证旧 auth.enabled、alert.trend_step、app.version 被严格拒绝，
-代码版本为只读元信息；tests/test_deployment.py 覆盖新模板无鉴权开关、四类旧字段移除、
-未知字段保留、原文备份、环境占位符引号、角色/ACL/凭据保留、重复初始化及备份/写入失败。
-tests/test_admin_config.py 验证 GET 不含 auth_enabled、提交旧字段返回 422 且 revision 不变。
-容器启动无可用 Token 时失败；内部空配置装配的业务请求仍为 503，不能匿名访问。
+确认 dry-run 不写配置，正式迁移保留凭据与授权、创建受限备份，重复迁移无新候选；
+新旧同义值冲突时停止且不输出值。启动后重复第 4 节与指标/告警验收。CI 使用
+tests/compose_migration_smoke.py 在停栈测试目录播种并验证；它会改写配置，不能对业务目录运行。
+真实模型/SSH 另行显式测试，不属于离线迁移验收。
 
-实际隔离升级验收应先用旧模板初始化配置，保留 JSON 环境占位符引号，再启动新版 init。
-确认原文备份完整、只移除已列明字段、原部署凭据未变化、服务健康；然后运行用户权限及
-部署 smoke，整栈重建后运行两个 --verify。仅使用可丢弃项目、数据目录和合成凭据，
-不直接对实际部署运行写入型验收。2026-10-09 本轮结果见 [交接记录](handover.md)。
+## 发布门禁与现场演练
 
+按变更选择相关用例定位问题，修复后执行完整离线回归。发布至少要求隔离 Compose、
+页面、告警、权限、配置冲突和重建持久化通过；启用的模型/SSH/写路径必须真实闭环。
+失败阻止发布，未执行项由负责人明确是否适用及补验计划，不引用旧版本数量当证据。
 
-## 旧配置升级验收
-
-仅在独立测试项目和运行目录中构造旧配置，禁止导入业务凭据。停止测试栈后执行
-`python scripts/stack.py migrate-config --dry-run`、正式迁移，再重复迁移确认无候选。
-脚本使用 COMPOSE_PROJECT_NAME 与 AIOPS_RUNTIME_DIR，务必与测试栈保持一致。
-升级后重复本专题全指标、告警、用户隔离及重建验收；比较迁移前后部署凭据、
-页面凭据、角色与授权、SQLite 和 Grafana 数据。迁移日志只应包含文件名或字段名。
-真实模型和 SSH 连接仍由管理员显式测试，不属于离线迁移验收。
-
-
-## 2026-10-11 本次实际结果
-
-Docker 内 Python 905 项、Node 44 项通过，编译、语法、依赖和差异检查通过。
-隔离新部署、旧配置迁移、全指标真实 Prometheus 验证、实际告警投递、两用户主机隔离、
-重建后 SSH/模型/Token 与聊天持久化通过。标准库包装脚本的迁移也已实测，
-SQLite 文件摘要保持一致。仅有第三方 Starlette/AnyIO 弃用警告。
-真实模型、SSH 和浏览器人工操作未执行；本次没有操作业务部署。
-详细边界与证据摘要见 [交接文档](handover.md#2026-10-11-通用模型入口与配置整理交付)。
+容量/并发、满盘、进程强制终止、迁移中断、备份恢复时间与数据丢失目标、长期日志轮转、
+代理 TLS 和目标浏览器兼容性需在独立现场环境演练，属于待核实范围。故障注入先保留
+可恢复副本和观察指标，结束后恢复依赖、开关与测试授权；不能在生产上试验边界。

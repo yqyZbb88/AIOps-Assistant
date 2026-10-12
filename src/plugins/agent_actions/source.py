@@ -130,6 +130,11 @@ class SshAgentActionSource(AgentActionSource):
         *,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """执行已批准的目录动作，验证主机能力、参数与执行幂等记录。
+
+        配置执行 Store 时必须有审批上下文，先落执行行再派发 SSH。传输不确定
+        标为 unknown；非零退出码为 failed，均抛 AgentActionError，不重试命令。
+        """
         cmd_def = next((c for c in self.config.commands if c.key == command), None)
         if self.allowed_commands is not None and command not in self.allowed_commands:
             raise AgentActionError(f"目标主机未授权写命令 {command!r}")

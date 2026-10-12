@@ -14,6 +14,7 @@ class HostConfigError(ValueError):
 
 @dataclass(frozen=True)
 class MonitorTarget:
+    """精确监控标签对；查询时强制绑定，不能由调用者 selector 覆盖。"""
     job: str
     instance: str
 
@@ -40,6 +41,7 @@ class HostCapabilities:
 
 @dataclass(frozen=True)
 class Host:
+    """显式登记的主机及能力；监控标签、SSH 连接和三类授权分别维护。"""
     host_id: str
     name: str
     enabled: bool
@@ -95,6 +97,7 @@ class HostRegistry:
         return self._by_id.get(host_id)
 
     def require(self, host_id: str, *, enabled: bool = True) -> Host:
+        """返回已登记主机；默认要求启用，不存在或禁用抛 HostError。"""
         host = self.get(host_id)
         if host is None:
             raise HostError(f"未知主机 ID: {host_id}")
@@ -111,6 +114,10 @@ class HostRegistry:
         return matches[0]
 
     def resolve_labels(self, labels: Mapping[str, str]) -> HostResolution:
+        """按告警标签解析启用主机；instance 必须存在，job 提供时精确匹配。
+
+        缺 job 仅在 instance 唯一时归属，否则返回 unknown 或 ambiguous，不猜测目标。
+        """
         instance = str(labels.get("instance") or "").strip()
         job = str(labels.get("job") or "").strip()
         if not instance:

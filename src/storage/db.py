@@ -1,27 +1,8 @@
-"""SQLite 持久化底座：连接工厂 + 建表 + 版本校验。
+"""SQLite 连接工厂、显式事务和 schema 管理，不包含业务编排。
 
-本模块**只是底座**，不含业务语义；各存储实现（storage/session.py、storage/history.py）
-在它之上写 SQL。分层上属叶子层，**不 import langchain**，core 也不直接用它。
-
-设计要点（每一条都对应一个踩过的坑，改动前先读）：
-
-1. **每操作新开连接**，`check_same_thread` 保持默认 True。
-   单 worker 的内网场景中，单次 sqlite 打开成本小于共享连接的并发风险；
-   而共享一个连接跨线程用，风险不在性能而在**事务边界**——一个线程未提交的事务会被
-   另一个线程的 commit 带走，且必须放弃 `check_same_thread` 这层护栏。
-2. **必须 `with closing(...)` 关连接**：`with sqlite3.connect(p) as c:` 只提交/回滚事务，
-   **不关连接**。漏一个 handle，在 Windows 上就是 `database is locked`、db 文件删不掉、
-   或与 OneDrive 的同步冲突。
-3. `isolation_level=None` + 显式 `BEGIN IMMEDIATE`。默认的隐式 deferred 事务在
-   「先 SELECT 再 INSERT」时会做**读后升级写**，两个线程同时升级必有一个立刻 SQLITE_BUSY，
-   而 busy_timeout 对这种升级不可靠。
-4. **WAL 失败只回落，不关闭持久化**：仓库在 Desktop 下，OneDrive 常接管桌面，而
-   网络盘/同步盘不支持 WAL 所需的共享内存。此时回落 `journal_mode=DELETE` 并记 warning。
-5. **外键是假的**：`PRAGMA foreign_keys` 是**每连接**的且默认 OFF。本模块干脆不声明外键，
-   删除父子数据时由调用方显式同事务删除（见 storage/session.py 的 delete）。
-6. **版本双向校验**：`CREATE TABLE IF NOT EXISTS` 对「旧文件 + 新代码加列」是**静默**的
-   （表已存在就什么都不做），之后 INSERT 才报 no such column，再被上层降级吞掉。
-   所以用 `PRAGMA user_version` 主动比对：低于当前 → 迁移；**高于当前 → 拒绝使用**。
+每操作新建并关闭连接，保留线程检查，避免跨线程共享事务。BEGIN IMMEDIATE
+减少读后升级写的争用，锁等待之外只做有限重试。WAL 不可用时退回 DELETE。
+父子数据由 Store 在同一事务显式维护；user_version 高于代码支持时拒绝开库。
 """
 from __future__ import annotations
 
@@ -35,20 +16,10 @@ from typing import Any, Callable, Iterator, Sequence
 
 logger = logging.getLogger("aiops_assistant.storage.db")
 
-# 当前 schema 版本。改动 DDL 时**必须**递增，并在 _migrate 里补上追加式迁移。
-#   v1（2026-09-11）：六张表
-#   v2（2026-09-11）：sessions 增加 name 列和 (user, name) 部分唯一索引
-#   v3 (2026-09-12)：**撤掉**那个唯一索引——session_name 从「别名」降为「纯标签」，
-#                    不再参与选中会话，因此没有唯一性需求（允许重名）
-#   v4 (2026-09-13)：approval_decisions 加 decided_by 列。**决策人必须落库**，
-#                    不能只写审计日志——日志会轮转（5 MiB × 3 份）而被冲掉，
-#                    而这张表的保留期是 history_ttl_hours（默认 7 天）：等你需要回答
-#                    「那条 unknown 的命令是谁批的」时，磁盘上的日志早就转没了，
-#                    库里那行却还在。过期由状态日志清理执行，会话消失时另有一条快路径
-#                    （见 storage/history.py 与 storage/session.py 的 purge_expired）。
-#   v5 (2026-09-15)：remediation_claims 自动处置幂等抢占表。
-#   v6 (2026-09-15)：inspection_runs 固定指标巡检异常归档表。
-#   v7 (2026-09-19)：多主机归属列 + 统一动作执行审计表。
+# 新迁移追加版本分支并递增版本；保留旧分支以支持存量数据库。
+# v1：基础六表；v2：会话名称及唯一索引；v3：名称改为可重名标签，移除唯一索引。
+# v4：持久记录决策人，避免依赖会轮转的日志；v5：规则幂等抢占；v6：异常巡检。
+# v7：多主机归属与统一动作执行审计。
 SCHEMA_VERSION = 7
 
 # 建表语句（幂等）。顺序即执行顺序。
@@ -202,15 +173,8 @@ _DDL: tuple[str, ...] = (
 # 建表 / 迁移的进程级锁。正常读写路径不碰它。
 _init_lock = threading.Lock()
 
-#: 瞬时锁的退避重试间隔（秒）。
-#:
-#: 为什么 `busy_timeout` 之外还要这个：busy_timeout 只在**单个连接**内自旋重试，
-#: 而 `database is locked` 最常见的成因是**另一个进程**（典型是一个开着读事务的
-#: GUI 查看器）挡住了 WAL 的 checkpoint——写操作必须先 checkpoint 才能继续，
-#: 于是持续拿不到锁。那类争用通常几秒内自解，退避重试能把「瞬时争用」与
-#: 「真的坏了」分开，避免一次几秒的争用就丢掉一整轮会话。
-#:
-#: 只对 locked / busy 这类**瞬时**错误重试；其它 sqlite 错误立即抛出（重试没有意义）。
+# busy timeout 外再做有限退避，仅重试 locked/busy，避免瞬时争用直接丢失本轮写入。
+# 每次操作仍有自己的锁等待；总耗时可能超过单次 timeout，不重试任意 SQLite 错误。
 _TRANSIENT_RETRY_DELAYS: tuple[float, ...] = (0.2, 0.5)
 
 
@@ -265,11 +229,7 @@ class Database:
     # -- 连接 ---------------------------------------------------------------
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        """开一个连接；退出时**必定关闭**（见模块 docstring 第 2 条）。
-
-        `isolation_level=None` → 关掉隐式事务，语句默认自动提交；
-        需要原子性的多语句写入请用 transaction()。
-        """
+        """打开短连接并在退出时关闭；默认自动提交，多语句原子写使用 transaction。"""
         conn = sqlite3.connect(str(self.path), timeout=self.timeout, isolation_level=None)
         try:
             conn.row_factory = sqlite3.Row
@@ -280,14 +240,7 @@ class Database:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
-        """显式写事务：BEGIN IMMEDIATE → 正常提交 / 异常回滚。
-
-        用 IMMEDIATE 而非默认的 deferred，避免「读后升级写」撞 SQLITE_BUSY
-        （见模块 docstring 第 3 条）。
-
-        `BEGIN` 本身带瞬时锁退避重试——**锁就是在这里取的**，所以重试放在这里
-        就覆盖了整个事务。事务体只跑一次（不复跑调用方的代码块）。
-        """
+        """BEGIN IMMEDIATE 后提交或回滚；只重试取锁，事务体执行一次。"""
         with self.connect() as conn:
             _retry_transient(lambda: conn.execute("BEGIN IMMEDIATE"), "BEGIN IMMEDIATE")
             try:
@@ -304,10 +257,7 @@ class Database:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
-        """执行单条写语句（自动提交），返回受影响行数。瞬时锁会退避重试。
-
-        单条语句重发是安全的：失败时什么都没写进去。
-        """
+        """执行自动提交的单条写语句，返回影响行数；仅瞬时锁错误有限重试。"""
         with self.connect() as conn:
             return _retry_transient(lambda: conn.execute(sql, params), sql).rowcount
 
@@ -358,13 +308,9 @@ def _apply_journal_mode(conn: sqlite3.Connection) -> str:
 
 
 def _migrate(conn: sqlite3.Connection, current: int) -> None:
-    """把 schema 从 current 版本迁到 SCHEMA_VERSION。
+    """按历史版本分支迁移到 SCHEMA_VERSION，新迁移追加分支并保留旧分支。
 
-    规则：**只追加、不改名不删列**。每加一版就在下面加一个 `if current < N` 分支，
-    并递增 SCHEMA_VERSION。旧分支**永不删除**——别人的 .db 文件可能停在任意旧版本。
-
-    注意新库（current=0）走的是完整 `_DDL`（它已经是最新结构），
-    旧库才逐版本补 —— 两条路径最终必须得到同一结构，有测试锁这一点。
+    新库走完整 DDL，旧库逐版本升级，两条路径应得到一致结构；既有迁移含索引调整。
     """
     if current == 0:
         for statement in _DDL:
@@ -489,11 +435,7 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
 
 
 def open_database(path: str | Path, *, timeout: float = 5.0) -> Database | None:
-    """打开（必要时初始化）数据库；**任何失败都返回 None**。
-
-    返回 None 表示持久化能力不可用，调用方应整体关闭该能力并让服务照常启动
-    ——与本项目既有的「缺 paramiko → 关闭写命令能力」是同一套降级约定。
-    """
+    """初始化或打开数据库；失败记录日志并返回 None，由调用方按能力安全降级。"""
     db = Database(path, timeout=timeout)
     try:
         db.path.parent.mkdir(parents=True, exist_ok=True)

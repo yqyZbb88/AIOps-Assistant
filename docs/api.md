@@ -23,7 +23,7 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 | 方法 | 路径 | 用途 | 鉴权 |
 |---|---|---|---|
 | GET | `/health` | 进程与缓存健康快照；不主动访问 Prometheus | 公开 |
-| GET | `/ready` | 主动探测 Prometheus；不就绪返回 503 | 公开 |
+| GET | `/ready` | 探测 Prometheus 并核对启用的存储/巡检；不就绪 503 | 公开 |
 | GET | `/console`、`/console-assets/console.css`、`/console-assets/console.js` | 公开的无数据页面与同源资源 | 公开 |
 | GET | `/console-assets/markdown.js`、`/console-assets/vendor/marked.umd.js` | 本地 Markdown 展示组件与固定版本分词器；不开放静态目录 | 公开 |
 | GET | `/hosts`、`/hosts/{host_id}` | 登记主机公开摘要 | 普通 Bearer |
@@ -37,7 +37,8 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 | POST | `/alert` | Alertmanager webhook | 普通 Bearer + `alert_identity` |
 | GET | `/alerts/recent`、`/alerts/history`、`/alerts/active` | 内存热缓冲、SQLite 归档、监控源实时告警 | 普通 Bearer |
 | GET | `/inspections/recent` | 异常巡检归档 | 普通 Bearer |
-| GET、POST | `/approvals`、`/approvals/{approval_id}` | 列待审批项、提交决策 | 按审批模式授权 |
+| GET | `/approvals` | 列可决策的待审批项 | 按审批模式授权 |
+| POST | `/approvals/{approval_id}` | 提交审批决策 | 按审批模式授权 |
 | GET、PUT | `/admin/config` | 脱敏配置草稿、revision 写回 | 始终管理员 Bearer |
 | POST | `/admin/config/apply` | 显式应用磁盘 YAML；请求 `{"revision":"..."}` | 始终管理员 Bearer |
 | GET | `/admin/hosts/options` | 已登记主机、Prometheus 已发现目标、凭据 ID | 始终管理员 Bearer |
@@ -50,7 +51,7 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 ## 主机、指标和健康状态
 
 `GET /hosts?include_disabled=true` 默认包含禁用主机；每项含 `host_id`、`name`、`enabled`、
-`prometheus.job`/`instance`、`ssh_configured`、三类能力白名单和 `legacy`。单个
+`prometheus.job`/`instance`、`ssh_configured`、三类能力白名单。单个
 `GET /hosts/{host_id}` 可查询已登记主机摘要；监控和执行接口要求主机当前启用。
 
 `GET /hosts/{host_id}/status` 返回：
@@ -83,11 +84,14 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 `trend` 保留 `latest/min/max/avg/points`，新增 `series=[{labels,values:[[时间戳,值],...]}]`、
 `state`、`step_seconds`、`series_total`、`truncated`。摘要选择方向对应的最差设备序列；
 采样按设备独立返回，不做跨挂载点平均。默认步长 `max(15,ceil(minutes*60/240))` 秒，
-显式步长只可降低密度，每条最多 241 点、最多 32 条序列。超限 `truncated=true`。
+显式步长只可降低密度，每条最多 241 点、最多 32 条序列。序列数超过 32 时 `truncated=true`；
+该字段不用于标记所有采样点截断。
 非有限值/缺失点为 `null`；无有效样本 `state=no_data`，无 Swap 为 `not_applicable`。
 活动告警历史查询使用 `ALERTS`，按 pending/firing 分线；缺少告警只在 `up=1` 时补零。
 即时查询采用同样的补零门控。未知/禁用主机 404，非法参数 422，任何即时或趋势请求失败
-均返回脱敏 502。`/ready` 核心依赖不就绪 503；`/health` 不发起外部 I/O。
+均返回脱敏 502（未知 metric_id 也由监控错误映射为 502）。`/ready` 结合
+Prometheus、启用的存储和巡检状态决定就绪；`/health` 不发起外部 I/O，200 可含 degraded。
+单 Exporter、模型和 SSH 不属于全局就绪前置条件。
 
 ## 会话、聊天和审批
 
@@ -106,7 +110,9 @@ Content-Type: application/json
 倒序列出当前身份仍有主机访问权的会话；`GET /sessions/{id}` 返回元信息及最近 100 条消息的状态。
 `PATCH /sessions/{id}` 的 `{"name":"新名称"}` 改标签，空白名清除标签；
 `DELETE /sessions/{id}` 删除消息并取消未决审批。删除/越权/未知会话统一 404；
-改名后的返回读取若遇到并发删除，同样返回 404。
+改名后的返回读取若遇到并发删除，同样返回 404。名称经 NFKC 规范化与空白折叠，
+拒绝控制字符，非空名称限 1～64 个 Unicode 码点；允许同名，改名不更新最后活动时间。
+存储关闭时会话列表为空，创建、详情等需要验证会话的操作返回 503。
 
 ```http
 POST /chat
@@ -135,7 +141,8 @@ Content-Type: application/json
 `status=pending_approval`。审批范围取决于 `owner` 或 `approvers_only`；无权、过期、
 已处理和未知 ID 对调用者都表现为 404。批准前应核对冻结主机、动作和参数。
 启用会话存储且申请绑定会话时，消费前必须核对已保存的待审批轮次；尚未保存或无法核对返回 503，
-不会续跑。如果原审批已消费、下一条链式申请却保存失败，会取消下一条并返回 503；
+不会续跑。决策落库失败且尚未续跑时会重新入队，可用原 ID 重试；决策已提交后
+续跑异常则不重新入队，应核对执行结果。如果原审批已消费、下一条链式申请却保存失败，会取消下一条并返回 503；
 不要重放原决策，应先检查执行记录。
 
 ## 告警、巡检和执行历史
@@ -145,7 +152,9 @@ Content-Type: application/json
 `startsAt`、`fingerprint`）。返回 `received`、逐条 `alerts`、规则 `remediation`
 和未匹配告警的 `ai_advice`。`/alert` 可能触发不经审批的规则自动处置。
 始终要求有效 Token，并按 `alert_identity` 限定投递身份；自动执行总开关默认关闭。
-归档写入失败返回 503，告警发送方可据此重试；重复写操作由幂等记录保护。
+实际顺序为内存记录、规则处置、未匹配 AI 分析、最终批量归档。归档写入失败返回 503，
+发送方可重试，但已完成动作不会撤销。重复写受有限保留期幂等记录保护；告警历史与 AI
+分析不保证去重。恢复旧备份后也需核对远端，不能假定幂等键完整。
 
 三个告警查询不要混淆：
 
@@ -225,7 +234,8 @@ SSH 凭据或主机 SSH 连接字段。`PUT /admin/config` 必须传入原 revis
 | PUT | `/model` | 保存 OpenAI 兼容模型 配置，不请求模型 |
 | POST | `/model/test` | 显式短请求测试 |
 
-写入 body 为 `{"revision":"64位版本摘要","data":{...}}`，DELETE 也携带 body。
+保存/轮换/删除 body 为 `{"revision":"64位版本摘要","data":{...}}`，DELETE 也携带 body。
+两个 `/test` 端点只测试已保存配置，无请求 body，也不接受候选凭据。
 SSH data：username、method=password/private_key、password 或 private_key（上传内容）、known_hosts。
 缺省敏感字段表示保留；不接受服务器 key_filename 路径，私钥和 known_hosts 各最多 128 KiB。
 凭据 ID 为小写字母开头，含小写字母/数字/下划线/连字符，最长 63 字符；不支持带口令私钥。

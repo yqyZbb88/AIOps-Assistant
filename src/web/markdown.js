@@ -1,6 +1,6 @@
 "use strict";
-/* Marked supplies tokens only. All message DOM is built from this allowlist;
- * model output is never interpreted as HTML, CSS or executable code. */
+/* Marked 仅提供分词；消息 DOM 按允许列表构建，
+ * 模型输出不会被解释为 HTML、CSS 或可执行代码。 */
 (function (root) {
   const MAX_SOURCE = 65536;
   const MAX_NODES = 5000;
@@ -83,7 +83,7 @@
         case "escape":
           parent.append(doc.createTextNode(token.text)); continue;
         case "html":
-          // Keep HTML visible as authored text, including tags and attributes.
+          // HTML 连同标签和属性作为原文展示，不执行。
           parent.append(doc.createTextNode(token.raw || token.text || "")); continue;
         case "codespan": item = element(doc, "code", "", token.text); break;
         case "br": case "hr": item = element(doc, token.type); break;

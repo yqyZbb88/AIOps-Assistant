@@ -6,17 +6,17 @@ SSH 写命令、告警规则启停、配置保存或 Assistant 重启时，先�
 核对目标 `host_id` 和影响范围。配置与权限说明见 [configuration.md](configuration.md)、
 [auth.md](auth.md)，API 状态码见 [api.md](api.md)。
 
-## 先分清四种“不可用”
+## 先区分服务、依赖与数据状态
 
 | 现象 | 先看哪里 | 通常意味着什么 |
 |---|---|---|
 | `/health` 不能连接 | Assistant 进程、监听地址、端口、本机防火墙 | HTTP 服务本身不可达 |
-| `/health` 可读而 `/ready` 为 503 | `components.prometheus`、`components.inspection` | 依赖探测或巡检调度不就绪 |
+| `/health` 可读而 `/ready` 为 503 | `components.prometheus`、`components.storage`、`components.inspection` | 依赖探测或巡检调度不就绪 |
 | `/ready` 正常而单主机 `exporter.state=unreachable` | 该主机在 Prometheus 的精确 `job`/`instance` 目标 | Prometheus 在最近抓取中得到 `up=0` |
 | 指标 `state=no_data` | 指标名、查询时间范围、实际采集标签 | 查询有效但没有样本，不能直接等同于 `up=0` |
 | 指标 `query_error` 或 API 502 | Prometheus 查询错误和服务端日志 | 查询失败，不等于目标真实下线 |
 
-`/health` 是缓存/进程快照，不主动访问外部系统；`/ready` 主动检查 Prometheus。两者
+`/health` 是缓存/进程快照，不主动访问外部系统；`/ready` 主动检查 Prometheus，并核对启用的存储与巡检。两者
 不是彼此的替代。单主机状态还应看 `exporter.state`，而不是只看页面顶部“已连接”。
 
 ## 控制台 Token 返回 401
@@ -62,7 +62,7 @@ Prometheus 服务地址。请勿在公开频道粘贴完整 `/metrics`、Targets
 
 先按顺序核对，不要直接打开自动处置：
 
-1. Alertmanager 是否向 `/alert` 发送成功？开启普通鉴权后，未带 Token 是 401，
+1. Alertmanager 是否向 `/alert` 发送成功？业务接口始终鉴权，未带 Token 是 401，
    身份不匹配 `alert_identity` 是 403；只看告警列表不足以诊断发送失败。
    归档失败时接口返回 503，应检查 SQLite 与 Alertmanager 重试记录。
 2. `/alerts/recent` 是重启即清空的内存热缓冲；`/alerts/history` 是 SQLite 归档。
@@ -78,13 +78,16 @@ Prometheus 服务地址。请勿在公开频道粘贴完整 `/metrics`、Targets
 
 ## 问答、诊断与审批
 
+关键词“状态”返回固定模拟文本，不是健康检查；请以主机指标、Exporter 与探针为依据。
+
 - 聊天接口当前非流式。控制台先回显本地用户输入并显示加载动画，若最终超时或失败会
   在仍选中原会话且输入框为空时恢复输入；切换会话或身份后，旧请求不会覆盖当前草稿。
   不要把加载动画视为模型已经执行了某项操作。
 - 诊断工具不可用时，检查 `diagnostics.yaml` 目录开关、命令 `enabled`、主机
   `allow.diagnostics`、Paramiko 依赖、SSH 主机密钥和连接超时。页面不提供自由命令
   测试口；不要用临时任意 SSH 命令绕过审计。
-  `output_limit` 约束 stdout/stderr 的共享保留预算；超过后继续排空但不再保留，
+  `output_limit` 对两流各自按字符截断，并以其四倍作为共享原始字节预算；
+  预算耗尽后继续排空但不再保留，
   命令截止时间仍生效。截断不能代替命令范围限制，目录不应加入无界或长时间命令。
 - 待审批列表为空可能是没有申请、申请已过期、当前身份不是审批人、Agent 写目录关闭，
   或进程重启导致内存 checkpoint 消失。查看会话消息状态和审计记录再判断。
@@ -133,7 +136,7 @@ Compose 中该目录位于部署目录的 `assistant-data/config-backups/` 下�
 
 管理员 Token 连接后，“系统管理”显示 SSH 凭据、用户 Token、模型配置。缺少入口先核对
 Token 身份是否在管理员名单及当前镜像是否包含这些页面；普通用户不显示管理入口。
-`disk.read_bytes` 等原缺失趋势表达式已复用即时表达式；若仍返回“不支持该查询”，核对
+没有专门 range 表达式的磁盘/网络指标复用即时表达式；若返回“不支持该查询”，核对
 实际部署镜像与运行源码。即时与趋势分别请求对应 API，502 表示 Prometheus 请求失败，
 no_data 表示正常空结果；核对目标 job/instance、采集器是否启用及 rate 是否有至少两次采样。
 容器 local-node 的磁盘/网卡范围不同于 Linux 宿主机；独立宿主机监控见部署专题。
@@ -148,11 +151,8 @@ no_data 表示正常空结果；核对目标 job/instance、采集器是否启�
 监听 `9100`；`9090` 通常是 Prometheus 自身端口。采集配置指向错误端口、或者登记
 保留旧目标标签，会让即时与趋势查询同时返回空结果。
 
-2026-10-09 排查发现项目自带 Prometheus 的两台 Linux 目标错误指向 `9090`，
-而主机清单和持久化清单均登记为 `9100`。隔离复现时旧配置的即时与趋势均无数据；
-改为 `9100` 后，两台真实 Exporter 的全部 17 项即时与趋势查询均有有效采样。
-已修正 `deploy/prometheus/prometheus.yml`。现有部署须更新对应配置并重新加载
-Prometheus；首次采集的 rate 指标需要至少两次采样，历史缺口不会自动补回。
+修正采集地址后检查并重新加载 Prometheus；首次 rate 指标需要至少两次采样，
+历史缺口不会自动补回。修改前保留原配置和回退步骤。
 
 当前目录仍是 Linux `node_*` 指标；登记 Windows Exporter 目标不会自动获得
 `windows_*` 指标适配。Windows 目标应与 Linux 目标分开验收；不要把 Linux 指标

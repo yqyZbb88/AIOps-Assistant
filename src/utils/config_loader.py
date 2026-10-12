@@ -48,7 +48,7 @@ class AppSettings:
     name: str = __app_name__
     @property
     def version(self) -> str:
-        """Read-only application metadata, excluded from configurable dataclass fields."""
+        """只读代码版本元信息，不属于可配置 dataclass 字段。"""
         return __version__
 
 
@@ -142,7 +142,8 @@ class StorageSettings:
 class AuthSettings:
     """Token 到稳定身份的映射及角色、主机授权配置。
     直接构造无 Token 的 Settings 只供内部装配，业务请求返回 503。
-    tokens 与 host_access 使用 JSON 字符串，避免 YAML 插值产生歧义。"""
+    tokens 与 host_access 使用 JSON 字符串，避免 YAML 插值产生歧义。
+    """
 
     tokens: str = ""
     # 身份到可见主机 ID 数组的 JSON；管理员可管理所有主机，普通身份默认无权限。

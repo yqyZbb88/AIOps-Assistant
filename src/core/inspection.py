@@ -175,6 +175,7 @@ class InspectionChecker:
         self.host = host
 
     def run_once(self) -> InspectionResult:
+        """检查当前主机的启用巡检指标；单项失败保留 error 结果并继续后续指标。"""
         checked_at = self._clock()
         snapshot: dict[str, Any] = {}
         findings: list[InspectionFinding] = []
@@ -405,6 +406,10 @@ class MultiHostInspectionChecker:
         self._cursor = 0
 
     def run_all(self) -> tuple[InspectionResult, ...]:
+        """按游标和预算串行检查启用主机，返回本轮结果并推进游标。
+
+        至少允许一台；时间预算仅在主机边界检查，不能中断已开始的单主机查询。
+        """
         hosts = list(self.registry.enabled())
         if not hosts:
             return ()
@@ -498,6 +503,10 @@ class InspectionScheduler:
         self._wake.set()
 
     def run_once(self) -> InspectionResult:
+        """串行执行当前快照的巡检、写日志并归档异常，返回最严重结果。
+
+        归档失败记录后继续；无可检查主机也产生 error 结果，不重建后台线程。
+        """
         with self._run_lock:
             checker = self.checker
             if self._runtime_provider is not None:

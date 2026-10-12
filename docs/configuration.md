@@ -12,19 +12,19 @@
 
 | 文件 | 作用 |
 |---|---|
-| [`settings.yaml`](#二settingsyaml) | 应用、服务、存储、日志、鉴权、巡检调度等全局配置 |
-| [`hosts.yaml`](#三hostsyaml) | 稳定主机 ID、Prometheus 目标、SSH 凭据引用和逐主机能力授权 |
-| [`metrics.yaml`](#四metricsyaml) | 统一 Prometheus 指标目录的启用范围、阈值、实例和 selector |
-| [`rules.yaml`](#五rulesyaml) | Alertmanager 告警到写命令的规则映射 |
-| [`actions.yaml`](#六actionsyaml) | 规则自动处置可执行的写命令白名单 |
-| [`agent_actions.yaml`](#七agent_actionsyaml) | 聊天 Agent 可申请执行的写命令白名单，强制人工审批 |
-| [`diagnostics.yaml`](#八diagnosticsyaml) | 聊天 Agent 的 SSH 只读诊断命令白名单 |
+| [`settings.yaml`](#settingsyaml) | 应用、服务、存储、日志、鉴权、巡检调度等全局配置 |
+| [`hosts.yaml`](#hostsyaml) | 稳定主机 ID、Prometheus 目标、SSH 凭据引用和逐主机能力授权 |
+| [`metrics.yaml`](#metricsyaml) | 统一 Prometheus 指标目录的启用范围、阈值、实例和 selector |
+| [`rules.yaml`](#rulesyaml) | Alertmanager 告警到写命令的规则映射 |
+| [`actions.yaml`](#actionsyaml) | 规则自动处置可执行的写命令白名单 |
+| [`agent_actions.yaml`](#agent_actionsyaml) | 聊天 Agent 可申请执行的写命令白名单，强制人工审批 |
+| [`diagnostics.yaml`](#diagnosticsyaml) | 聊天 Agent 的 SSH 只读诊断命令白名单 |
 
 > `.github/workflows/ci.yml` 是 CI 配置，不属于运行时配置。
 
-## 一、通用规则
+## 通用规则
 
-### 1. 环境变量插值
+### 环境变量插值
 
 YAML 字符串支持：
 
@@ -44,7 +44,7 @@ value: ${VAR:-default}
   YAML 语法错误只报告行列位置，不在解析诊断中显示插值后的原文；请根据位置检查配置文件。
   `settings.yaml` 的字段类型错误报告字段路径和类型要求，不回显字段值。
 
-### 2. 严格校验
+### 严格校验
 
 - `settings.yaml` 与 `metrics.yaml` 严格拒绝未知字段；命令目录还会严格检查模板占位符、
   参数声明和审批段字段。可选能力配置失败时会记录错误并关闭对应能力。
@@ -54,7 +54,7 @@ value: ${VAR:-default}
 - 管理页面可编辑字段保存后热生效；手工修改 YAML 需管理员显式调用
   `POST /admin/config/apply`。Compose 发布端口、SQLite/日志路径和部署环境密钥仍需重建。
 
-### 3. 配置文件关系
+### 配置文件关系
 
 ```text
 settings.yaml
@@ -68,7 +68,7 @@ settings.yaml
 `metrics.yaml` 不控制 `rules.yaml` 或 SSH 诊断。  
 `rules.yaml` 不直接查 Prometheus 指标，只按 Alertmanager 的 `alertname` 匹配。
 
-### 4. 配置文件路径
+### 配置文件路径
 
 默认从容器 /app/config/ 读取，宿主机挂载来源为运行目录 config/。以下环境变量可替换容器加载路径：
 
@@ -84,7 +84,7 @@ settings.yaml
 `metrics.yaml` 没有单独的路径环境变量；它由 `settings.yaml` 的 `metrics.file` 指定。
 `hosts.yaml` 通常由 `hosts.file` 指定；该值为空时才读取 `OPS_HOSTS_FILE`，两者都为空则拒绝构造主机清单。相对路径按容器应用根目录 /app 解析。
 
-### 5. 通用模型参数与来源
+### 通用模型参数与来源
 
 模型仅使用 OpenAI 兼容的 Chat Completions 接口，统一入口为 `src/utils/model_loader.py`。
 新部署的密钥、地址和名称均为空，需要管理员明确配置。保存配置只做校验；管理员点击
@@ -110,7 +110,7 @@ settings.yaml
 页面凭据位于 `.runtime/assistant-data/admin-credentials/`，不进入 YAML 或普通配置备份。
 详见 [部署与迁移](deployment.md)。
 
-## 二、settings.yaml
+## settings.yaml
 
 下列表格的“默认值”指 deploy/templates/assistant/settings.yaml 模板及其未覆盖的程序默认值；环境变量占位符
 按启动进程的环境求值。启动时读取该 YAML，未配置的字段使用程序内置默认值。
@@ -149,7 +149,7 @@ Compose 首次部署使用独立模板：强制身份校验、`local-node` 指�
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `llm.provider` | string | `openai_compatible` | OpenAI 兼容 Chat Completions 插件名 |
-| `llm.enabled` | bool | 随部署模型密钥 | `false` 时跳过告警 AI 分析；不控制聊天 Agent |
+| `llm.enabled` | bool | 随密钥、地址和名称完整性 | `false` 时跳过告警 AI 分析；不控制聊天 Agent |
 
 聊天 Agent 的总开关是 `agent.enabled`。
 
@@ -157,7 +157,7 @@ Compose 首次部署使用独立模板：强制身份校验、`local-node` 指�
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `agent.enabled` | bool | 随部署模型密钥 | `false` 时聊天只走关键词兜底，不构建 LLM Agent |
+| `agent.enabled` | bool | 随密钥、地址和名称完整性 | `false` 时聊天只走关键词兜底，不构建 LLM Agent |
 | `agent.name` | string | `ops_assistant` | Agent 名称，用于 trace 和日志归因 |
 | `agent.debug` | bool | `false` | LangChain Agent 调试输出 |
 | `agent.recursion_limit` | int | `25` | 单轮 Agent 图步骤上限，防止工具调用无限循环 |
@@ -188,7 +188,7 @@ Compose 首次部署使用独立模板：强制身份校验、`local-node` 指�
 |---|---:|---:|---|
 | `alert.recent_limit` | int | `100` | 内存中最近告警条数，重启即清空 |
 | `alert.trend_minutes` | int | `60` | 告警 AI 分析趋势窗口（分钟） |
-|
+
 ### inspection
 
 | 字段 | 类型 | 默认值 | 说明 |
@@ -250,7 +250,7 @@ Compose 首次部署使用独立模板：强制身份校验、`local-node` 指�
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-|| `auth.host_access` | JSON object string | `{}` | 身份名到已登记主机 ID 数组；普通用户无显式授权时拒绝，管理员可访问全部主机 |
+| `auth.host_access` | JSON object string | `{}` | 身份名到已登记主机 ID 数组；普通用户无显式授权时拒绝，管理员可访问全部主机 |
 | `auth.tokens` | JSON string | 初始化生成 | 密钥到身份的 JSON 映射，建议用 `${OPS_API_TOKENS}` |
 | `auth.approval_mode` | string | `approvers_only` | `owner` 或 `approvers_only` |
 | `auth.approver_identities` | JSON array string | `["admin"]` | `approvers_only` 模式下允许审批的身份 |
@@ -281,7 +281,7 @@ auth:
 运行快照；页面的“待应用”表示磁盘 revision 与当前运行 revision 不同。详见
 [console.md](console.md) 与 [api.md](api.md)。
 
-## 三、hosts.yaml
+## hosts.yaml
 
 `hosts.yaml` 是多主机模式中所有监控、诊断和执行目标的唯一来源。API 和模型只引用
 `host_id`，不会接收任意地址或凭据。
@@ -324,7 +324,7 @@ hosts:
 管理员向导当前只支持新增主机，不能从页面删除、停用或迁移现有 `host_id`。
 手改清单前须核对规则与历史引用；不能把删除一行 YAML 当作已支持的主机清理流程。
 
-## 四、metrics.yaml
+## metrics.yaml
 
 ### 顶层字段
 
@@ -380,6 +380,9 @@ selector:
 - 模型不能传 PromQL、host、device 或 selector。
 - 全局 `instance` 默认应用到所有 Prometheus 指标；指标级 selector 可覆盖。
 
+主机 API 和主机工具最终强制使用登记的 job/instance，指标 selector 不能覆盖该边界。
+趋势查询保留的 selector 兼容参数当前不参与运行时覆盖。
+
 ### 阈值方向与等级
 
 指标在代码目录中声明方向：
@@ -426,10 +429,17 @@ error > critical > warning > normal
 - `cpu.usage`、`memory.usage`、`disk.usage`：巡检 + 聊天 + 告警分析，参与等级。
 - `alerts.active_count`：巡检 + 聊天，参与等级。
 - 其余新指标：参与巡检，默认只观察，不进入聊天和告警分析。
-- `*_bytes` 都是 rate，不是累计总量。
+- 磁盘 I/O 和网络的 `*_bytes` 指标是 rate；`memory.available_bytes` 是当前可用容量。
 - 网络指标默认排除 `lo`。
 
-## 五、rules.yaml
+所有 17 项 Linux node_exporter 指标具有即时和趋势行为：数值指标缺少独立 range 表达式
+时复用即时表达式，活动告警采用历史 ALERTS。磁盘按挂载点/设备/文件系统、I/O 和网络
+按设备返回；无 Swap 为“不适用”。缺少采集器、标签不匹配、rate 采样不足按 no_data。
+告警补零的 up 探测内嵌同一查询，不增加巡检请求数，原每主机预算仍含独立 Exporter 查询。
+趋势接口与告警分析统一使用自动步长 `max(15 秒, ceil(窗口秒数 / 240))`；
+未被使用的 `alert.trend_step` 已删除，趋势窗口继续使用 `alert.trend_minutes`。
+
+## rules.yaml
 
 规则只按 Alertmanager 的 `alertname` 匹配，不查询 Prometheus 指标。
 
@@ -472,7 +482,7 @@ rules:
   `allow.rule_actions` 中授权该动作。
 - 同名 alertname 可以写多条规则，按文件顺序处理。
 
-## 六、actions.yaml
+## actions.yaml
 
 这是规则自动处置的写命令白名单。
 
@@ -494,7 +504,7 @@ commands:
 | 字段 | 类型 | 必填 | 含义 |
 |---|---:|---:|---|
 | `enabled` | bool | 否 | 文件总开关；省略时 true，出厂模板显式 false |
-| `output_limit` | int | 否 | stdout/stderr 共享输出上限，默认 4000 字符 |
+| `output_limit` | int | 否 | 两流各自解码后最多 4000 字符；原始读取共用字节预算 |
 | `commands` | map | 是 | 命令 key 到命令定义的映射 |
 | 命令项 `enabled` | bool | 否 | false 时保留定义但不注册为可调用命令，默认 true |
 | `summary` | string | 否 | 命令说明 |
@@ -521,7 +531,7 @@ commands:
 - 命令 key 必须完整匹配 `^[a-z][a-z0-9_]*$`，不允许末尾换行。
 - 管理页面保存命令目录后立即生效；手工修改后须显式应用。
 
-## 七、agent_actions.yaml
+## agent_actions.yaml
 
 这是聊天 Agent 的写命令白名单，和 `actions.yaml` 完全隔离。
 
@@ -550,8 +560,8 @@ commands:
 | `approval.max_pending` | int | 最大待审批数量 |
 | `commands` | map | 写命令定义，格式同 actions.yaml |
 
-`output_limit` 由共享 SSH 内核在 channel 读取阶段执行。stdout/stderr 共用由字符上限推导的
-字节预算；超出后继续排空远端 channel，但不再把内容保留在内存。命令模板仍应主动限制
+`output_limit` 默认 4000；stdout/stderr 各自解码后按该字符数截断，两流共用
+`output_limit * 4` 的原始读取字节预算。超出后继续排空远端 channel，但不再把内容保留在内存。命令模板仍应主动限制
 范围和运行时间。
 
 审批段只接受 `timeout_seconds` 和 `max_pending`，没有关闭审批的开关。命令 key 不能与聊天指标工具或 SSH 诊断工具重名。
@@ -560,7 +570,7 @@ commands:
 SSH 目标，并要求该命令出现在主机的 `allow.agent_actions`；审批冻结目标摘要、动作快照和
 配置指纹，批准时再次复核，配置漂移会拒绝旧申请。
 
-## 八、diagnostics.yaml
+## diagnostics.yaml
 
 这是 Agent 的 SSH 只读诊断白名单，不绑定 `metrics.yaml` 指标。出厂模板关闭，以下为显式启用示例。
 
@@ -597,7 +607,7 @@ commands:
 命令目录不包含连接目标。Agent 使用会话 `host_id` 对应的
 `hosts.yaml` SSH 目标，并只暴露 `allow.diagnostics` 授权的诊断命令。
 
-## 九、常见配置流程
+## 常见配置流程
 
 ### 启用一个新巡检指标
 
@@ -644,7 +654,7 @@ metrics:
       instance: web-01:9100
 ```
 
-## 十、常见错误
+## 常见错误
 
 | 错误 | 原因 |
 |---|---|
@@ -657,7 +667,7 @@ metrics:
 | Prometheus 400 Bad Request | 通常是 selector/PromQL 拼接错误，应检查配置中的特殊标签 |
 | 修改后不生效 | 页面外修改 YAML 后须由管理员点击“应用磁盘配置”；若涉及监听/存储/日志/环境密钥则需重启 |
 
-## 十一、字段生效与重启
+## 字段生效与重启
 
 | 配置 | 生效方式 |
 |---|---|
@@ -675,7 +685,8 @@ metrics:
 
 ### Prometheus 目标模式
 
-`prometheus.target_mode` 显式选 `external`（默认）或 `managed`；不根据 URL 猜测。
+`prometheus.target_mode` 显式选 `external` 或 `managed`，不根据 URL 猜测。
+程序默认 `external`，Compose 模板显式为 `managed`。
 `external` 只允许选择 Prometheus `/api/v1/targets` 已发现的目标。
 `managed` 必须配置 `prometheus.file_sd_path`，Compose 已将
 `.runtime/prometheus-targets/assistant.yml` 映射到 Assistant 可写目录和 Prometheus
@@ -754,20 +765,14 @@ Prometheus 容器里的 `localhost:9100` 指向该容器自身，远程 Exporter
 容器内为 `/app/data/admin-credentials/`，宿主机为 `.runtime/assistant-data/admin-credentials/`；
 采用与普通配置相同的锁、revision 和运行快照，成功立即生效，失败保留旧配置。
 详细字段、长度和错误码见 [管理员凭据 API](api.md#管理员凭据-api)，操作见
-[控制台](console.md#管理员配置操作)。环境模型与持久部署 Token 保留且页面只读；SSH/模型
-页面配置优先，Token 合并身份映射。普通配置保存不能把解析到内存中的凭据写回 YAML。
+[控制台](console.md#管理员配置操作)。环境模型与持久部署 Token 保留且页面只读；模型
+页面配置整组优先，SSH 由显式凭据引用解析，Token 合并身份映射。普通配置保存不能把解析到内存中的凭据写回 YAML。
 显式清除模型密钥不回退环境值；设置 API Key 后按需启用 LLM 与 Agent 开关。
-
-所有 17 项 Linux node_exporter 指标具有即时和趋势行为：数值指标缺少独立 range 表达式
-时复用即时表达式，活动告警采用历史 ALERTS。磁盘按挂载点/设备/文件系统、I/O 和网络
-按设备返回；无 Swap 为“不适用”。缺少采集器、标签不匹配、rate 采样不足按 no_data。
-告警补零的 up 探测内嵌同一查询，不增加巡检请求数，原每主机预算仍含独立 Exporter 查询。
-趋势接口与告警分析统一使用自动步长 `max(15 秒, ceil(窗口秒数 / 240))`；
-未被使用的 `alert.trend_step` 已删除，趋势窗口继续使用 `alert.trend_minutes`。
 
 ## 主机告警 PromQL 编写约束
 
-Assistant 当前按告警的 `job + instance` 与主机登记进行严格匹配。所有需要在
+活动告警查询按 `job + instance` 严格匹配。webhook 缺少 job 时，仅在 instance
+唯一对应启用主机时才能归属，不据此放宽查询标签要求。所有需要在
 AI 活动告警工具、主机状态和告警计数/趋势中查询的主机告警，都必须保留这两个标签。
 仅让 webhook 成功接收不代表实时查询可以匹配；本节约束同样适用于外部规则。
 

@@ -133,6 +133,10 @@ def _validate_thresholds(
 
 
 def parse_metrics_config(text: str, *, path: str = "metrics.yaml") -> MetricsConfig:
+    """严格解析指标运行配置，校验固定目录、启用范围、阈值方向与 selector。
+
+    结构、类型或引用错误抛 ConfigError，诊断使用 path 标明配置来源。
+    """
     try:
         import yaml
     except ImportError as exc:  # pragma: no cover - core dependency missing path

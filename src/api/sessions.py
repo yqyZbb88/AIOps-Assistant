@@ -1,5 +1,6 @@
 """会话接口始终要求有效 Token。会话归创建者所有，还须具有会话主机访问权；
-不存在、他人会话及已撤销主机权限统一返回 404。存储不可用时写入/读取返回 503。"""
+不存在、他人会话及已撤销主机权限统一返回 404。存储不可用时写入/读取返回 503。
+"""
 from __future__ import annotations
 
 import logging
@@ -145,7 +146,8 @@ def list_sessions(
     user: str | None = Depends(require_auth),
 ) -> list[dict[str, Any]]:
     """仅列当前 Token 身份仍可访问的主机会话，过滤在 LIMIT 之前。
-    存储关闭返回空列表，存储故障返回 503。"""
+    存储关闭返回空列表，存储故障返回 503。
+    """
     store = request.app.state.container.sessions()
     if store is None:
         return []
@@ -159,10 +161,9 @@ def list_sessions(
 def get_session(
     session_id: str, request: Request, user: str | None = Depends(require_auth)
 ) -> dict[str, Any]:
-    """取单个会话：元信息 + 全部消息。
+    """读取本人仍有主机访问权的会话，返回元信息及最近 100 条消息。
 
-    返回最近 100 条消息，含 **全部状态**（final / pending_approval / abandoned / unknown）——这是给**人**看的口，
-    与给模型看的窗口不同（窗口只取 final，见 SessionStore.history 的说明）。
+    包括 pending/abandoned/unknown 等展示状态；未知或越权统一返回 404。
     """
     store = _store(request)
     try:

@@ -28,7 +28,7 @@ class ApprovalUnavailableError(ApprovalError):
 
 
 class ApprovalOutcomeUnknownError(ApprovalUnavailableError):
-    """A decision was consumed but the remote outcome cannot be confirmed."""
+    """决策已消费但无法确认远端结果；不能按未执行自动重试。"""
 
 
 @dataclass(frozen=True)
@@ -73,15 +73,10 @@ def may_decide(
     approvers: Collection[str] = (),
     approvers_only: bool = False,
 ) -> bool:
-    """调用者是否有权列出 / 决策这条待审批项。
+    """只判断审批角色或申请人归属，不替代主机访问校验。
 
-    - identity=None 仅保留给可信内部旧入口；HTTP 不允许匿名决策；
-    - ``approvers_only=True``：只允许 ``approvers`` 里的身份，支持职责分离——审批人是
-      **岗位**，可列出并批准**任何人**触发的项，不限于自己发起的；
-    - 默认模式（``owner``）：要求 ``pending.user`` 精确匹配，即只有触发人自己。
-
-    两个调用点必须都走这里：``GET /approvals`` 的过滤与 ``POST /approvals/{id}`` 的授权，
-    否则会出现「列表里看不见、却批得动」这种最糟的组合。
+    approvers_only 要求审批角色，默认 owner 要求申请人身份；HTTP 另核对双方
+    当前主机访问权。None 仅用于可信内部兼容调用。列表和决策应共用此判定。
     """
     if identity is None:
         return True

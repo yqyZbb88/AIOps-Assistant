@@ -85,6 +85,11 @@ def _string_set(value: Any, what: str) -> frozenset[str]:
 
 
 def parse_hosts(text: str, *, credential_overrides: Mapping[str, Mapping[str, Any]] | None = None) -> HostRegistry:
+    """解析并校验显式主机清单，合并页面凭据覆盖，返回 HostRegistry。
+
+    拒绝未知字段、重复标识及不安全连接声明；无法确认目标时抛 HostConfigError，
+    不从全局环境推测主机或授权。
+    """
     try:
         import yaml
     except ImportError as exc:  # pragma: no cover

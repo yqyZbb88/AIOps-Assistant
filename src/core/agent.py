@@ -1,15 +1,7 @@
-"""OpsAgent：智能运维 Agent 主控制器（依赖注入装配）。
+"""运维主控制器：编排聊天、告警规则、AI 分析与历史查询。
 
-对外能力（HTTP 层只做校验与转发）：
-- chat(message)：聊天（Agent-first，内部 ChatService 处理回落）；
-- process_alert(payload)：Alertmanager 告警接收 → 记录 → 规则处置 → 无规则 AI 分析，
-  分析失败 / LLM 不可用仅记日志不阻塞（返回 AlertAck）；
-- recent(limit)：最近接收的告警记录（内存缓冲）；
-- active_alerts()：实时向监控源查询 pending/firing（MonitorError 上抛，由 api 转 502）。
-
-设计：
-- 只依赖注入组件（monitor/store/chat/rule_engine/analysis/llm），不 import 插件实现；
-- 自身不建立任何 Agent/LLM（惰性在 ChatService 首次聊天时构建），import 即安全。
+依赖注入接口，不在此构建模型。webhook 先处置和分析，再批量归档；归档失败
+上抛供发送方重试，已发生的远端动作不会撤销。
 """
 from __future__ import annotations
 
@@ -119,10 +111,9 @@ class OpsAgent:
 
     # -- 告警接收（记录 + 规则处置 + AI 分析） -----------------------------
     def process_alert(self, payload: AlertmanagerPayload) -> AlertAck:
-        """处理一条 Alertmanager 通知，返回确认响应 AlertAck。
+        """记录内存告警、执行匹配规则、分析未匹配项，最后归档并返回 AlertAck。
 
-        流程：逐条记录到 store → 规则引擎处置（auto_execute=true 才动作）→
-        无规则告警交给 AI 分析。归档失败会向调用方报错以便重试。
+        AI 失败只记录日志；归档失败上抛。调用方重试时不能假定此前没有执行动作。
         """
         summaries = [self.store.record(alert) for alert in payload.alerts]
         if self.hosts is not None:
@@ -174,18 +165,9 @@ class OpsAgent:
 
     # -- 状态日志归档（可选能力，未注入时整体跳过） -----------------
     def _archive(self, payload: AlertmanagerPayload, ack: AlertAck) -> None:
-        """把本次处理的产出落进归档表。
+        """在同一存储事务中归档本批告警、处置与建议，失败上抛。
 
-        **刻意放在流程最末尾、一次调用、一个事务**，而不是插在三个步骤之间：
-
-        1. 放在末尾可以先完成规则与分析，再归档本次处理结果。归档失败会向 API
-           返回可重试错误，避免调用方误以为已持久化。
-        2. 三张表必须同批一致：一次调用 = 一个 BEGIN IMMEDIATE，不会出现
-           「告警写了、处置没写」的半批。
-        3. `rule_engine` / `analysis` 是纯决策且被测试锁着「零输出」，在那里插 IO
-           会同时破坏可测性与那条护栏。
-
-        归档失败需向调用方报错，供 Alertmanager 重试投递。
+        归档位于规则执行和分析之后，不与远端动作构成原子事务；无归档 Store 时跳过。
         """
         if self.history is None:
             return
@@ -262,10 +244,7 @@ class OpsAgent:
 
     @staticmethod
     def _print_remediation(records: list[dict[str, Any]]) -> None:
-        """通过日志记录规则处置结果。
-
-        RuleEngine 只产生结构化结果；本类统一记录处置与 AI 建议日志。
-        """
+        """集中记录规则引擎返回的处置结果，不改变其执行状态。"""
         for r in records:
             logger.info(
                 "自动处置 alertname=%s status=%s action=%s detail=%s",

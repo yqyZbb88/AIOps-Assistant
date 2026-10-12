@@ -1,17 +1,7 @@
-"""依赖注入容器：settings → 插件实例 → OpsAgent（组件惰性装配）。
+"""依赖装配根：按配置惰性创建插件、Store 和业务组件。
 
-组装链路（core 只认接口，具体实现从 registry 按 settings 取名实例化）：
-    settings
-      ├─ prometheus.base_url/timeout ──> PrometheusMonitor（monitor）
-      ├─ actions.yaml 写命令目录 ──────> {目录 key: CatalogCommandExecutor} 执行器
-      ├─ rules.yaml ──────────────────> RuleEngine(executors)
-      ├─ llm.enabled/provider ────────> OpenAICompatibleLLMClient | None
-      └─ ChatService.assistant_factory：首次聊天时经工厂构建 Agent（惰性，见 core/chat）
-
-惰性边界：
-- import 本模块不触发任何 模型 SDK 导入（Agent 在首次聊天才构建）；
-- plugins 包 import 即完成注册，但所有重量级依赖（paramiko / langchain）均惰性加载；
-- 组件（monitor / llm / executors / agent）实例化后缓存，全容器共享同一份。
+配置切换构造新容器并共享需保留的进程级 Store；重依赖按需加载。数据库失败
+缓存为 None，避免每个请求重复开库；各能力按自己的安全边界降级。
 """
 from __future__ import annotations
 
@@ -186,15 +176,9 @@ class Container:
         return self._executors
 
     def execution_guard(self) -> RuleExecutionGuard:
-        """自动处置幂等守卫；SQLite 可用时跨重启，否则退回进程内。
+        """规则幂等守卫：SQLite 可用时持久化，否则使用同保留期的进程内实现。
 
-        存储打开失败属于常见降级路径，此时仍必须做进程内幂等，不能因为 DB 故障
-        把重复 webhook 变成重复写命令。
-
-        内存版的保留期**与 SQLite 版同源**：SQLite 版的 remediation_claims 由状态日志
-        清理按 history_ttl_hours 过期，故这里把同一个值显式传下去——否则降级时
-        `history_ttl_hours` 静默失效，而那是个安全相关的窗口（同一条告警的同一个动作
-        还要不要拦）。
+        幂等记录有 TTL；存储启用但执行 Store 不可用时，规则写路径另行拒绝执行。
         """
         if self._execution_guard is None:
             from src.storage.remediation_guard import (
@@ -278,12 +262,9 @@ class Container:
 
 
     def sessions(self) -> SessionStore | None:
-        """会话存储；配置关闭或 SQLite 打不开 → None（持久化能力关闭）。
+        """会话 Store：存储关闭返回 None，开库失败退化到内存，否则使用 SQLite。
 
-        三级降级，任一级都不影响服务启动：
-        1. 配置关闭            → None（不落盘，行为与改造前一致）；
-        2. SQLite 打不开        → **内存实现**（多轮会话仍可用，只是重启即丢）；
-        3. 正常                → SqliteSessionStore。
+        内存会话重启丢失；HTTP 仍需验证身份和会话主机，不能作为匿名入口。
         """
         if self._sessions_ready:
             return self._sessions
@@ -416,18 +397,10 @@ class Container:
 
     @staticmethod
     def _reconcile_pending(store: SessionStore) -> None:
-        """开库时收敛残留的「待审批」轮，并**分开**报告两类结局。
+        """重启时收敛内存审批已丢失的 pending 轮次，分别记录 abandoned 与 unknown。
 
-        **新进程里任何 pending 行必然是孤儿**：待审批项存在 `ApprovalStore`（进程内存），
-        checkpoint 线程存在 `InMemorySaver`（同样是进程内存），两者都不可能跨重启存活。
-        不处理的话那些行会永远显示「有一条命令等你批」，而 `/approvals` 里根本没有它——
-        用户永远批不了。
-
-        两类必须分开说，因为**结局不同、该做的事也不同**：
-
-        - **作废**：决策从没提交过 → 命令一定没执行 → 无需处理；
-        - **结果未知**：决策提交过、但进程死在命令跑完之前 → **命令可能已经执行了**，
-          这是唯一需要人去翻 `logs/audit.log` 对账的情况，所以用 WARNING 喊出来。
+        无决策则当前申请作废；有决策则保守视为结果未知，需核对远端。链式前序动作
+        可能已完成，不能由当前申请作废推断整个会话未执行过写操作。
         """
         try:
             abandoned, unknown = store.reconcile_pending(set())

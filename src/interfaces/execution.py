@@ -8,6 +8,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ActionExecution:
+    """一次规则或 Agent 动作的持久执行快照；unknown/running 需结合远端对账。"""
     execution_id: str
     channel: str
     idempotency_key: str
@@ -44,6 +45,7 @@ class ActionExecution:
 
 
 class ActionExecutionStore(ABC):
+    """执行审计与幂等契约；创建记录和结束状态不等同远端事务提交。"""
     @abstractmethod
     def create(
         self,

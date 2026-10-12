@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 
 
 # ---------------------------------------------------------------------------
-# 堵住仓库里那个**真实**数据库：测试绝不允许碰它
+# 隔离仓库默认数据库，显式临时数据库仍可使用
 # ---------------------------------------------------------------------------
 # 模块级 app 在 pytest 收集阶段装配，必须在导入前隔离真实数据。
 # 测试使用 deploy/templates/assistant 模板与合成身份；仓库 data/ 下的默认存储被拦截，
@@ -347,15 +347,10 @@ def fake_actions() -> FakeAgentActions:
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="session", autouse=True)
 def _no_audit_file_in_tests():
-    """摘掉审计 logger 上的文件 handler，让测试套件绝不往仓库写文件。
+    """移除审计与巡检文件 handler，防止合成测试记录落到默认日志目录。
 
-    为什么需要：`import src.main` 会执行模块级的 `app = create_app()`，而它用
-    **仓库真实配置**（config/settings.yaml 的 logging.audit_file）给 audit logger 挂上
-    `logs/audit.log` 的文件 handler。此后任何一条审计（测试里被 stub 掉的
-    exec_command 也会走 record_execution）都会写进仓库——测试跑完在仓库里留下
-    一堆假数据（192.168.1.1 / h / boom 这类）。
-
-    文件落盘本身由 tests/test_logger.py 用 tmp_path 专门覆盖，不需要真实路径参与。
+    收集期应用使用部署模板装配，之后测试共享 logger；文件落盘行为由
+    test_logger.py 在 tmp_path 单独验证。
     """
     import logging
 

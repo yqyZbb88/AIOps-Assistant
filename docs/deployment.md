@@ -70,7 +70,7 @@ docker compose up -d --build --force-recreate --wait --wait-timeout 180
 发布端口默认绑定部署机 `127.0.0.1`。远程浏览器可使用 SSH 隧道：
 
 ```bash
-ssh -L 8000:127.0.0.1:8000 ops@server.example
+ssh -N -L 8000:127.0.0.1:8000 ops@server.example
 ```
 
 按实际发布端口调整目标；长期访问使用带 TLS 的反向代理并保留鉴权。
@@ -121,6 +121,77 @@ docker compose up -d --wait --wait-timeout 180
 已有 Python 时可选用标准库包装脚本 `python scripts/stack.py`，
 支持 doctor、up、down、status、logs、show-token、show-grafana-password、migrate-config；
 该脚本只操作 Docker，不能直接启动宿主机服务。doctor 仅检查 Docker/Compose 与部署配置。
+
+## 升级与回滚
+
+升级需要维护窗口。先记录当前 Git 提交、镜像摘要、Compose 项目名、运行目录、环境输入
+及三个监控卷的实际名称；检查未决审批和 unknown/running 执行，核对远端事实后再停机。
+以下命令使用默认项目；自定义项目必须始终带相同 `-p`、`--env-file` 与运行目录输入。
+
+1. 运行当前版本的离线测试，并在独立栈验证候选版本，不能用生产部署运行写入型验收。
+2. `docker compose down` 停止整栈，保留当前镜像与完整回退备份；不加 `-v`。
+3. 备份运行目录、根 `.env`（如有）、部署组件配置和三个命名卷。备份记录对应代码和
+   镜像；仅复制 SQLite 不足以回滚配置与凭据，具体步骤见下节。
+4. 切换到已验证的源码版本。需要旧字段迁移时，保持停机，按[一次性配置迁移](#一次性配置迁移)
+   先预览再执行；正常启动不会隐式清理旧字段。
+5. 执行 `docker compose up -d --build --wait --wait-timeout 180`。
+6. 检查 init 退出 0、五个常驻服务健康、`/health`、`/ready`、原身份和主机 ACL、
+   会话/告警历史、指标即时/趋势及监控目标；真实模型/SSH 按已启用能力显式验证。
+
+升级失败先保留现状和日志，再停止整栈。恢复对应旧代码/镜像、同批环境输入、完整运行
+目录和监控卷后启动旧版，重复上述业务核验。恢复目标应为空或使用保留副本隔离，避免
+混入新版本文件及旧 WAL。不能仅回退镜像而把已迁移数据交给旧版写入；没有自动降级
+迁移，不通过删除 deployment.json 或迁移 pending 标记绕过检查。
+
+恢复旧备份可能丢失近期会话、审批、幂等键和执行结果；先对账远端动作，避免恢复后
+重复执行。现场恢复时间和数据丢失目标为待核实项，必须演练后记录。
+
+## 停机整栈备份
+
+在 down 前用 `docker compose ps --all` 和 `docker inspect` 核对挂载，或按项目标签
+列出卷：`docker volume ls --filter label=com.docker.compose.project=aiops-assistant`。
+自定义项目替换标签值；备份 prometheus-data、alertmanager-data、grafana-data 的实际卷。
+
+下面是 PowerShell 示例，仅演示默认路径和卷名。先按实际部署替换变量；备份目录必须
+位于运行目录之外、已创建且访问受限，不能递归归档自身。镜像使用停机前保留的版本。
+
+```powershell
+$backupRoot = 'D:/AIOpsBackups/pre-upgrade'
+$runtimeSource = (Resolve-Path -LiteralPath .runtime).Path
+$backupImage = 'aiops-assistant:local'
+$backupVolumes = @('aiops-assistant_prometheus-data', 'aiops-assistant_alertmanager-data', 'aiops-assistant_grafana-data')
+docker compose down
+docker run --rm --network none --entrypoint python --workdir /source --mount "type=bind,src=$runtimeSource,dst=/source,readonly" --mount "type=bind,src=$backupRoot,dst=/backup" $backupImage -m tarfile -c /backup/runtime.tar .
+if ($LASTEXITCODE -ne 0) { throw '运行目录备份失败' }
+foreach ($backupVolume in $backupVolumes) {
+    docker volume inspect $backupVolume
+    if ($LASTEXITCODE -ne 0) { throw "卷不存在，停止备份：$backupVolume" }
+    docker run --rm --network none --entrypoint python --workdir /source --mount "type=volume,src=$backupVolume,dst=/source,readonly" --mount "type=bind,src=$backupRoot,dst=/backup" $backupImage -m tarfile -c "/backup/$backupVolume.tar" .
+    if ($LASTEXITCODE -ne 0) { throw "卷备份失败：$backupVolume" }
+}
+```
+
+每一步检查退出码，运行目录归档失败则停止后续步骤；另行受控复制根 `.env`、部署配置
+及版本清单。Linux 可使用相同 Docker 挂载与 `python -m tarfile`，变量语法换为 Bash。
+这只是停机归档方式，不是在线 Prometheus 快照。生成后校验归档可读、文件列表及摘要，
+转存加密备份介质；归档包含明文凭据。
+
+恢复只使用自己验证过的归档，在停机、确认目标为空且保留当前副本后，通过同一镜像
+将对应目录或卷挂载到 `/restore`，执行 `python -m tarfile -e /backup/对应归档.tar /restore`。
+恢复到新卷时显式核对 Compose 实际挂载；不要覆盖仍在运行的卷。Python 解包不负责
+恢复部署所需的全部 POSIX 属主/权限，需按原部署核对，尤其 Grafana 等非 root 服务。
+随后验证 SQLite 完整性、凭据引用、监控数据与业务接口，见[数据库恢复](database.md#恢复)。
+
+## 日志与监控
+
+Compose 标准输出使用 json-file，每服务 10 MB × 3 文件轮转；应用审计与巡检日志在
+运行目录 assistant-logs。应用日志的轮转和保留由 settings.yaml 控制，不能由容器日志
+上限推断磁盘总用量。定期检查运行目录、命名卷与备份介质空间，按组织策略导出重要审计。
+
+值班检查 `/health` 缓存状态、`/ready` 依赖状态、Prometheus Targets、Alertmanager 投递
+错误、最新巡检时间及 unknown/running 执行。就绪不验证真实模型/SSH，也不保证所有
+Exporter 可达。读取日志可用 `docker compose logs --tail 200 assistant init alertmanager`；
+排障路径见[只读排障](troubleshooting.md)。应用脱敏不代替受限日志权限。
 
 ## 一次性配置迁移
 
@@ -215,4 +286,4 @@ WantedBy=multi-user.target
 地址；不要将容器内 127.0.0.1 当作宿主机。自管模式在“监控主机”填写可达地址:9100 并
 登记；外部模式先在外部 Prometheus 配置 scrape target，等待发现后再选目标登记。
 核对 /targets 的 up、标签 job/instance 和 17 项即时/趋势状态，再关联 SSH 并单独授权。
-本次不自动安装远程 Exporter，也不扩大 Compose 容器权限。
+登记不会自动安装远程 Exporter，也不扩大 Compose 容器权限。

@@ -10,6 +10,7 @@ from src.utils.time import now_iso
 
 
 class HealthService:
+    """组合进程、存储、巡检及缓存依赖状态；不把单主机故障当平台未就绪。"""
     def __init__(
         self,
         monitor: MonitorSource,
@@ -31,6 +32,10 @@ class HealthService:
         self._checked_at = ""
 
     def snapshot(self, *, probe: bool = False) -> dict[str, Any]:
+        """返回健康快照；probe=True 才主动检查 Prometheus 并更新缓存。
+
+        就绪同时要求启用的存储不降级、巡检未停止；LLM 与 SSH 不参与就绪判定。
+        """
         if probe:
             try:
                 self.monitor.check_health()

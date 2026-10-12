@@ -15,7 +15,7 @@ class SshError(Exception):
 
 
 class SshOutcomeUnknown(SshError):
-    """The command may have reached the remote host; never retry automatically."""
+    """命令可能已到达远端，不能因连接异常自动重试。"""
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,11 @@ def exec_command(
     sudo: bool = False,
     output_limit: int = 4000,
 ) -> SshCommandResult:
-    """执行白名单命令；完整排空远端输出，但本地只保留有界内容。"""
+    """执行调用方已授权并构建的命令；本函数不校验业务白名单。
+
+    使用主机密钥拒绝策略，按阶段超时并有界保留两流输出。尝试派发后传输失败
+    抛 SshOutcomeUnknown，不能据此认定未执行；其它 SSH 失败抛 SshError。
+    """
     try:
         import paramiko
     except ImportError as exc:

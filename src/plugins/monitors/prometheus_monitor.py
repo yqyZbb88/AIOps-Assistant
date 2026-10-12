@@ -215,6 +215,10 @@ class PrometheusMonitor(MonitorSource):
         selector: Mapping[str, str] | None = None,
         target: MonitorTarget | None = None,
     ) -> list[MetricSample]:
+        """查询固定指标并返回样本；无样本返回空列表，未知指标或查询失败抛 MonitorError。
+
+        selector 仅用于内部 instance 补充，显式 target 最终强制绑定 job/instance。
+        """
         definition = self._definition(metric_id)
         instance = _instance_from_selector(selector)
         if definition.kind == "alert_count" and target is not None:
@@ -300,6 +304,11 @@ class PrometheusMonitor(MonitorSource):
         selector: Mapping[str, str] | None = None,
         target: MonitorTarget | None = None,
     ) -> dict[str, Any]:
+        """查询真实时间序列及最差设备摘要；无有效样本以 state 表达。
+
+        步长自动限制密度，最多 241 点、32 序列；selector 为保留的兼容参数，当前
+        不参与覆盖。未知指标、非法 step 或查询失败抛 MonitorError。
+        """
         definition = self._definition(metric_id)
         expr = self._render_expr(
             definition, instance=instance, target=target, range_query=True

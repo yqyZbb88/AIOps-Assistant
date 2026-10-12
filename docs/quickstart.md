@@ -27,7 +27,7 @@ AIOps-Assistant 把监控数据、告警、问答、人工审批和执行记录�
 取得项目源码，打开终端并进入包含 `compose.yaml` 的项目目录，例如：
 
 ```bash
-cd Assitant
+cd Assistant
 docker version
 docker compose version
 ```
@@ -83,7 +83,7 @@ ssh -N -L 8000:127.0.0.1:8000 user@server.example
 
 保持终端连接，再从自己的电脑打开上述控制台地址。项目默认端口只绑定服务器回环地址，
 直接访问“服务器 IP:8000”不会连通。改过端口或需要长期对外访问时见
-[可选配置与远程访问](deployment.md#可选配置模型端口与-ssh)。
+[可选配置与远程访问](deployment.md#可选配置模型与端口)。
 
 ## 5. 看第一台主机，问第一个问题
 
@@ -108,7 +108,7 @@ deploy/templates/assistant/ 是首次部署模板，修改模板不会覆盖已�
 
 SQLite、日志、凭据和监控数据都持久化在部署目录或命名卷里。
 不要提交 `.env`、`.runtime/`、Token 或数据库；详细目录和备份方法分别见
-[部署数据位置](deployment.md#配置与数据位置) 与 [数据库备份](database.md#九备份)。
+[部署数据位置](deployment.md#配置与数据位置) 与 [数据库备份](database.md#备份)。
 
 ## 7. 停止、再次启动和下一步
 
@@ -126,7 +126,7 @@ docker compose up -d --wait --wait-timeout 180
 | 下一步 | 阅读 |
 |---|---|
 | 日常看告警、巡检、审批与记录 | [使用指南](guide.md) |
-| 配置模型密钥、修改端口或准备 SSH | [部署与升级](deployment.md#可选配置模型端口与-ssh) |
+| 配置模型密钥、修改端口或准备 SSH | [部署与升级](deployment.md#可选配置模型与端口) |
 | 理解页面与管理员保存 | [控制台说明](console.md) |
 | 在独立环境练习告警与故障恢复 | [容器测试与验收](testing.md) |
 | 找其它文档 | [文档导航](README.md) |

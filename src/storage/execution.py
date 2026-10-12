@@ -85,7 +85,7 @@ class SqliteActionExecutionStore(ActionExecutionStore):
 
     def claim_rule(self, *, alert_key: str, action: str,
                    alert_status: str, starts_at: str, **create_kwargs) -> ActionExecution | None:
-        """Claim an alert and create its execution row in one SQLite transaction."""
+        """在同一 SQLite 事务抢占告警并创建执行行；重复键不获得执行权。"""
         with self.db.transaction() as conn:
             changed = conn.execute(
                 "INSERT OR IGNORE INTO remediation_claims "

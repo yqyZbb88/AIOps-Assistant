@@ -1,22 +1,7 @@
-"""待审批项的内存缓冲（ApprovalStore）。
+"""待审批项的有界进程内缓冲，保存审批 ID、线程 ID 与冻结摘要，不存凭据。
 
-Agent 写命令被 HumanInTheLoopMiddleware 中断后，需要一个地方把
-「审批 id → 线程 id + 摘要」暂存起来，等人工经 /approvals 提交决策时取出续跑。
-本模块就是那个暂存处（进程重启即清空，与 AlertStore 同一约定）。
-
-设计要点：
-- **单次性**：pop() 取出即删。审批 id 成功进入续跑后不能再用——防 HTTP 层重放导致
-  同一条写命令被执行两次（LangGraph 本身对已完成线程的重复 resume 不会重复执行，
-  但显式单次性让边界更清楚）。唯一例外是决策记录在续跑前明确落盘失败：调用方会把
-  原记录重新 `add()`，此时命令确定尚未执行，可以安全重试。
-- **有界**：超出 maxlen 按最旧淘汰，淘汰的线程 id 会被调用方 delete_thread（避免
-  LangGraph 的 InMemorySaver 无限累积）。淘汰只丢弃，**绝不放行**。
-- **会过期**：超时即作废（fail-safe：宁可让人重新发起，也不能拿一个陈旧的中断去执行
-  写命令）。purge_expired() 返回被清理的记录，调用方据此删线程。
-- **不存凭据**：只存审批 id / 线程 id / 命令摘要 / 时间。连接信息在插件实例里，
-  与本模块无关。
-
-clock 可注入，便于离线单测过期逻辑（默认取系统时间）。
+加锁原子消费避免重复续跑；仅恢复执行前的决策落库失败可由调用方重新入队。
+容量/过期清理返回移除对象，供调用方释放 checkpoint 并收敛会话。重启后不保留。
 """
 from __future__ import annotations
 
@@ -56,11 +41,9 @@ class ApprovalStore:
 
     # -- 写入 --------------------------------------------------------------
     def add(self, record: dict[str, Any]) -> dict[str, Any] | None:
-        """存入一条待审批记录（须含 approval_id）；超容量时返回**被淘汰的整条记录**，否则 None。
+        """存入含 approval_id 的记录，返回容量淘汰对象，否则 None。
 
-        返回被淘汰记录是为了让调用方 `delete_thread` —— 不返回就等于泄漏 checkpoint 线程。
-        **必须返回完整记录而非只有 approval_id**：调用方还需要 `thread_id`，
-        否则无法删除对应线程，可能造成 checkpoint 线程泄漏。
+        调用方依靠返回的 thread_id 释放 checkpoint；淘汰不放行执行。
         """
         approval_id = record["approval_id"]
         record.setdefault("created_at", _now_iso())
@@ -106,12 +89,9 @@ class ApprovalStore:
             return rec
 
     def remove(self, approval_id: str) -> dict[str, Any] | None:
-        """无条件删除并返回该记录（**作废**语义，与 get/pop 的区别是不做过期判定）。
+        """无条件删除并返回完整记录，未知 ID 返回 None。
 
-        供「会话被删除 → 其未决审批一并作废」使用：宁可让人重新发起，
-        也不能让一个陈旧的写命令还挂在队列里等着被执行。
-        未知 id 返回 None。**返回整条记录**，调用方要靠其中的 thread_id 清理线程
-        （同 add 的返回值约定）。
+        不走 get 的过期判定，以便会话删除时也能取到过期记录的 thread_id 进行清理。
         """
         # 直接查 _records 而**不走 get()**：get() 对已过期的一律返回 None，
         # 那样过期项既删不掉、调用方也拿不到 thread_id 去清线程。这里要的就是「无论如何删掉它」。

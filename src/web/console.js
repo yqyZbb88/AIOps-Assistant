@@ -205,7 +205,7 @@ function updateNoticeLayout() {
   const bounds = anchor.getBoundingClientRect();
   const gap = parseFloat(getComputedStyle(anchor).marginTop) || 0;
   const top = (header ? header.getBoundingClientRect().height : 0) + gap;
-  // Measure the original content-area slot, never its scrolling vertical position.
+  // 测量内容区原始占位尺寸，避免滚动位置影响布局计算。
   notice.style.setProperty("--notice-top", top + "px");
   notice.style.left = bounds.left + "px";
   notice.style.width = bounds.width + "px";
@@ -2072,7 +2072,7 @@ function clearConnectionData() {
 
 function bindEvents() {
   if (typeof ResizeObserver === "function") {
-    // One observer follows header wrapping, sidebar transitions and notice wrapping.
+    // 共用观察器跟踪顶栏换行、侧栏变化和通知换行。
     const observer = new ResizeObserver(updateNoticeLayout);
     [$("notice-anchor"), $("notice"), document.querySelector(".topbar")].forEach(function (element) {
       if (element) observer.observe(element);

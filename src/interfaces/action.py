@@ -16,7 +16,7 @@ class ActionError(Exception):
 
 
 class ActionOutcomeUnknown(ActionError):
-    """The remote write may have completed despite a transport failure."""
+    """传输失败时远端写操作可能已完成，调用方不得自动重试。"""
 
 
 class ActionExecutor(ABC):
@@ -39,11 +39,10 @@ class ActionExecutor(ABC):
 
 
 class RuleExecutionGuard(Protocol):
-    """自动处置执行前的原子抢占口。
+    """规则执行前原子抢占；True 获权，False 表示保留期内重复。
 
-    ``claim`` 返回 True 表示本次调用获得执行权；返回 False 表示同一告警事件
-    的同一动作已经被处理过，调用方必须静默跳过写操作。实现必须保证并发原子性，
-    并在存储故障时 fail-closed（返回 False 或抛异常，绝不能放行）。
+    实现须保证并发原子性；存储故障返回 False 或抛异常，不能放行。保护范围受
+    保留期、持久化与备份恢复影响，不承诺无限期 exactly-once。
     """
 
     def claim(

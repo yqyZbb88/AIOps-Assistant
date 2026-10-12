@@ -2,7 +2,7 @@
 
 本文说明 AIOps-Assistant 使用 SQLite 保存的数据、字段含义、清理规则、备份方式和常见维护操作。
 
-## 一、快速参考
+## 快速参考
 
 | 项目 | 说明 |
 |---|---|
@@ -18,18 +18,18 @@
 
 数据库包含真实运维数据，不要提交到 Git，也不要把文件上传到在线预览服务。
 
-## 二、数据库中保存什么
+## 数据库中保存什么
 
 九张表分为四类：
 
-### 1. 会话
+### 会话
 
 | 表 | 内容 |
 |---|---|
 | `sessions` | 一段会话的元信息 |
 | `messages` | 会话中的用户和助手消息 |
 
-### 2. 告警状态日志
+### 告警状态日志
 
 | 表 | 内容 |
 |---|---|
@@ -37,7 +37,7 @@
 | `remediations` | 告警规则的处置结果 |
 | `ai_advice` | 无规则告警的 AI 分析建议 |
 
-### 3. 审批、幂等和执行
+### 审批、幂等和执行
 
 | 表 | 内容 |
 |---|---|
@@ -45,7 +45,7 @@
 | `remediation_claims` | 自动处置幂等抢占记录 |
 | `action_executions` | 规则与 Agent 写动作的统一目标、幂等和结果记录 |
 
-### 4. 巡检
+### 巡检
 
 | 表 | 内容 |
 |---|---|
@@ -53,7 +53,7 @@
 
 normal 巡检轮次只写日志，不写数据库。
 
-## 三、会话表
+## 会话表
 
 ### `sessions`
 
@@ -85,7 +85,7 @@ normal 巡检轮次只写日志，不写数据库。
 
 模型只读取 `final` 状态的历史，不读取待审批、作废和未知状态。
 
-## 四、告警和处置表
+## 告警和处置表
 
 `alerts`、`remediations`、`ai_advice` 通过 `alert_key` 关联：
 
@@ -119,7 +119,7 @@ instance_mismatch
 duplicate_ignored
 ```
 
-## 五、审批与幂等表
+## 审批与幂等表
 
 ### `approval_decisions`
 
@@ -139,7 +139,7 @@ duplicate_ignored
 
 这张表用于区分进程异常退出后的“未执行”和“结果未知”。
 
-保留期是 `history_ttl_hours`（默认 168 小时 = 7 天），由归档清理一并执行（见第八节）。
+保留期是 `history_ttl_hours`（默认 168 小时 = 7 天），由归档清理一并执行（见[数据保留和清理](#数据保留和清理)）。
 
 ### `remediation_claims`
 
@@ -152,9 +152,10 @@ duplicate_ignored
 | `alert_status` | 告警状态 |
 | `starts_at` | 告警开始时间 |
 | `claimed_at` | 抢占时间 |
-| `host_id` | 被解析并授权的主机 ID |
+| `host_id` | 兼容元数据，当前规则抢占路径可能为空；主机审计看 action_executions |
 
-四列组成联合主键。Alertmanager 重投时只会有一个请求成功抢占。
+四列组成联合主键。在该幂等键尚未清理时，Alertmanager 重投只能有一个请求成功抢占；
+TTL 清理或恢复旧备份后不能保证键仍在。
 
 ### `action_executions`
 
@@ -177,7 +178,7 @@ duplicate_ignored
 创建记录和唯一幂等键先于远程写命令。命令发出后若无法可靠写入最终状态，记录会保留在
 `running`，按“结果未知”人工核对，程序不会自动重试。
 
-## 六、巡检表
+## 巡检表
 
 ### `inspection_runs`
 
@@ -200,7 +201,7 @@ GET /inspections/recent?limit=50&host_id=local-node
 
 AI 的 `inspection_anomalies` 工具也读取这张表，并明确标记为历史数据。
 
-## 七、安全查询方式
+## 安全查询方式
 
 应用对会话、历史、巡检与 API 返回执行“写入前脱敏 + 读取时再次脱敏”。这会保护新记录，
 并在应用读取旧记录时遮蔽当前已知密钥；程序不会原地重写用户数据库。若旧库可能包含已经
@@ -225,7 +226,7 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 
 不要一边运行服务，一边让 DB Browser 等 GUI 长期持有数据库连接。
 
-## 八、数据保留和清理
+## 数据保留和清理
 
 ### 会话清理
 
@@ -265,7 +266,7 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 | `inspection.max_rows` | 2500 | 异常巡检最大记录数 |
 
 
-## 九、备份
+## 备份
 
 以下步骤适用于当前单进程部署。执行恢复前先制作独立副本，安排维护窗口，
 并在实际环境中验证备份文件可读。
@@ -277,12 +278,20 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
    包括 `config/`、`compose.env`、`deployment.json`、凭据目录、SQLite 与日志；
 3. 另行备份三个 Docker 命名卷及根 `.env`。恢复时保持项目名和部署目录一致，详见 [deployment.md](deployment.md)。
 
-运行中优先使用 SQLite 的在线备份接口（CLI 的 `.backup` 使用该接口），生成独立的
-一致性快照；不要在写入期间用普通文件复制代替：
+运行中使用 SQLite 在线备份接口。默认容器路径为 `/app/data/aiops_assistant.db`，
+宿主机映射为 `.runtime/assistant-data/aiops_assistant.db`；自定义目录或旧库回退时先核对
+实际使用路径。生产镜像没有要求安装 sqlite3 CLI，可用内置 Python 完成快照：
 
 ```bash
-sqlite3 data/aiops_assistant.db ".backup backup.db"
+docker compose exec -T assistant python -c "import sqlite3; s=sqlite3.connect('/app/data/aiops_assistant.db'); d=sqlite3.connect('/app/data/pre-upgrade.db'); s.backup(d); d.close(); s.close()"
+docker compose cp assistant:/app/data/pre-upgrade.db ./pre-upgrade.db
 ```
+
+示例针对默认新库，先确认源文件存在；SQLite connect 会创建不存在的文件，不能用它
+猜测源路径。目标名称必须未使用，避免覆盖上次备份。根目录的临时备份需立即转移到
+受控备份位置，不提交仓库；完整运行目录及监控卷备份见[升级与回滚](deployment.md#升级与回滚)。
+下列 SQL 查询示例使用宿主机自行安装的 sqlite3 CLI；其中 `data/` 表示应用工作目录，
+在宿主机使用前需替换为实际数据库路径。
 
 若服务已停止且确需文件级复制，应复制同一时刻的数据库文件及存在的 WAL 文件，
 最简单的是复制整个 `data/` 目录，不要只取主 `.db`：
@@ -298,7 +307,7 @@ aiops_assistant.db-wal
 [WAL 文件说明](https://www.sqlite.org/wal.html)、
 [WAL 索引说明](https://www.sqlite.org/walformat.html)。
 
-## 十、恢复
+## 恢复
 
 恢复会覆盖当前数据；先确认备份来源、时间、目标路径和可回退副本。不要在服务运行中
 删除或替换数据库、`-wal`、`-shm`，也不要把管理员 YAML 配置备份当成 SQLite 文件。
@@ -315,7 +324,7 @@ aiops_assistant.db-wal
 
 如果恢复的是旧版 `data/ops_agent.db`，程序在新库不存在时可以继续使用旧文件。
 
-## 十一、数据库锁定
+## 数据库锁定
 
 如果出现 `database is locked`：
 
@@ -325,7 +334,7 @@ aiops_assistant.db-wal
 - 命令行查询后立即退出
 - 检查 OneDrive 或同步盘是否锁文件
 
-服务端会进行短暂重试。重试失败时：
+服务端执行锁等待与有限重试，总等待可超过单次 5 秒 busy timeout。重试失败时：
 
 - 会话创建、会话读取等强依赖存储的接口返回 503
 - 普通最终回答遇到历史写入失败仍可返回，但本轮历史可能缺失
@@ -333,7 +342,8 @@ aiops_assistant.db-wal
 - 告警归档失败返回 503，让 webhook 发送方重试；已完成的处置不会因归档失败自动撤销
 - `/health` 显示 `storage=degraded`
 
-后续一次成功操作会恢复为 `ok`。
+已装配 Store 在后续成功操作后可恢复为 `ok`；数据库初始化失败被缓存时，
+修复底层原因后可能需要重启，不保证自动重新装配。
 
 审批决策记录落库失败时，命令尚未进入续跑，待审批项会恢复到内存队列；接口返回 503，
 调用方可以使用同一审批 ID 重试。若决策已落库但续跑过程异常，则不会恢复审批项，因为
@@ -343,7 +353,7 @@ aiops_assistant.db-wal
 不受展示或模型历史窗口限制。链式申请写回失败或原轮次已不存在时，下一条申请取消、原 ID 不恢复，
 接口返回 503。若取消未成功，未保存的下一条也会在消费检查处被拒绝。
 
-## 十二、schema 和迁移
+## schema 和迁移
 
 普通用户不需要修改 schema。
 
@@ -351,16 +361,17 @@ aiops_assistant.db-wal
 
 - schema 版本保存在 `PRAGMA user_version`
 - 版本高于代码支持的版本时，服务拒绝使用数据库
-- 迁移只追加表和列
+- 新迁移追加版本分支并保留历史分支；既有迁移含索引调整
 - 新库和迁移后的旧库结构必须一致
 
 v7 在 v6 基础上为会话、告警、处置、建议、审批、幂等和巡检追加 `host_id` 及必要的目标
-元数据，并新增 `action_executions`。迁移可在中断后重试：已存在的列会跳过。旧行不具备
+元数据，并新增 `action_executions`。v7 的加列步骤可在中断后重试：已存在的列会跳过；不能由此推断全部历史迁移均具备
+相同的中断恢复保证。旧行不具备
 可靠映射证据，因此 `host_id` 保持空字符串，查询时按未知归属处理。
 
 如果数据库来自更新版本程序，不要用旧版本程序写入。
 
-## 十三、常用查询
+## 常用查询
 
 ### 查看表
 
@@ -404,7 +415,7 @@ UNION ALL SELECT 'action_executions', COUNT(*) FROM action_executions;
 "
 ```
 
-## 十四、SQLite 运行边界
+## SQLite 运行边界
 
 Prometheus 保存时序指标；SQLite 保存告警、巡检异常、会话、处置和审批等业务数据。
 Assistant 以单进程、单 worker 使用本地 SQLite。连接层尝试启用 WAL，并使用锁等待、
@@ -418,7 +429,7 @@ Assistant 以单进程、单 worker 使用本地 SQLite。连接层尝试启用 
 SSH 执行与数据库事务分开。命令结果为 `unknown` 时，应核对执行记录和目标主机状态，
 不要自动重放；恢复数据库备份后也应先核对动作记录。
 
-## 十五、相关文档
+## 相关文档
 
 - [guide.md](guide.md)：日常使用
 - [configuration.md](configuration.md)：数据库相关配置字段
@@ -426,7 +437,7 @@ SSH 执行与数据库事务分开。命令结果为 `unknown` 时，应核对�
 - [api.md](api.md)：历史与执行记录接口
 - [troubleshooting.md](troubleshooting.md)：锁争用与结果未知时的只读排查
 
-## 十六、热更新与数据库边界
+## 热更新与数据库边界
 
 管理员保存配置与新增监控主机不会创建数据库表或切换 SQLite 文件。运行快照切换
 会复用既有会话、历史、执行记录、幂等守卫及最近告警存储对象；正在执行的业务
@@ -437,8 +448,7 @@ SSH 执行与数据库事务分开。命令结果为 `unknown` 时，应核对�
 
 HTTP 会话读写要求有效 Token、所有者身份匹配且仍有会话主机访问权；管理员也不能代读私有会话。
 撤销主机权限或 Token 不删除历史。user 为空的旧会话默认不可访问，不自动推断归属。
-本次维护经用户授权，仅删除已确认的 3 条匿名会话及其关联消息和审批决策，操作前保留受限备份。
-常规 init/升级不执行该删除，SQLite schema 保持 7。
+常规初始化和升级不自动认领或删除匿名会话，SQLite schema 保持 7。
 
 HTTP /chat 在持久化关闭或无法验证会话时返回 503，禁止回退到没有授权主机范围的回答。
 内部可信旧入口的无持久化降级仍保留，不能通过 HTTP 触发。普通已完成回答的历史写入失败

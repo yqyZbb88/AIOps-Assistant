@@ -157,17 +157,9 @@ def _render_pending(
 
 
 def _last_ai_content(response: dict[str, Any]) -> str:
-    """取**本轮**最后一条有内容的 AI 消息文本。
+    """提取本轮最后一条非空 AI 文本，反向扫描止于最近 human 消息。
 
-    **反向扫必须止步于本轮的用户消息。** `response["messages"]` 是整条线程的累积
-    state（包含传入的历史），无脑扫全部
-    消息时，本轮 AI 的 content 若为空（模型没给文本 / 中断轮），就会捞到**上一轮的旧回答**
-    返回给用户——静默串味，比返回兜底文案更糟，因为它看起来像个正常答案。
-    回归见 tests/test_agent_actions_hitl_graph.py::test_last_ai_content_ignores_history。
-
-    止步于 human 而不是「跳过前 N 条」：decide() 的续跑路径拿不到「本轮输入条数」
-    （resume 不新增用户消息，response 是整条线程 state），而「最后一条 human 之后」
-    在多轮、续跑、中断重入三种情形下都恰好是本轮产出。
+    避免本轮空输出时误用历史回答；resume 不新增 human，同一边界仍适用于审批续跑。
     """
     for msg in reversed(response.get("messages", [])):
         if getattr(msg, "type", "") == "human":
@@ -295,11 +287,7 @@ class OpsAssistant:
     def reply_turn(
         self, message: str, *, history: Sequence[ChatMessage] = ()
     ) -> TurnResult:
-        """带历史跑一轮（HistoryCapable 契约）。
-
-        **只是 `reply_turn_ctx` 不带上下文的简化形式**——实现只有一条路径，
-        照 `reply` → `reply_turn` 的先例。既有调用方（含各测试假对象）无需改动。
-        """
+        """不带会话上下文的一轮调用，统一委托 reply_turn_ctx。"""
         return self.reply_turn_ctx(message, history=history)
 
     def reply_turn_ctx(
@@ -438,14 +426,10 @@ class OpsAssistant:
         reason: str = "",
         decided_by: str | None = None,
     ) -> ApprovalOutcome:
-        """提交一次审批决策并续跑：approve → 真正执行；reject → 放弃。
+        """原子消费审批、先持久决策再恢复线程，批准或拒绝冻结动作。
 
-        严格性说明（都对应实测过的坑）：
-        - **单次性**：先 pop 再续跑，成功进入续跑后重复提交同一 id 不会二次执行；
-          若决策记录在续跑前明确落盘失败，则恢复审批项，允许同一 id 安全重试；
-        - **先校验后 resume**：决策类型必须在 allowed_decisions 内、且决策条数必须等于挂起的
-          工具调用数。负载不合法时 LangGraph 会把该负载缓存为线程的 resume 值 →
-          **线程被永久毒化**，之后连正确负载也执行不了，因此绝不能让错误负载进入 resume。
+        决策参数必须在 resume 前校验，避免非法载荷污染 checkpoint。决策落库失败
+        可重新入队，进入续跑后失败则结果不确定，不恢复原申请。
         """
         if self.approvals is None:
             raise ApprovalError("当前 Agent 未启用写命令能力，无法审批")
@@ -574,12 +558,7 @@ class OpsAssistant:
         session_id: str | None = None,
         user: str | None = None,
     ) -> str:
-        """把一次中断登记为待审批项，返回审批 id。
-
-        `session_id` / `user` 是**这条待审批的归属**：`/approvals` 靠它做身份隔离，
-        `approval_decisions` 表靠它记会话。两者都由调用方（core 层）送进来——
-        Agent 自己既不知道当前是哪个会话，也不知道调用者是谁。
-        """
+        """登记冻结动作及调用方提供的会话/身份；容量淘汰同时释放线程并对账。"""
         if self.approvals is None or thread_id is None:
             raise ApprovalError("写命令中断但缺少审批存储或线程信息，无法登记")
         approval_id = uuid4().hex[:12]
@@ -624,14 +603,9 @@ class OpsAssistant:
         *,
         decided_by: str | None = None,
     ) -> None:
-        """落一条决策记录（在 `pop()` 与 `resume()` 之间调用）。
+        """在 pop 与 resume 之间记录决策；失败上抛，调用方重新入队。
 
-        **写失败就中止这次决策**（抛 `ApprovalUnavailableError` → api 503）。调用方会在
-        `decide()` 中把审批项恢复到队列，供同一 id 重试；恢复是安全的，因为失败发生在
-        resume 之前，命令确定尚未执行。反过来若吞掉错误继续执行，一旦进程随后崩溃，
-        重启后就会得到「以为没执行、其实执行了」的错误审计结论。
-
-        `ledger` 为 None（持久化未启用）时直接跳过：没有会话表，也就没有要分辨的东西。
+        只有恢复执行之前的失败可安全重试当前申请；无 ledger 的内部调用跳过持久化。
         """
         if self.ledger is None:
             return
@@ -675,12 +649,7 @@ class OpsAssistant:
             ) from exc
 
     def _purge_expired(self) -> None:
-        """清理过期待审批项，并连同其线程一起删除（否则线程只增不减）。
-
-        **真淘汰了才去对账**：没淘汰时（绝大多数的轮次）一点额外开销都没有。
-        （另一条淘汰路径是**容量**上限，那条发生在 `add()` 里、由 `_register_pending`
-        处理——两条路径都要对账，漏一条就会留下永远批不掉的「待审批」行。）
-        """
+        """清理过期申请及 checkpoint；实际淘汰后收敛会话 pending 轮次。"""
         if self.approvals is None:
             return
         purged = self.approvals.purge_expired()
@@ -691,12 +660,7 @@ class OpsAssistant:
         self._reconcile_ledger()
 
     def _reconcile_ledger(self) -> None:
-        """把「审批队列里已经没有了的」会话轮收敛掉。
-
-        队列刚变过（TTL 过期 / 容量淘汰）时调用。不收敛的话那些行会一直显示
-        「有一条命令等你批」，而 `/approvals` 里根本没有它——用户永远批不了，
-        只能等下次重启。
-        """
+        """在审批过期或容量淘汰后收敛会话，避免留下不可处理的 pending。"""
         if self.ledger is None or self.approvals is None:
             return
         try:

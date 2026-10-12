@@ -1,39 +1,7 @@
-"""FastAPI 应用入口：装配依赖容器、生命周期与 HTTP 路由。
+"""FastAPI 入口：装配依赖、请求快照、路由和唯一巡检调度器。
 
-容器由 scripts/deployment.py serve 装配环境后，以单 worker Uvicorn 启动。
-
-鉴权（config/settings.yaml 的 auth 段）：
-    所有含运维数据或写操作的 API 始终要求 `Authorization: Bearer <密钥>`；
-    /health、/ready，以及无数据的 /console 静态壳公开；/admin/config 即使普通
-    始终要求映射到管理员身份的 Token。
-    FastAPI 自带的 /docs、/redoc、/openapi.json 是应用级文档路由，当前公开。
-    身份由密钥推断（服务端事实），请求体不能自报用户身份。
-    文件启动时没有任何可用密钥会拒绝启动，业务 API 始终验证身份。
-
-对外路由：
-    GET  /health            进程存活与缓存健康状态
-    GET  /ready             主动依赖就绪检查
-    POST /chat              使用既有 session_id 进行聊天
-    POST /alert             Alertmanager webhook
-    GET  /alerts/recent     最近接收的告警
-    GET  /alerts/active     实时活动告警（监控源查询失败转 502）
-    GET  /alerts/history    告警、处置和 AI 建议归档
-    GET  /inspections/recent 最近异常固定指标巡检归档
-    GET  /hosts、/hosts/{id}、/hosts/{id}/status 与 /metrics/... 指定主机监控
-    GET  /executions        规则与 Agent 动作的统一执行记录
-    GET/PUT /admin/config   脱敏配置草稿与受控热更新
-    POST /admin/config/apply 显式应用磁盘上的手动修改
-
-人工审批（Agent 写命令，config/agent_actions.yaml 启用后才有内容）：
-    GET  /approvals             待审批的写命令调用
-    POST /approvals/{id}        提交 approve/reject 并续跑
-
-对话历史（config/settings.yaml 的 storage 段启用后才有内容）：
-    POST   /sessions            创建绑定主机的会话
-    GET    /sessions            会话列表（最近更新的在前）
-    GET    /sessions/{id}       会话详情（含全部消息）
-    PATCH  /sessions/{id}       修改会话标签
-    DELETE /sessions/{id}       删除会话、消息和关联审批决策，并取消未决审批
+业务 API 强制身份校验，管理 API 另校验管理员。控制台空壳、指定资源、探针及
+OpenAPI 文档公开。容器通过 scripts.deployment 装配环境后以单 worker 启动。
 """
 from __future__ import annotations
 
@@ -96,7 +64,10 @@ def create_app(
     *,
     admin_config_manager: AdminConfigManager | None = None,
 ) -> FastAPI:
-    """装配依赖容器并构建 FastAPI 应用（app.state.agent 供路由依赖注入取用）。"""
+    """构建应用与初始运行快照；文件启动时校验身份、主机 ACL 和目录引用。
+
+    settings 与管理器可显式注入用于隔离测试；未传入时读取运行配置。
+    """
     settings_ = settings or load_settings()
     manager = admin_config_manager or AdminConfigManager(settings_)
     # 真实启动及显式注入的管理配置在创建第一份快照时也冻结 YAML。
@@ -208,7 +179,8 @@ def create_app(
 
 def _check_auth(settings: Settings, *, require_tokens: bool = True) -> None:
     """校验身份映射与角色；业务 HTTP 始终强制鉴权。
-    内部直接构造的空 Token 配置允许装配，但所有业务接口返回 503。"""
+    内部直接构造的空 Token 配置允许装配，但所有业务接口返回 503。
+    """
     try:
         # Explicit injected Settings may omit credentials for internal health-only tests.
         # File-based startup and injected deployment managers must have usable identities.

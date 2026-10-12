@@ -12,9 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Collection, Protocol, Sequence, runtime_checkable
 
-# 消息角色：只存 user / assistant 两种。
-# **不存 tool 调用与工具返回**——中间那几轮 tool-call 消息既难序列化也没必要
-# （下轮模型需要数据会重新调工具），存了反而要维护一整套 BaseMessage 序列化。
+# 持久历史仅存用户与最终回答，工具中间态留在当轮，避免跨版本消息序列化耦合。
 ROLE_USER = "user"
 ROLE_ASSISTANT = "assistant"
 
@@ -24,14 +22,12 @@ ROLE_ASSISTANT = "assistant"
 #                    否则模型会以为「还在等批准」而重复催促；见 status 说明）
 # - abandoned        审批已作废（进程重启 / 过期 / 会话删除），永远不会再有下文
 STATUS_FINAL = "final"
-#: **结果未知**：决策已提交（命令可能已执行），但进程在「取走审批项」与「命令跑完」
-#: 之间断了，无从确认。与 `abandoned`（确定没执行）**必须分开**——把这种标成「未执行」
-#: 会让审计结论与事实相反。同样不进模型窗口（见 WINDOW_STATUSES）。
+# 决策已提交但结果无法确认；与当前申请作废分开，链式前序动作可能已完成。
 STATUS_UNKNOWN = "unknown"
 STATUS_PENDING_APPROVAL = "pending_approval"
 STATUS_ABANDONED = "abandoned"
 
-# 每轮默认重发给模型的历史消息条数上限（限 token；实现与调用方共用同一个默认值）
+# 模型历史按消息条数限制，不是 token 预算。
 DEFAULT_MESSAGE_WINDOW = 20
 
 #: 会话名（客户端自定义别名）的格式。
@@ -44,9 +40,7 @@ SESSION_NAME_MAX_CHARS = 64
 #:   Cf 格式字符（零宽空格 U+200B、BOM U+FEFF、RTL 覆盖 U+202E、软连字符…）——**肉眼看不见**
 #: 其余**一律放行**：假名、重音字母、中文标点、emoji、阿拉伯文……都行。
 #:
-#: 为什么是「按类别拒」而不是「按字符白名单放行」：这两条是**有明确边界的类别**，
-#: 排除它们是完备的，不会漏；而枚举「危险的字符」才会漏。白名单会顺带误伤
-#: 大量完全正常的可见字符，却换不来额外的安全。
+# 按类别拒绝隐形控制符，保留其他语言的可见文字；这不是任意显示风险的完整过滤。
 _SESSION_NAME_BANNED_CATEGORIES = frozenset({"Cc", "Cf"})
 
 #: 连续空白（含换行/制表/不换行空格/全角空格）→ 单个普通空格
@@ -54,29 +48,10 @@ _WHITESPACE_RUN = re.compile(r"\s+")
 
 
 def normalize_session_name(name: str) -> str:
-    """归一化并校验会话名，返回**归一化后**的名字；不合法抛 ValueError。
+    """返回经 NFKC 规范化、折叠空白后的标签；非法值抛 ValueError。
 
-    **返回值可能与入参不同，调用方必须使用返回值**（响应里回带的也是它）。
-
-    三步：
-
-    1. **NFKC 规范化 + 折叠空白**：`ｔｅｓｔ１` → `test1`、全角空格 `U+3000` /
-       不换行空格 `U+00A0` / 换行 / 制表符 → 普通空格 `U+0020`，连续空白折成一个并去首尾。
-    2. **拒绝 `Cc` / `Cf` 两类字符**（控制字符与格式字符）。
-    3. **限长** 1~64（按码点算）。
-
-    为什么必须归一化：**空格有四种肉眼无法区分的编码**（普通 / 不换行 / 全角 / 零宽），
-    而中文输入法下按空格键很可能打出全角空格 `U+3000`。不归一化的话，用户以为在续聊
-    同一段对话，服务端却当成一个全新的名字；更糟的是他看这两行数据**长得一模一样**，
-    没有任何线索可查。全角/半角字母同理。
-
-    为什么归一化之后还要拒 `Cf`：**NFKC 消不掉零宽空格 `U+200B` 与 BOM `U+FEFF`**
-    ——它们不是空白的变体，而是各自独立的字符，`\\s` 也不匹配它们。它们恰好是归一化
-    **唯一治不了**的那类问题（真实场景：从聊天记录/网页里复制一个名字，很容易带上
-    不可见字符，于是「复制粘贴的那次」与「手打的那次」落到两段不同的对话）。
-    所以必须在这一层挡掉。
-
-    **不限制可以用哪些文字**：只按类别排除，其余一律放行。
+    规范化后拒绝 Cc/Cf，限制为 1～64 个 Unicode 码点。调用方必须使用返回值；
+    名称允许重复，不作为会话定位键。
     """
     if not isinstance(name, str):
         raise ValueError(f"会话名必须是字符串: {name!r}")
@@ -174,19 +149,9 @@ class SessionInfo:
 
 
 def is_owner(info: SessionInfo, identity: str | None) -> bool:
-    """调用者是否有权访问这个会话。
+    """只判断身份归属；调用方另校验存在性与当前主机访问权。
 
-    - `identity is None` 仅供可信内部旧入口；HTTP 始终传入已验证身份，不使用此兼容分支；
-    - 否则要求 `info.user` **精确匹配**，取「一律拒绝」——`user` 为空的存量行
-      **任何身份都不匹配**（空串不等于任何非空身份）。
-
-    这是所有者判定的**唯一实现**，供 api 层（`/sessions/*`）与 core 层（`/chat` 的
-    `_resolve_session`）共用；两处各写一遍必然漂移。
-
-    **不匹配一律转 404**（不是 403）：与既有的「未知 id → 404」一致，且不泄露
-    「这个 id 存在，只是不属于你」。
-
-    注意它**只判归属**，不管「是否存在」——调用方要先自己处理 `None`。
+    HTTP 必须传已验证身份并将不匹配映射为 404；None 仅供可信内部兼容调用。
     """
     return identity is None or info.user == identity
 
@@ -213,10 +178,9 @@ class TurnResult:
 
 @dataclass(frozen=True)
 class ChatReply:
-    """一次 `/chat` 的结果：回答文本 + 会话 id。
+    """业务层聊天结果；HTTP 返回既有会话 ID，内部无存储调用可为 None。
 
-    会话 id **恒回带**（新建时是新生成的，续聊时是原来的）：只在新建时回带的话，
-    客户端与测试都得处理「有时有、有时没有」，是最容易漏传分支的形态。
+    approval_id 供内部轮次管理，当前 /chat 响应仅含 reply、session_id、session_name。
     """
 
     reply: str
@@ -376,23 +340,10 @@ class SessionStore(ABC):
 
     @abstractmethod
     def reconcile_pending(self, live_approval_ids: Collection[str]) -> tuple[int, int]:
-        """收敛**不在** live_approval_ids 里的 pending **轮**，返回 `(作废轮数, 结果未知轮数)`。
+        """收敛不在 live_approval_ids 中的 pending，返回 (作废轮数, 结果未知轮数)。
 
-        两类要分开，**绝不能混为一谈**：
-
-        - 该 `approval_id` **没有**决策记录 → 决策从没提交过，命令一定没执行 → `abandoned`；
-        - **有**决策记录 → 决策已提交，但进程死在「取走审批项」与「命令跑完」之间 →
-          命令**可能已经执行过** → `unknown`。
-
-        第二种情况是审计结论问题而不是文字问题：标成「未执行」会让日志和事实相反，
-        方向恰是 fail-safe 的反面（详见 `approval_decisions` 表与 `record_decision`）。
-
-        返回**轮数**而非行数：一轮有 user + assistant 两行，数行会翻倍（与
-        `pending_approvals` 的口径一致）。
-
-        - 开库时传空集合：新进程里任何 pending 行必然是孤儿（审批存在进程内存里，
-          不可能跨重启存活）；
-        - 运行期传入 `approvals.list()` 的 id 集合：覆盖 TTL/容量淘汰造成的孤儿。
+        无持久决策标为 abandoned，有决策保守标为 unknown，不自动补执行。每轮含两条
+        消息，计数按轮次。重启传空集合；运行期用于 TTL/容量淘汰后对账。
         """
 
     @abstractmethod
@@ -408,22 +359,15 @@ class SessionStore(ABC):
         actions_json: str = "[]",
         config_fingerprint: str = "",
     ) -> None:
-        """落一条审批决策记录（`approval_decisions` 表）。
+        """在消费审批后、恢复执行前持久化决策；写失败必须上抛。
 
-        **调用时机是这个方法的全部要害**：必须在 `decide()` 把待审批项 `pop()` 掉之后、
-        `resume()` 执行命令**之前**。进程若恰好死在这两者之间，重启后
-        `reconcile_pending` 才能据此把那一轮标成「结果未知」而不是错误的「未执行」——
-        那是唯一能覆盖这个窗口的位置，而 core / api 层都只能在这个区间的外面动手。
-
-        `decided_by` 是**决策人的身份**；空串 = 当时鉴权未启用。
-        **必须落库而不只是写审计日志**：日志会轮转被冲掉（5 MiB × 3 份），而这张表
-        的保留期是 `history_ttl_hours`（默认 7 天）——等你回头追问「那条 `unknown`
-        的命令到底是谁批的」时，磁盘上的日志早就转没了，库里那行却还在。
+        此记录支撑重启后的 unknown 对账，不以可轮转日志代替。decided_by 是服务端
+        身份，空串仅兼容历史或内部调用，HTTP 不允许匿名决策。
         """
 
     @abstractmethod
     def decided_approval_ids(self) -> set[str]:
-        """所有已提交过决策的 approval_id（供请求... 见 reconcile_pending 的判据）。"""
+        """返回已持久提交决策的审批 ID，供 pending 轮次对账。"""
 
     @abstractmethod
     def purge_expired(self) -> int:
@@ -441,19 +385,9 @@ class SessionStore(ABC):
 
 @runtime_checkable
 class ApprovalLedger(Protocol):
-    """审批与「会话里那一轮 pending」的对账口（窄接口）。
+    """Agent 的窄持久化接口：恢复执行前记录决策，审批淘汰后收敛 pending。
 
-    **只为 OpsAssistant 存在**：它有两个动作的时机**只有 Agent 自己知道**，core / api
-    都插不进去，所以用一个窄接口把这两件事托付给它，而不是把整个 `SessionStore` 递进去。
-
-    - `record_decision`：必须在 `decide()` 的 `pop()` 与 `resume()` **之间**落盘。
-      那是唯一能覆盖「决策已提交、命令可能已执行」风险窗口的位置——core 与 api 层
-      都只能在这个区间的**外面**动手。
-    - `reconcile_pending`：审批项被 TTL/容量淘汰时立刻把会话里那轮收敛掉。否则它会
-      一直显示「有一条命令等你批」，而 `/approvals` 里根本没有它。
-
-    两套 `SessionStore` 实现**结构上就已经满足**本协议（方法名与签名一致），无需显式
-    继承——这正是用 Protocol 而非 ABC 的理由。
+    仅暴露这两个有严格调用时机的方法，避免 Agent 依赖整个会话 Store。
     """
 
     def record_decision(
@@ -476,18 +410,10 @@ class ApprovalLedger(Protocol):
 
 @runtime_checkable
 class HistoryCapable(Protocol):
-    """支持多轮历史的 Agent（可选能力）。
+    """可选多轮协议；不支持时调用方退回 reply。
 
-    **方法名必须是新的（reply_turn），不能是给 reply 加一个带默认值的 kwarg。**
-    原因：`runtime_checkable` 只检验**方法名是否存在**，不检验签名——给 reply 加
-    `history=None` 的话，既有的 FakeAssistant（只实现 `reply(self, message)`）
-    依然会被 `isinstance(assistant, HistoryCapable)` 判为 True，然后在真正调用时
-    TypeError。守卫形同虚设。换新方法名才有意义，这也正是 ApprovalCapable 能成立的原因。
-
-    另一个坑：Protocol 里**只能有方法成员**。一旦声明数据成员，`isinstance` 会直接
-    抛 TypeError（而不是返回 False），测试里很容易踩。
-
-    调用方（core/chat.py）用 isinstance 守卫，不支持的实现退回单轮 `reply(message)`。
+    使用独立 reply_turn 方法名，因为 runtime_checkable 不验证签名，给旧 reply
+    增加关键字参数会误判既有实现。
     """
 
     def reply_turn(
