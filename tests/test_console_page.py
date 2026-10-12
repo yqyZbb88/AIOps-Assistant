@@ -70,6 +70,27 @@ def test_removed_status_page_and_assets_return_404():
     assert script.status_code == 404
 
 
+def test_markdown_assets_are_local_versioned_and_keep_the_existing_security_boundary():
+    import re
+
+    with TestClient(create_app(settings=Settings())) as client:
+        page = client.get("/console").text
+        for asset in ("vendor/marked.umd.js", "markdown.js"):
+            url = re.search(r'src="(/console-assets/' + re.escape(asset) + r'\?v=[a-f0-9]{12})"', page).group(1)
+            response = client.get(url)
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/javascript")
+            assert response.headers["cache-control"] == "no-cache"
+            assert "script-src 'self'" in response.headers["content-security-policy"]
+            assert "unsafe-inline" not in response.headers["content-security-policy"]
+        renderer = client.get("/console-assets/markdown.js").text
+        for unsafe in ("innerHTML", "outerHTML", "insertAdjacentHTML", "eval("):
+            assert unsafe not in renderer
+        assert client.get("/console-assets/vendor/README.md").status_code == 404
+        assert client.get("/console-assets/vendor/marked.LICENSE").status_code == 404
+        assert client.get("/console-assets/../console.html").status_code == 404
+
+
 def test_chat_renders_user_turn_before_waiting_for_assistant():
     with TestClient(create_app(settings=Settings())) as client:
         js = client.get("/console-assets/console.js").text

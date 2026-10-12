@@ -24,9 +24,11 @@ def console_page() -> HTMLResponse:
     headers["Cache-Control"] = "no-store"
     page = (_WEB / "console.html").read_text(encoding="utf-8")
     # An updated HTML shell must never reuse an older stylesheet or script URL.
-    for name in ("console.css", "console.js"):
-        version = sha256((_WEB / name).read_bytes()).hexdigest()[:12]
+    for name in ("console.css", "console.js", "vendor/marked.umd.js", "markdown.js"):
         asset = f"/console-assets/{name}"
+        if asset not in page:
+            continue
+        version = sha256((_WEB / name).read_bytes()).hexdigest()[:12]
         page = page.replace(asset, f"{asset}?v={version}")
     return HTMLResponse(page, headers=headers)
 
@@ -39,3 +41,13 @@ def console_css() -> FileResponse:
 @router.get("/console-assets/console.js", include_in_schema=False)
 def console_js() -> FileResponse:
     return FileResponse(_WEB / "console.js", media_type="text/javascript", headers={**_HEADERS, "Cache-Control": "no-cache"})
+
+
+@router.get("/console-assets/vendor/marked.umd.js", include_in_schema=False)
+def console_markdown_parser() -> FileResponse:
+    return FileResponse(_WEB / "vendor/marked.umd.js", media_type="text/javascript", headers={**_HEADERS, "Cache-Control": "no-cache"})
+
+
+@router.get("/console-assets/markdown.js", include_in_schema=False)
+def console_markdown() -> FileResponse:
+    return FileResponse(_WEB / "markdown.js", media_type="text/javascript", headers={**_HEADERS, "Cache-Control": "no-cache"})

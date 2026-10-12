@@ -1,4 +1,4 @@
-"""用 Node 内置测试工具验证无第三方依赖的控制台交互逻辑。"""
+"""用 Node 内置测试工具验证控制台交互与本地 Markdown 解析器。"""
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,9 +10,9 @@ def test_console_ui_runtime():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js 未安装，前端运行时测试不可用")
-    script = Path(__file__).with_name("console_ui.test.cjs")
+    scripts = [Path(__file__).with_name(name) for name in ("console_ui.test.cjs", "console_markdown.test.cjs")]
     result = subprocess.run(
-        [node, "--test", str(script)], capture_output=True, text=True, timeout=20
+        [node, "--test", *map(str, scripts)], capture_output=True, text=True, timeout=20
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

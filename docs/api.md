@@ -25,6 +25,7 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 | GET | `/health` | 进程与缓存健康快照；不主动访问 Prometheus | 公开 |
 | GET | `/ready` | 主动探测 Prometheus；不就绪返回 503 | 公开 |
 | GET | `/console`、`/console-assets/console.css`、`/console-assets/console.js` | 公开的无数据页面与同源资源 | 公开 |
+| GET | `/console-assets/markdown.js`、`/console-assets/vendor/marked.umd.js` | 本地 Markdown 展示组件与固定版本分词器；不开放静态目录 | 公开 |
 | GET | `/hosts`、`/hosts/{host_id}` | 登记主机公开摘要 | 普通 Bearer |
 | GET | `/hosts/{host_id}/status` | Exporter、核心指标和活动告警 | 普通 Bearer |
 | GET | `/hosts/{host_id}/metrics/{metric_id}` | 指定指标即时样本 | 普通 Bearer |

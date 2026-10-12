@@ -70,7 +70,7 @@ function setup() {
     "admin-rules", "admin-catalog-rule_actions", "admin-catalog-agent_actions",
     "admin-catalog-diagnostics", "admin-hosts", "admin-monitor-existing",
     "admin-host-target", "admin-host-credential", "admin-host-diagnostic-checks",
-    "admin-host-result", "admin-monitor-mode", "notice", "notice-text"].forEach((id) => {
+    "admin-host-result", "admin-monitor-mode", "admin-feedback", "notice", "notice-text"].forEach((id) => {
     const element = new Element("div");
     element.append(new Element("strong"));
     elements.set(id, element);
@@ -90,7 +90,7 @@ function setup() {
   const source = fs.readFileSync(path.join(__dirname, "../src/web/console.js"), "utf8")
     .replace(/\ninitialize\(\);\s*$/, "\n");
   const context = {document, getComputedStyle: () => ({marginTop: "16px"}), localStorage: {getItem: () => null}, console};
-  vm.runInNewContext(source + "\nglobalThis.uiTest = {renderOverview, renderOverviewContext, selectHost, renderAdminHostAccess, renderAdminSecurity, loadHosts, renderCredentials, changeCredential, createTrendPlot, trendStep, clearCredentialInputs, loadFavoriteTrends, createSummarySvg, trendCard, appendSnapshot, appendRecordDetail, activateAdminSection, activateAdminCatalog, bindAdminTablist, clearAdminView, formatValue, loadHostStatus, loadConversation, loadRecords, loadSessions, request, bindEvents, prepareDiagnostic, sendChat, refreshAll, loadSelectedTrend, METRIC_MAP, state};", context);
+  vm.runInNewContext(source + "\nglobalThis.uiTest = {renderOverview, renderOverviewContext, renderHostDetail, selectHost, renderAdminHostAccess, renderAdminSecurity, loadHosts, renderCredentials, changeCredential, createTrendPlot, trendStep, clearCredentialInputs, loadFavoriteTrends, createSummarySvg, trendCard, appendSnapshot, appendRecordDetail, activateAdminSection, activateAdminCatalog, bindAdminTablist, clearAdminView, formatValue, loadHostStatus, loadConversation, loadRecords, loadSessions, request, bindEvents, prepareDiagnostic, sendChat, refreshAll, loadSelectedTrend, loadAdminAccess, reloadAdminConfig, saveAdminConfig, renderAdminStatus, markAdminDirty, finishPendingTurn, METRIC_MAP, state};", context);
   return {ui: context.uiTest, tabs, panes, catalogTabs, catalogPanes, elements, context};
 }
 
@@ -298,7 +298,82 @@ test("monitor host wizard does not discard unsaved admin draft", () => {
   ui.state.adminSection = "rules";
   ui.activateAdminSection("monitor");
   assert.equal(ui.state.adminSection, "rules");
-  assert.match(elements.get("notice-text").textContent, /先保存或放弃/);
+  assert.match(elements.get("admin-feedback").textContent, /先保存或放弃/);
+});
+
+test("editing a configuration field enables save immediately and exposes draft status", () => {
+  const {ui, elements} = setup();
+  const save = new Element("button"); save.disabled = true; elements.set("admin-save", save);
+  ui.state.isAdmin = true; ui.state.admin = {revision: "a".repeat(64), available_identities: ["admin"]};
+  ui.markAdminDirty();
+  assert.equal(ui.state.adminDirty, true); assert.equal(save.disabled, false);
+  assert.match(contents(elements.get("admin-summary")), /有未保存修改/);
+});
+
+test("failed reload retains the complete draft and its unsaved-change guard", async () => {
+  const {ui, elements, context} = setup();
+  const draft = {revision: "a".repeat(64), config: {rules: [{alertname: "keep me"}]}};
+  ui.state.isAdmin = true; ui.state.admin = draft; ui.state.adminDirty = true;
+  context.setBusy = () => {}; context.request = async () => { throw new Error("503 temporarily unavailable"); };
+  await ui.reloadAdminConfig();
+  assert.equal(ui.state.admin, draft); assert.equal(ui.state.adminDirty, true);
+  assert.match(elements.get("admin-feedback").textContent, /重载失败.*草稿保留/);
+});
+
+test("background revision conflict preserves edits and distinguishes conflict from restart", async () => {
+  const {ui, elements, context} = setup();
+  const draft = {revision: "a".repeat(64), available_identities: ["admin"], config: {rules: [{alertname: "keep"}]}};
+  ui.state.admin = draft; ui.state.adminDirty = true; ui.state.isAdmin = true;
+  elements.set("admin-nav", new Element("button"));
+  context.request = async () => ({revision: "b".repeat(64)});
+  await ui.loadAdminAccess();
+  assert.equal(ui.state.admin, draft); assert.equal(ui.state.adminConflict, true);
+  assert.match(contents(elements.get("admin-summary")), /配置已变化.*草稿保留/);
+  assert.match(elements.get("admin-restart-banner").textContent, /重载最新版本/);
+});
+
+test("temporary config read failure preserves administrator draft without claiming fresh state", async () => {
+  const {ui, elements, context} = setup();
+  const draft = {revision: "a".repeat(64), available_identities: [], config: {}};
+  ui.state.admin = draft; ui.state.adminDirty = true; ui.state.isAdmin = true;
+  context.request = async () => { const error = new Error("503 unavailable"); error.status = 503; throw error; };
+  await assert.rejects(ui.loadAdminAccess(), /503/);
+  assert.equal(ui.state.admin, draft); assert.equal(ui.state.adminDirty, true); assert.equal(ui.state.isAdmin, true);
+  assert.match(contents(elements.get("admin-summary")), /读取失败/);
+});
+
+test("immediate-operation sections hide global save and describe their own save scope", () => {
+  const {ui, elements} = setup();
+  for (const id of ["admin-config-actions", "admin-section-context", "admin-reload", "admin-save"]) elements.set(id, new Element("div"));
+  ui.state.isAdmin = true; ui.state.admin = {revision: "a".repeat(64), available_identities: [], restart_required: true};
+  for (const section of ["monitor", "ssh", "tokens", "model"]) {
+    ui.state.adminSection = section; ui.renderAdminStatus();
+    assert.equal(elements.get("admin-config-actions").hidden, true);
+    assert.match(elements.get("admin-section-context").textContent, /本分区独立操作/);
+  }
+  ui.state.adminSection = "general"; ui.renderAdminStatus();
+  assert.equal(elements.get("admin-config-actions").hidden, false);
+  assert.match(elements.get("admin-restart-banner").textContent, /服务端会拒绝整批应用/);
+});
+
+test("history and successful replies share Markdown rendering while user and errors stay plain", async () => {
+  const {ui, elements, context} = setup();
+  const calls = [];
+  context.ConsoleMarkdown = {render: (body, text) => { calls.push(text); body.textContent = "rendered " + text; }};
+  context.document.createTextNode = (text) => { const item = new Element("#text"); item.textContent = text; return item; };
+  context.updateControls = () => {};
+  elements.set("chat-log", new Element("div")); elements.set("conversation-title", new Element("h2"));
+  ui.state.selectedSessionId = "session-a";
+  context.request = async () => ({session_id: "session-a", name: "A", messages: [
+    {role: "user", status: "final", content: "**user plain**"}, {role: "assistant", status: "final", content: "**history**"},
+  ]});
+  await ui.loadConversation();
+  const pending = new Element("article"), meta = new Element("div"), body = new Element("div");
+  pending.querySelector = (selector) => selector === ".message-meta" ? meta : body;
+  ui.finishPendingTurn(pending, "**new**", false);
+  ui.finishPendingTurn(pending, "**error plain**", true);
+  assert.deepEqual(calls, ["**history**", "**new**"]);
+  assert.equal(body.children[0].textContent, "**error plain**");
 });
 
 
@@ -306,6 +381,34 @@ test("missing metric values stay unknown instead of displaying zero", () => {
   const {ui} = setup();
   for (const value of [null, undefined, "", " "]) assert.equal(ui.formatValue(value, "%"), "—");
   assert.equal(ui.formatValue(0, "%"), "0.0%");
+});
+
+test("host alert failure and unreachable exporter do not masquerade as confirmed zero", () => {
+  const {ui, elements, context} = setup();
+  for (const id of ["host-detail-title", "host-detail-badges", "host-metrics", "active-alert-count", "host-active-alerts", "metric-select"]) elements.set(id, new Element("div"));
+  context.updateFavoriteButton = () => {};
+  ui.state.hosts = [{host_id: "node-a", name: "A"}]; ui.state.selectedHostId = "node-a";
+  for (const status of [undefined, {exporter: {state: "query_error"}, active_alerts: []}, {exporter: {state: "unreachable"}, active_alerts: []}, {exporter: {state: "reachable"}, alerts_state: "query_error", active_alerts: []}]) {
+    ui.state.hostStatuses.set("node-a", status); ui.renderHostDetail();
+    assert.equal(elements.get("active-alert-count").textContent, "—");
+    assert.match(contents(elements.get("host-active-alerts")), /活动告警未确认/);
+  }
+  ui.state.hostStatuses.set("node-a", {exporter: {state: "reachable"}, active_alerts: []}); ui.renderHostDetail();
+  assert.equal(elements.get("active-alert-count").textContent, "0");
+  assert.match(contents(elements.get("host-active-alerts")), /当前没有活动告警/);
+});
+
+test("failed credential update exposes recovery and stale actions do not silently return", async () => {
+  const {ui, elements, context} = setup();
+  ui.state.isAdmin = true; ui.state.adminCredentials = {revision: "a".repeat(64)};
+  context.setBusy = () => {};
+  let calls = 0; context.request = async () => { calls++; throw new Error("503 unavailable"); };
+  await ui.changeCredential("model", "PUT", {});
+  assert.equal(ui.state.adminCredentials, null);
+  assert.match(elements.get("admin-feedback").textContent, /重新加载凭据状态.*勿自动重试/);
+  await ui.changeCredential("model", "PUT", {});
+  assert.equal(calls, 1);
+  assert.match(elements.get("admin-feedback").textContent, /凭据状态已失效/);
 });
 
 test("late host status is stored under the host that was requested", async () => {

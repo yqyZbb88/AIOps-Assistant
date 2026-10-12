@@ -15,6 +15,7 @@ jobs:
         run: |
           docker run --rm --network none --entrypoint python aiops-regression:ci -m compileall -q src scripts tests
           docker run --rm --network none --entrypoint node aiops-regression:ci --check src/web/console.js
+          docker run --rm --network none --entrypoint node aiops-regression:ci --check src/web/markdown.js
           git diff --check
       - name: Offline regression in container
         run: docker run --rm --network none aiops-regression:ci

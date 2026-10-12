@@ -40,7 +40,7 @@
         </div>
       </header>
       <div id="notice-anchor" class="notice-anchor" hidden aria-hidden="true"></div>
-      <div id="notice" class="notice hidden" role="status" aria-live="polite"><span id="notice-text"></span><button id="notice-close" class="icon-button" type="button" aria-label="关闭通知">×</button></div>
+      <div id="notice" class="notice hidden" role="status" aria-live="polite"><span id="notice-text"></span><button id="notice-close" class="icon-button" type="button" aria-label="关闭通知"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12 M18 6 6 18"/></svg></button></div>
       <main id="main-content" tabindex="-1">
         <section id="view-overview" class="view active" data-view-panel="overview">
           <div class="overview-intro">
@@ -72,11 +72,11 @@
         <section id="view-hosts" class="view" data-view-panel="hosts" hidden>
           <div class="split-layout hosts-layout">
             <section class="panel list-panel">
-              <div class="panel-head"><div><p class="panel-kicker">TARGETS</p><h2>登记主机</h2></div><span id="host-count" class="counter">0</span></div>
+              <div class="panel-head"><div><h2>登记主机</h2></div><span id="host-count" class="counter">0</span></div>
               <div id="host-list" class="selection-list empty">连接后加载主机</div>
             </section>
             <section class="panel detail-panel">
-              <div class="panel-head host-detail-head"><div><p class="panel-kicker">HOST DETAIL</p><h2 id="host-detail-title">请选择主机</h2></div><div id="host-detail-badges" class="badge-row"></div></div>
+              <div class="panel-head host-detail-head"><div><h2 id="host-detail-title">请选择主机</h2></div><div id="host-detail-badges" class="badge-row"></div></div>
               <div id="host-metrics" class="metric-grid"></div>
               <div class="chart-toolbar">
                 <label for="metric-select">区间指标</label><select id="metric-select"></select>
@@ -103,7 +103,7 @@
         <section id="view-assistant" class="view" data-view-panel="assistant" hidden>
           <div class="assistant-layout">
             <section class="panel session-panel">
-              <div class="panel-head"><div><p class="panel-kicker">THREADS</p><h2>主机会话</h2></div><button id="new-session" type="button" disabled>新建</button></div>
+              <div class="panel-head"><div><h2>主机会话</h2></div><button id="new-session" type="button" disabled>新建</button></div>
               <div id="session-list" class="selection-list empty">选择主机后加载会话</div>
             </section>
             <section class="panel conversation-panel">
@@ -132,7 +132,7 @@
         </section>
 
         <section id="view-approvals" class="view" data-view-panel="approvals" hidden>
-          <div class="section-intro"><div><p class="eyebrow">HUMAN IN THE LOOP</p><h2>人工审批</h2><p>确认目标、动作和参数后再决策。批准后命令只会发往冻结的单一主机。</p></div></div>
+          <div class="section-intro"><div><p>确认目标、动作和参数后再决策。批准后命令只会发往冻结的单一主机。</p></div></div>
           <div id="approval-list" class="approval-grid empty-state">连接后加载待审批项</div>
         </section>
 
@@ -143,48 +143,53 @@
             <label for="record-limit">数量<select id="record-limit"><option>20</option><option selected>50</option><option>100</option></select></label>
           </div>
           <section class="panel records-panel">
-            <div class="panel-head"><div><p class="panel-kicker">AUDIT & HISTORY</p><h2>运维记录</h2></div><span id="record-count" class="counter">0</span></div>
+            <div class="panel-head"><div><h2>运维记录</h2></div><span id="record-count" class="counter">0</span></div>
             <div id="record-list" class="record-list empty">连接后加载记录</div>
           </section>
         </section>
         <section id="view-admin" class="view" data-view-panel="admin" hidden>
           <div class="section-intro admin-intro">
-            <div><p class="eyebrow">SYSTEM ADMINISTRATION</p><h2>系统管理</h2><p>结构化管理安全开关、规则、命令目录和逐主机授权。保存后立即生效；手动修改磁盘 YAML 后可单独应用。</p></div>
-            <div class="admin-actions"><button id="admin-reload" class="secondary" type="button">放弃修改并重载</button><button id="admin-apply" class="secondary" type="button">应用磁盘配置</button><button id="admin-save" type="button">保存并生效</button></div>
+            <div><p class="scope-label">系统级管理 · 不随顶部当前主机切换</p><p id="admin-section-context">安全开关、策略与授权统一保存；独立操作在对应分区完成。</p></div>
+            <div class="admin-actions"><button id="admin-reload" class="secondary" type="button">重新加载配置</button><div id="admin-config-actions" class="admin-actions"><button id="admin-apply" class="secondary" type="button">应用磁盘配置</button><button id="admin-save" type="button">保存并生效</button></div></div>
           </div>
           <div id="admin-restart-banner" class="restart-banner hidden" role="status"></div>
-          <div id="admin-summary" class="admin-summary panel empty-state">管理员鉴权成功后加载配置</div>
+          <div id="admin-summary" class="admin-summary empty-state" role="status" aria-live="polite">管理员鉴权成功后加载配置</div>
+          <div id="admin-feedback" class="inline-feedback hidden" role="status" aria-live="polite"></div>
           <div id="admin-content" class="admin-content hidden">
             <div id="admin-tabs" class="admin-tablist" role="tablist" aria-label="系统管理分区">
-              <button id="admin-tab-general" class="admin-tab active" type="button" role="tab" data-admin-section="general" aria-controls="admin-pane-general" aria-selected="true" tabindex="0">安全与开关</button>
-              <button id="admin-tab-rules" class="admin-tab" type="button" role="tab" data-admin-section="rules" aria-controls="admin-pane-rules" aria-selected="false" tabindex="-1">告警规则</button>
-              <button id="admin-tab-commands" class="admin-tab" type="button" role="tab" data-admin-section="commands" aria-controls="admin-pane-commands" aria-selected="false" tabindex="-1">命令目录</button>
-              <button id="admin-tab-hosts" class="admin-tab" type="button" role="tab" data-admin-section="hosts" aria-controls="admin-pane-hosts" aria-selected="false" tabindex="-1">主机授权</button>
-              <button id="admin-tab-access" class="admin-tab" type="button" role="tab" data-admin-section="access" aria-controls="admin-pane-access" aria-selected="false" tabindex="-1">用户主机授权</button>
-              <button id="admin-tab-monitor" class="admin-tab" type="button" role="tab" data-admin-section="monitor" aria-controls="admin-pane-monitor" aria-selected="false" tabindex="-1">监控主机</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-section="ssh" aria-controls="admin-pane-ssh" aria-selected="false" tabindex="-1">SSH 凭据</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-section="tokens" aria-controls="admin-pane-tokens" aria-selected="false" tabindex="-1">用户 Token</button>
-              <button class="admin-tab" type="button" role="tab" data-admin-section="model" aria-controls="admin-pane-model" aria-selected="false" tabindex="-1">模型配置</button>
+              <div class="admin-nav-group" role="presentation"><span id="admin-group-policy" class="admin-nav-label">安全与策略</span>
+              <button id="admin-tab-general" class="admin-tab active" type="button" role="tab" data-admin-section="general" aria-describedby="admin-group-policy" aria-controls="admin-pane-general" aria-selected="true" tabindex="0">安全与开关</button>
+              <button id="admin-tab-rules" class="admin-tab" type="button" role="tab" data-admin-section="rules" aria-describedby="admin-group-policy" aria-controls="admin-pane-rules" aria-selected="false" tabindex="-1">告警规则</button>
+              <button id="admin-tab-commands" class="admin-tab" type="button" role="tab" data-admin-section="commands" aria-describedby="admin-group-policy" aria-controls="admin-pane-commands" aria-selected="false" tabindex="-1">命令目录</button>
+              </div><div class="admin-nav-group" role="presentation"><span id="admin-group-hosts" class="admin-nav-label">主机与授权</span>
+              <button id="admin-tab-hosts" class="admin-tab" type="button" role="tab" data-admin-section="hosts" aria-describedby="admin-group-hosts" aria-controls="admin-pane-hosts" aria-selected="false" tabindex="-1">主机授权</button>
+              <button id="admin-tab-access" class="admin-tab" type="button" role="tab" data-admin-section="access" aria-describedby="admin-group-hosts" aria-controls="admin-pane-access" aria-selected="false" tabindex="-1">用户主机授权</button>
+              <button id="admin-tab-monitor" class="admin-tab" type="button" role="tab" data-admin-section="monitor" aria-describedby="admin-group-hosts" aria-controls="admin-pane-monitor" aria-selected="false" tabindex="-1">监控主机</button>
+              </div><div class="admin-nav-group" role="presentation"><span id="admin-group-credentials" class="admin-nav-label">凭据与模型</span>
+              <button id="admin-tab-ssh" class="admin-tab" type="button" role="tab" data-admin-section="ssh" aria-describedby="admin-group-credentials" aria-controls="admin-pane-ssh" aria-selected="false" tabindex="-1">SSH 凭据</button>
+              <button id="admin-tab-tokens" class="admin-tab" type="button" role="tab" data-admin-section="tokens" aria-describedby="admin-group-credentials" aria-controls="admin-pane-tokens" aria-selected="false" tabindex="-1">用户 Token</button>
+              <button id="admin-tab-model" class="admin-tab" type="button" role="tab" data-admin-section="model" aria-describedby="admin-group-credentials" aria-controls="admin-pane-model" aria-selected="false" tabindex="-1">模型配置</button>
+              </div>
             </div>
             <div id="admin-pane-general" class="admin-pane settings-grid" role="tabpanel" aria-labelledby="admin-tab-general" data-admin-pane="general">
-              <section class="panel setting-group"><div class="panel-head"><div><p class="panel-kicker">SECURITY</p><h2>安全与功能</h2></div></div><div id="admin-security" class="admin-form"></div></section>
-              <section class="panel setting-group"><div class="panel-head"><div><p class="panel-kicker">AUTOMATION</p><h2>自动处置</h2></div></div><div id="admin-automation" class="admin-form"></div></section>
+              <section class="panel setting-group"><div class="panel-head"><div><h2>安全与功能</h2></div></div><div id="admin-security" class="admin-form"></div></section>
+              <section class="panel setting-group"><div class="panel-head"><div><h2>自动处置</h2></div></div><div id="admin-automation" class="admin-form"></div></section>
             </div>
-            <section id="admin-pane-rules" class="panel admin-section admin-pane" role="tabpanel" aria-labelledby="admin-tab-rules" data-admin-pane="rules" hidden><div class="panel-head"><div><p class="panel-kicker">RULES</p><h2>告警规则</h2></div><button id="admin-add-rule" class="secondary" type="button">新增规则</button></div><div id="admin-rules" class="admin-list"></div></section>
+            <section id="admin-pane-rules" class="panel admin-section admin-pane" role="tabpanel" aria-labelledby="admin-tab-rules" data-admin-pane="rules" hidden><div class="panel-head"><div><h2>告警规则</h2></div><button id="admin-add-rule" class="secondary" type="button">新增规则</button></div><div id="admin-rules" class="admin-list"></div></section>
             <div id="admin-pane-commands" class="admin-pane" role="tabpanel" aria-labelledby="admin-tab-commands" data-admin-pane="commands" hidden>
               <div id="admin-command-tabs" class="admin-tablist admin-subtabs" role="tablist" aria-label="命令目录类型">
                 <button id="admin-command-tab-rule_actions" class="admin-tab active" type="button" role="tab" data-admin-catalog="rule_actions" aria-controls="admin-catalog-pane-rule_actions" aria-selected="true" tabindex="0">规则动作</button>
                 <button id="admin-command-tab-agent_actions" class="admin-tab" type="button" role="tab" data-admin-catalog="agent_actions" aria-controls="admin-catalog-pane-agent_actions" aria-selected="false" tabindex="-1">Agent 动作</button>
                 <button id="admin-command-tab-diagnostics" class="admin-tab" type="button" role="tab" data-admin-catalog="diagnostics" aria-controls="admin-catalog-pane-diagnostics" aria-selected="false" tabindex="-1">诊断命令</button>
               </div>
-              <section id="admin-catalog-pane-rule_actions" class="panel admin-section admin-catalog-pane" role="tabpanel" aria-labelledby="admin-command-tab-rule_actions" data-admin-catalog-pane="rule_actions"><div class="panel-head"><div><p class="panel-kicker">RULE ACTIONS</p><h2>规则动作目录</h2></div><button class="secondary admin-add-command" data-catalog="rule_actions" type="button">新增动作</button></div><div id="admin-catalog-rule_actions" class="admin-list"></div></section>
-              <section id="admin-catalog-pane-agent_actions" class="panel admin-section admin-catalog-pane" role="tabpanel" aria-labelledby="admin-command-tab-agent_actions" data-admin-catalog-pane="agent_actions" hidden><div class="panel-head"><div><p class="panel-kicker">AGENT ACTIONS</p><h2>Agent 动作目录</h2></div><button class="secondary admin-add-command" data-catalog="agent_actions" type="button">新增动作</button></div><div id="admin-catalog-agent_actions" class="admin-list"></div></section>
-              <section id="admin-catalog-pane-diagnostics" class="panel admin-section admin-catalog-pane" role="tabpanel" aria-labelledby="admin-command-tab-diagnostics" data-admin-catalog-pane="diagnostics" hidden><div class="panel-head"><div><p class="panel-kicker">DIAGNOSTICS</p><h2>只读诊断命令</h2></div><button class="secondary admin-add-command" data-catalog="diagnostics" type="button">新增命令</button></div><div id="admin-catalog-diagnostics" class="admin-list"></div></section>
+              <section id="admin-catalog-pane-rule_actions" class="panel admin-section admin-catalog-pane" role="tabpanel" aria-labelledby="admin-command-tab-rule_actions" data-admin-catalog-pane="rule_actions"><div class="panel-head"><div><h2>规则动作目录</h2></div><button class="secondary admin-add-command" data-catalog="rule_actions" type="button">新增动作</button></div><div id="admin-catalog-rule_actions" class="admin-list"></div></section>
+              <section id="admin-catalog-pane-agent_actions" class="panel admin-section admin-catalog-pane" role="tabpanel" aria-labelledby="admin-command-tab-agent_actions" data-admin-catalog-pane="agent_actions" hidden><div class="panel-head"><div><h2>Agent 动作目录</h2></div><button class="secondary admin-add-command" data-catalog="agent_actions" type="button">新增动作</button></div><div id="admin-catalog-agent_actions" class="admin-list"></div></section>
+              <section id="admin-catalog-pane-diagnostics" class="panel admin-section admin-catalog-pane" role="tabpanel" aria-labelledby="admin-command-tab-diagnostics" data-admin-catalog-pane="diagnostics" hidden><div class="panel-head"><div><h2>只读诊断命令</h2></div><button class="secondary admin-add-command" data-catalog="diagnostics" type="button">新增命令</button></div><div id="admin-catalog-diagnostics" class="admin-list"></div></section>
             </div>
-            <section id="admin-pane-hosts" class="panel admin-section admin-pane" role="tabpanel" aria-labelledby="admin-tab-hosts" data-admin-pane="hosts" hidden><div class="panel-head"><div><p class="panel-kicker">HOST AUTHORIZATION</p><h2>逐主机授权</h2></div><span class="subtle">只修改白名单，不显示 SSH 或监控地址</span></div><div id="admin-hosts" class="admin-list"></div></section>
+            <section id="admin-pane-hosts" class="panel admin-section admin-pane" role="tabpanel" aria-labelledby="admin-tab-hosts" data-admin-pane="hosts" hidden><div class="panel-head"><div><h2>逐主机授权</h2></div><span class="subtle">只修改白名单，不显示 SSH 或监控地址</span></div><div id="admin-hosts" class="admin-list"></div></section>
             <section id="admin-pane-access" class="panel admin-pane" role="tabpanel" aria-labelledby="admin-tab-access" data-admin-pane="access" hidden><div class="panel-head"><h2>用户主机授权</h2></div><p class="admin-help">权限绑定身份，Token 轮换后保留。身份名区分大小写，Alice 与 alice 是不同身份。普通用户默认无主机权限；管理员可访问全部主机，但只能访问自己的会话。保存配置后生效。访问权限不会授予诊断或执行命令权限；有写操作或未决审批时保存返回冲突。</p><div id="admin-host-access" class="admin-list"></div></section>
             <section id="admin-pane-monitor" class="panel admin-section admin-pane" role="tabpanel" aria-labelledby="admin-tab-monitor" data-admin-pane="monitor" hidden>
-              <div class="panel-head"><div><p class="panel-kicker">MONITORING HOSTS</p><h2>新增监控主机</h2></div><button id="admin-host-refresh" class="secondary" type="button">刷新目标</button></div>
+              <div class="panel-head"><div><h2>新增监控主机</h2></div><button id="admin-host-refresh" class="secondary" type="button">刷新目标</button></div>
               <p class="admin-help">只登记目标；不安装或启动远程 Exporter。</p>
               <p id="admin-monitor-mode" class="admin-help">加载监控目标中…</p>
               <div id="admin-monitor-existing" class="admin-list"></div>
@@ -198,38 +203,38 @@
                 <div class="admin-host-diagnostics"><strong>只读诊断授权</strong><p class="admin-help">先通过“测试 SSH”，才能保存勾选的诊断命令；写授权始终为空。</p><div id="admin-host-diagnostic-checks" class="admin-checks"></div></div>
                 <div class="admin-host-actions"><button id="admin-host-preview" class="secondary" type="button">预览</button><button id="admin-host-ssh-check" class="secondary" type="button">测试 SSH</button><button id="admin-host-add" type="submit">新增并生效</button></div>
               </form>
-              <div id="admin-host-result" class="admin-summary panel" role="status">填写后先预览；Exporter 的 up=0 不阻止登记。</div>
+              <div id="admin-host-result" class="inline-feedback" role="status" aria-live="polite">填写后先预览；Exporter 的 up=0 不阻止登记。</div>
             </section>
-            <section id="admin-pane-ssh" class="panel admin-pane" role="tabpanel" data-admin-pane="ssh" aria-label="SSH 凭据" hidden><div class="panel-head"><h2>SSH 凭据</h2></div><div id="admin-ssh" class="admin-form"></div></section>
-            <section id="admin-pane-tokens" class="panel admin-pane" role="tabpanel" data-admin-pane="tokens" aria-label="用户 Token" hidden><div class="panel-head"><h2>用户 Token</h2></div><div id="admin-tokens" class="admin-form"></div></section>
-            <section id="admin-pane-model" class="panel admin-pane" role="tabpanel" data-admin-pane="model" aria-label="模型配置" hidden><div class="panel-head"><h2>模型配置</h2></div><div id="admin-model" class="admin-form"></div></section>
+            <section id="admin-pane-ssh" class="panel admin-pane" role="tabpanel" data-admin-pane="ssh" aria-labelledby="admin-tab-ssh" hidden><div class="panel-head"><h2>SSH 凭据</h2></div><div id="admin-ssh" class="admin-form"></div></section>
+            <section id="admin-pane-tokens" class="panel admin-pane" role="tabpanel" data-admin-pane="tokens" aria-labelledby="admin-tab-tokens" hidden><div class="panel-head"><h2>用户 Token</h2></div><div id="admin-tokens" class="admin-form"></div></section>
+            <section id="admin-pane-model" class="panel admin-pane" role="tabpanel" data-admin-pane="model" aria-labelledby="admin-tab-model" hidden><div class="panel-head"><h2>模型配置</h2></div><div id="admin-model" class="admin-form"></div></section>
           </div>
         </section>
         <section id="view-settings" class="view" data-view-panel="settings" hidden>
           <div class="settings-grid">
             <section class="panel setting-group">
-              <div class="panel-head"><div><p class="panel-kicker">APPEARANCE</p><h2>外观</h2></div></div>
+              <div class="panel-head"><div><h2>外观</h2></div></div>
               <label for="pref-theme">主题<select id="pref-theme"><option value="system">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></label>
               <label for="pref-density">显示密度<select id="pref-density"><option value="comfortable">舒适</option><option value="compact">紧凑</option></select></label>
               <label class="switch-row" for="pref-sidebar"><span><strong>默认收起导航</strong><small>在较宽屏幕上节省空间</small></span><input id="pref-sidebar" type="checkbox"></label>
             </section>
             <section class="panel setting-group">
-              <div class="panel-head"><div><p class="panel-kicker">BEHAVIOR</p><h2>默认行为</h2></div></div>
+              <div class="panel-head"><div><h2>默认行为</h2></div></div>
               <label for="pref-start-view">启动页面<select id="pref-start-view"><option value="overview">总览</option><option value="hosts">主机</option><option value="assistant">问答诊断</option><option value="approvals">审批</option><option value="records">运维记录</option></select></label>
               <label for="pref-default-host">默认主机<select id="pref-default-host"><option value="">首台可用主机</option></select></label>
               <label for="pref-refresh">自动刷新<select id="pref-refresh"><option value="0">关闭</option><option value="15">15 秒</option><option value="30">30 秒</option><option value="60">1 分钟</option><option value="300">5 分钟</option></select></label>
               <label for="pref-range">趋势范围<select id="pref-range"><option value="15">15 分钟</option><option value="60">1 小时</option><option value="360">6 小时</option><option value="1440">24 小时</option></select></label>
             </section>
             <section class="panel setting-group wide">
-              <div class="panel-head"><div><p class="panel-kicker">METRICS</p><h2>收藏指标</h2></div><span class="subtle">最多 6 项</span></div>
+              <div class="panel-head"><div><h2>收藏指标</h2></div><span class="subtle">最多 6 项</span></div>
               <div id="metric-preferences" class="check-grid"></div>
             </section>
             <section class="panel setting-group wide">
-              <div class="panel-head"><div><p class="panel-kicker">DASHBOARD</p><h2>总览卡片</h2></div><span class="subtle">使用箭头调整顺序</span></div>
+              <div class="panel-head"><div><h2>总览卡片</h2></div><span class="subtle">使用箭头调整顺序</span></div>
               <div id="widget-preferences" class="widget-preferences"></div>
             </section>
             <section class="panel setting-group wide">
-              <div class="panel-head"><div><p class="panel-kicker">LOCAL DATA</p><h2>本地偏好</h2></div></div>
+              <div class="panel-head"><div><h2>本地偏好</h2></div></div>
               <p class="subtle">偏好保存在当前浏览器。Bearer Token 只存在当前标签页，不会写入持久化存储。</p>
               <button id="reset-preferences" class="secondary danger-outline" type="button">恢复默认设置</button>
             </section>
@@ -240,7 +245,7 @@
   </div>
   <dialog id="auth-dialog" aria-labelledby="auth-dialog-title">
     <form id="auth-form" method="dialog">
-      <div class="dialog-head"><div><h2 id="auth-dialog-title">连接 Assistant</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭">×</button></div>
+      <div class="dialog-head"><div><h2 id="auth-dialog-title">连接 Assistant</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12 M18 6 6 18"/></svg></button></div>
       <label for="token">Bearer Token</label>
       <input id="token" name="token" type="password" autocomplete="off" spellcheck="false" placeholder="输入 API Token…" required>
       <p class="safety-note">页面不会显示、记录或持久化 Token。</p>
@@ -249,7 +254,7 @@
   </dialog>
   <dialog id="session-dialog" aria-labelledby="session-dialog-title">
     <form id="session-form" method="dialog">
-      <div class="dialog-head"><div><p class="panel-kicker">SESSION</p><h2 id="session-dialog-title">新建会话</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭">×</button></div>
+      <div class="dialog-head"><div><h2 id="session-dialog-title">新建会话</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12 M18 6 6 18"/></svg></button></div>
       <p id="session-dialog-host" class="subtle"></p>
       <label for="session-name">会话名称</label>
       <input id="session-name" maxlength="64" placeholder="例如：磁盘告警排查">
@@ -259,12 +264,14 @@
   </dialog>
   <dialog id="confirm-dialog" aria-labelledby="confirm-title">
     <form id="confirm-form" method="dialog">
-      <div class="dialog-head"><div><p class="panel-kicker">CONFIRM</p><h2 id="confirm-title">确认操作</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭">×</button></div>
+      <div class="dialog-head"><div><h2 id="confirm-title">确认操作</h2></div><button class="icon-button dialog-close" type="button" aria-label="关闭"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12 M18 6 6 18"/></svg></button></div>
       <p id="confirm-message"></p>
       <label id="confirm-reason-wrap" for="confirm-reason">审批理由（可选）<textarea id="confirm-reason" rows="3" maxlength="1000"></textarea></label>
       <div class="dialog-actions"><button class="secondary dialog-close" type="button">取消</button><button id="confirm-submit" type="submit">确认</button></div>
     </form>
   </dialog>
+  <script src="/console-assets/vendor/marked.umd.js" defer></script>
+  <script src="/console-assets/markdown.js" defer></script>
   <script src="/console-assets/console.js" defer></script>
 </body>
 </html>

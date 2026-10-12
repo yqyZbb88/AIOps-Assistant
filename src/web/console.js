@@ -47,7 +47,7 @@ const state = {
   health: null, connected: false, busy: new Set(), refreshTimer: null,
   overviewUpdatedAt: null, overviewError: "",
   confirmAction: null, selectedMetricId: "cpu.usage",
-  isAdmin: false, admin: null, adminDirty: false,
+  isAdmin: false, admin: null, adminDirty: false, adminConflict: false, adminLoadError: "",
   adminSection: "general", adminCatalog: "rule_actions",
   hostOptions: null, hostVerification: "", adminCredentials: null, trendGeneration: 0, favoriteGeneration: 0, credentialGeneration: 0,
 };
@@ -97,7 +97,8 @@ function loadPreferences() {
 }
 
 function savePreferences() {
-  localStorage.setItem(PREF_KEY, JSON.stringify(state.prefs));
+  try { localStorage.setItem(PREF_KEY, JSON.stringify(state.prefs)); }
+  catch (_) { showNotice("偏好暂未保存到浏览器，本次页面内仍生效。请检查浏览器存储权限。", "error"); }
   applyPreferences();
 }
 
@@ -313,8 +314,11 @@ function updateControls() {
     $("admin-reload").disabled = !state.isAdmin || state.busy.has("admin");
     $("admin-apply").disabled = !state.isAdmin || state.adminDirty || !state.admin || !state.admin.restart_required || state.busy.has("admin");
     document.querySelectorAll("#admin-content input, #admin-content select, #admin-content textarea, #admin-content button").forEach(function (control) {
-      control.disabled = state.busy.has("admin") || control.dataset.roleReadonly === "true";
+      control.disabled = state.busy.has("admin") || control.dataset.roleReadonly === "true"
+        || (Boolean(control.closest && control.closest("#admin-host-diagnostic-checks")) && !state.hostVerification);
     });
+    if (state.hostOptions && !state.busy.has("admin")) updateHostTargetFields();
+    renderAdminStatus();
   }
   document.querySelectorAll(".diagnostic-prompt").forEach(function (button) {
     button.disabled = !hostReady || sending;
@@ -383,21 +387,27 @@ async function loadApprovals() {
 async function loadAdminAccess() {
   try {
     const snapshot = await request("/admin/config", {timeout: 20000});
+    state.adminLoadError = "";
     const refreshDraft = !state.adminDirty || !state.admin;
     if (refreshDraft) {
       if (!state.admin || snapshot.revision !== state.admin.revision) {
         state.hostOptions = null; state.hostVerification = "";
       }
       state.admin = snapshot;
+      state.adminConflict = false;
     }
     state.isAdmin = true;
     $("admin-nav").classList.remove("hidden");
     if (refreshDraft) renderAdmin();
-    else if (snapshot.revision !== state.admin.revision) {
-      $("admin-summary").textContent = "磁盘配置已变化；当前草稿保存时将发生冲突，请先重载";
-    }
+    else { state.adminConflict = snapshot.revision !== state.admin.revision; renderAdminStatus(); }
   } catch (error) {
     if (error.connectionChanged) return;
+    if (![401, 403].includes(error.status)) {
+      state.adminLoadError = error.message;
+      renderAdminStatus();
+      showAdminFeedback("配置读取失败：" + error.message + "。已有草稿保留，可稍后重新加载。", "error");
+      throw error;
+    }
     state.isAdmin = false;
     state.admin = null;
     state.adminDirty = false;
@@ -414,6 +424,8 @@ function clearAdminView() {
   clearCredentialInputs(); state.adminCredentials = null;
   ["admin-ssh", "admin-tokens", "admin-model", "admin-host-access"].forEach(function (id) { if ($(id)) $(id).replaceChildren(); });
   state.hostOptions = null; state.hostVerification = "";
+  state.adminConflict = false; state.adminLoadError = "";
+  showAdminFeedback("", "");
   $("admin-content").classList.add("hidden");
   $("admin-restart-banner").classList.add("hidden");
   $("admin-summary").classList.add("empty-state");
@@ -579,11 +591,15 @@ function renderHosts() {
     button.disabled = !host.enabled;
     const copy = node("span", "selection-copy");
     copy.append(node("strong", "", host.name), node("span", "", host.host_id));
-    button.append(copy, badge(exporter, exporter));
+    button.append(copy, badge(exporterLabel(exporter), exporter));
     button.addEventListener("click", function () { selectHost(host.host_id); });
     list.append(button);
   });
   list.classList.remove("empty");
+}
+
+function exporterLabel(value) {
+  return {reachable: "可达", unreachable: "不可达", query_error: "查询失败", unknown: "未确认", no_data: "无数据", disabled: "已停用"}[value] || "未确认";
 }
 
 function renderHostDetail() {
@@ -594,7 +610,7 @@ function renderHostDetail() {
   badges.replaceChildren();
   if (!host) return;
   const exporter = status && status.exporter ? status.exporter.state : "unknown";
-  badges.append(badge("Exporter " + exporter, exporter), badge(host.ssh_configured ? "SSH 已配置" : "SSH 关闭", host.ssh_configured ? "ok" : "disabled"));
+  badges.append(badge("Exporter " + exporterLabel(exporter), exporter), badge(host.ssh_configured ? "SSH 已配置" : "SSH 关闭", host.ssh_configured ? "ok" : "disabled"));
   const metrics = $("host-metrics");
   metrics.replaceChildren();
   ["cpu.usage", "memory.usage", "disk.usage"].forEach(function (id) {
@@ -604,8 +620,9 @@ function renderHostDetail() {
     metrics.append(card);
   });
   const alerts = status && Array.isArray(status.active_alerts) ? status.active_alerts : [];
-  $("active-alert-count").textContent = String(alerts.length);
-  renderAlertItems($("host-active-alerts"), alerts, "当前没有活动告警");
+  const alertsKnown = status && exporter === "reachable" && status.alerts_state !== "query_error" && Array.isArray(status.active_alerts);
+  $("active-alert-count").textContent = alertsKnown ? String(alerts.length) : "—";
+  renderAlertItems($("host-active-alerts"), alertsKnown ? alerts : [], alertsKnown ? "当前没有活动告警" : "活动告警未确认，请检查监控采集状态后刷新。");
   $("metric-select").value = state.selectedMetricId;
   updateFavoriteButton();
 }
@@ -731,8 +748,7 @@ function renderOverview() {
     main.append(node("strong", "", host.name), node("span", "", host.host_id));
     const values = node("span", "mini-host-metrics");
     values.append(node("span", "", "CPU " + formatValue(metricValue(status, "cpu.usage"), "%")), node("span", "", "MEM " + formatValue(metricValue(status, "memory.usage"), "%")));
-    const labels = {reachable: "可达", unreachable: "不可达", query_error: "查询失败", unknown: "未确认", no_data: "无数据", disabled: "已停用"};
-    row.append(main, values, badge(labels[exporter] || "未确认", exporter));
+    row.append(main, values, badge(exporterLabel(exporter), exporter));
     hostBox.append(row);
   });
   const attention = $("overview-attention");
@@ -1025,7 +1041,9 @@ async function loadConversation() {
       const meta = node("div", "message-meta");
       meta.append(node("span", "", (item.role === "user" ? "你" : "Assistant") + " · " + formatTime(item.created_at)));
       if (item.status !== "final") meta.append(badge(item.status, item.status));
-      article.append(meta, node("div", "message-body", item.content));
+      const body = node("div", "message-body", item.content);
+      if (item.role === "assistant") renderAssistantBody(body, item.content);
+      article.append(meta, body);
       log.append(article);
     });
     log.scrollTop = log.scrollHeight;
@@ -1133,6 +1151,11 @@ function appendPendingTurn(content) {
   return pending;
 }
 
+function renderAssistantBody(body, text) {
+  if (typeof ConsoleMarkdown !== "undefined") ConsoleMarkdown.render(body, text);
+  else { body.className = "message-body"; body.replaceChildren(document.createTextNode(text || "")); }
+}
+
 function finishPendingTurn(pending, text, failed) {
   pending.classList.remove("pending");
   pending.classList.toggle("failed", Boolean(failed));
@@ -1140,7 +1163,8 @@ function finishPendingTurn(pending, text, failed) {
   const body = pending.querySelector(".message-body");
   meta.textContent = failed ? "Assistant · 请求失败" : "Assistant · 刚刚";
   body.className = "message-body";
-  body.replaceChildren(document.createTextNode(text));
+  if (failed) body.replaceChildren(document.createTextNode(text));
+  else renderAssistantBody(body, text);
   $("chat-log").scrollTop = $("chat-log").scrollHeight;
 }
 
@@ -1190,7 +1214,7 @@ function renderApprovals() {
     const card = node("article", "approval-card");
     const head = node("div", "approval-card-head");
     const heading = node("div");
-    heading.append(node("p", "panel-kicker", "PENDING APPROVAL"), node("h3", "", item.host_id || "未知主机"));
+    heading.append(node("h3", "", item.host_id || "未知主机"));
     head.append(heading, badge("待决策", "pending"));
     const meta = node("div", "approval-meta");
     [["申请人", item.user || "未认证"], ["申请时间", formatTime(item.created_at)], ["会话", item.session_id || "无"], ["目标", item.target_summary || item.host_id || "未知"]].forEach(function (entry) {
@@ -1441,17 +1465,69 @@ function moveWidget(index, delta) {
 
 function markAdminDirty() {
   state.adminDirty = true;
+  renderAdminStatus();
+  if ($("admin-save")) $("admin-save").disabled = !state.isAdmin || state.busy.has("admin");
+}
+
+function showAdminFeedback(text, tone) {
+  const local = $("admin-" + state.adminSection + "-feedback");
+  const target = local || $("admin-feedback");
+  if (!target) return;
+  target.className = "inline-feedback " + (text ? (tone || "") : "hidden");
+  target.textContent = text;
+  target.setAttribute("role", tone === "error" ? "alert" : "status");
+}
+
+function renderAdminStatus() {
+  if (!state.admin || !state.isAdmin) return;
   const summary = $("admin-summary");
-  if (summary) {
-    summary.classList.add("admin-dirty");
-    summary.textContent = "有未保存修改 · revision " + state.admin.revision.slice(0, 12);
-  }
+  if (!summary) return;
+  const busy = state.busy.has("admin");
+  const label = busy ? "正在处理…" : state.adminLoadError ? "读取失败 · 显示上次配置" : state.adminConflict ? "配置已变化 · 草稿保留" : state.adminDirty ? "有未保存修改" : state.admin.restart_required ? "磁盘配置尚未应用" : "当前配置已生效";
+  summary.classList.remove("empty-state");
+  summary.classList.toggle("admin-dirty", state.adminDirty || state.adminConflict);
+  summary.replaceChildren(badge(label, state.adminLoadError ? "error" : state.adminDirty || state.adminConflict || state.admin.restart_required ? "warning" : "neutral"),
+    node("span", "admin-revision", "版本 " + (state.admin.revision || "").slice(0, 12) + " · " + (state.admin.available_identities || []).length + " 个可用身份"));
+  const immediate = ["monitor", "ssh", "tokens", "model"].includes(state.adminSection);
+  if ($("admin-config-actions")) $("admin-config-actions").hidden = immediate;
+  const context = $("admin-section-context");
+  if (context) context.textContent = immediate
+    ? "本分区独立操作并生效，无需点击全局保存。连接测试只检查已保存配置。"
+    : "本分区修改属于同一份草稿，点击“保存并生效”统一提交。";
+  if ($("admin-reload")) $("admin-reload").textContent = state.adminDirty ? "放弃修改并重载" : "重新加载配置";
+  if ($("admin-save")) $("admin-save").textContent = busy ? "正在处理…" : "保存并生效";
+  const banner = $("admin-restart-banner");
+  banner.classList.toggle("hidden", !state.admin.restart_required && !state.adminConflict);
+  banner.textContent = state.adminConflict
+    ? "磁盘配置已变化。当前草稿仍保留；请核对修改后重载最新版本，再重新编辑。"
+    : "磁盘配置与当前运行配置不同。可尝试“应用磁盘配置”；若包含需重启字段，服务端会拒绝整批应用并说明原因。";
 }
 
 function adminLabel(text, control, className) {
   const label = node("label", className || "");
+  if (!control.name) control.name = text.replace(/\s+/g, "-").slice(0, 64);
   label.append(node("span", "", text), control);
   return label;
+}
+
+let fieldErrorSequence = 0;
+function showFieldError(control, text) {
+  control.setAttribute("aria-invalid", "true");
+  const label = control.closest && control.closest("label");
+  if (label) {
+    let message = label.querySelector(".field-error");
+    if (!message) {
+      message = node("span", "field-error"); message.id = "admin-field-error-" + (++fieldErrorSequence);
+      label.append(message);
+      control.addEventListener("input", function () {
+        control.removeAttribute("aria-invalid"); control.removeAttribute("aria-describedby"); message.textContent = "";
+      });
+    }
+    message.textContent = text;
+    control.setAttribute("aria-describedby", message.id);
+  }
+  showNotice(text, "error");
+  control.focus();
 }
 
 function adminInput(value, onInput, options) {
@@ -1460,6 +1536,7 @@ function adminInput(value, onInput, options) {
   if (!opts.multiline) input.type = opts.type || "text";
   if (opts.multiline) input.rows = opts.rows || 2;
   input.value = value === undefined || value === null ? "" : String(value);
+  input.autocomplete = "off";
   if (opts.readOnly) input.readOnly = true;
   input.addEventListener("input", function () { onInput(input.value, input); markAdminDirty(); });
   return input;
@@ -1525,7 +1602,7 @@ function renderAdminSecurity() {
     node("p", "admin-help", "业务接口始终验证 Token 身份，会话仅归创建者所有。"),
     adminToggle("LLM 分析", "控制告警 AI 分析。", settings.llm_enabled, function (value) { settings.llm_enabled = value; }),
     adminToggle("聊天 Agent", "关闭后聊天使用关键词降级能力。", settings.agent_enabled, function (value) { settings.agent_enabled = value; }),
-    adminToggle("周期巡检", "重启后启动或停止巡检调度。", settings.inspection_enabled, function (value) { settings.inspection_enabled = value; })
+    adminToggle("周期巡检", "保存并生效后更新巡检调度。", settings.inspection_enabled, function (value) { settings.inspection_enabled = value; })
   );
   container.append(adminLabel("审批模式", adminSelect([
     {value: "owner", label: "仅申请人"}, {value: "approvers_only", label: "指定审批人"},
@@ -1545,7 +1622,7 @@ function renderAdminAutomation() {
     ["rule_actions", "规则动作目录"], ["agent_actions", "Agent 写动作目录"], ["diagnostics", "只读诊断目录"],
   ].forEach(function (entry) {
     const catalog = config.catalogs[entry[0]];
-    container.append(adminToggle(entry[1], "重启后整体启用或关闭该目录。", catalog.enabled, function (value) { catalog.enabled = value; }));
+    container.append(adminToggle(entry[1], "保存并生效后整体启用或关闭该目录。", catalog.enabled, function (value) { catalog.enabled = value; }));
   });
 }
 
@@ -1728,12 +1805,7 @@ function renderAdmin() {
   // 草稿始终在 state.admin.config 中；分区切换仅切换可见 DOM，不单独保存某个分区。
   if (!state.isAdmin || !state.admin) return;
   $("admin-content").classList.remove("hidden");
-  const status = state.admin.restart_required ? "磁盘配置与运行配置不同。确认没有需重启的字段后，点击“应用磁盘配置”。" : "当前磁盘配置已生效。";
-  $("admin-restart-banner").textContent = status;
-  $("admin-restart-banner").classList.toggle("hidden", !state.admin.restart_required);
-  $("admin-summary").classList.remove("empty-state");
-  $("admin-summary").classList.toggle("admin-dirty", state.adminDirty);
-  $("admin-summary").textContent = (state.adminDirty ? "有未保存修改 · " : "配置已加载 · ") + "revision " + state.admin.revision.slice(0, 12) + " · " + state.admin.available_identities.length + " 个可用身份";
+  renderAdminStatus();
   renderAdminSecurity(); renderAdminAutomation(); renderAdminRules();
   ["rule_actions", "agent_actions", "diagnostics"].forEach(renderAdminCatalog);
   renderAdminHosts(); renderAdminHostAccess();
@@ -1819,6 +1891,8 @@ function collectHostDraft() {
 async function hostWizardAction(kind) {
   if (!state.hostOptions || !state.admin || state.adminDirty || state.busy.has("admin")) return;
   setBusy("admin", true);
+  $("admin-host-result").className = "inline-feedback";
+  $("admin-host-result").textContent = kind === "check" ? "正在检查 SSH 认证…" : kind === "add" ? "正在登记主机…" : "正在预览目标…";
   try {
     const path = {preview: "preview", check: "ssh-check", add: "add"}[kind];
     const result = await request("/admin/hosts/" + path, {
@@ -1845,6 +1919,8 @@ async function hostWizardAction(kind) {
       showNotice(result.existing ? "相同主机已登记" : "新主机已登记并生效", "success");
     }
   } catch (error) {
+    if (error.connectionChanged) return;
+    $("admin-host-result").className = "inline-feedback error";
     $("admin-host-result").textContent = error.message;
     showNotice(error.message, "error");
   } finally { setBusy("admin", false); }
@@ -1852,10 +1928,10 @@ async function hostWizardAction(kind) {
 
 function activateAdminSection(section, moveFocus) {
   if (["monitor", "ssh", "tokens", "model"].includes(section) && state.adminDirty && state.adminSection !== section) {
-    showNotice("进入新增主机向导前，请先保存或放弃当前管理草稿。", "error");
+    showAdminFeedback("进入此分区前，请先保存或放弃当前管理草稿。", "error");
     return;
   }
-  if (state.adminSection !== section) clearCredentialInputs();
+  if (state.adminSection !== section) { showAdminFeedback("", ""); clearCredentialInputs(); }
   state.adminSection = ["general", "rules", "commands", "hosts", "access", "monitor", "ssh", "tokens", "model"].includes(section) ? section : "general";
   document.querySelectorAll("[data-admin-section]").forEach(function (tab) {
     const active = tab.dataset.adminSection === state.adminSection;
@@ -1869,6 +1945,7 @@ function activateAdminSection(section, moveFocus) {
   });
   if (state.adminSection === "monitor" && !state.hostOptions) loadHostOptions();
   if (state.isAdmin && ["ssh", "tokens", "model"].includes(state.adminSection)) loadAdminCredentials();
+  renderAdminStatus();
 }
 
 function activateAdminCatalog(catalog, moveFocus) {
@@ -1905,11 +1982,11 @@ async function reloadAdminConfig() {
   if (state.busy.has("admin")) return;
   setBusy("admin", true);
   try {
-    state.adminDirty = false;
-    state.admin = await request("/admin/config", {timeout: 20000});
+    const snapshot = await request("/admin/config", {timeout: 20000});
+    state.admin = snapshot; state.adminDirty = false; state.adminConflict = false; state.adminLoadError = "";
     state.hostOptions = null; state.hostVerification = "";
-    renderAdmin(); showNotice("已重新加载磁盘配置", "success");
-  } catch (error) { showNotice(error.message, "error"); }
+    renderAdmin(); showAdminFeedback("已重新加载磁盘配置。", "success");
+  } catch (error) { if (!error.connectionChanged) showAdminFeedback("重载失败，当前草稿保留：" + error.message, "error"); }
   finally { setBusy("admin", false); }
 }
 
@@ -1920,13 +1997,13 @@ async function saveAdminConfig() {
   setBusy("admin", true);
   try {
     const result = await request("/admin/config", {method: "PUT", timeout: 30000, body: {revision: state.admin.revision, config: state.admin.config}});
-    state.admin = result; state.adminDirty = false;
+    state.admin = result; state.adminDirty = false; state.adminConflict = false; state.adminLoadError = "";
     state.hostOptions = null; state.hostVerification = "";
     renderAdmin();
     const files = (result.changed_files || []).join("、") || "无文件变化";
-    showNotice("配置已保存并生效：" + files, "success");
+    showAdminFeedback("配置已保存并生效：" + files, "success");
   } catch (error) {
-    showNotice(error.status === 409 ? "配置已被其他操作修改，请先重载。" : error.message, "error");
+    if (!error.connectionChanged) showAdminFeedback("保存未完成，草稿保留：" + error.message, "error");
   } finally { setBusy("admin", false); }
 }
 
@@ -1935,9 +2012,10 @@ async function applyAdminDiskConfig() {
   setBusy("admin", true);
   try {
     state.admin = await request("/admin/config/apply", {method: "POST", timeout: 30000, body: {revision: state.admin.revision}});
-    renderAdmin(); showNotice("磁盘配置已应用到当前进程。", "success");
+    state.adminConflict = false; state.adminLoadError = "";
+    renderAdmin(); showAdminFeedback("磁盘配置已应用到当前进程。", "success");
   } catch (error) {
-    showNotice(error.status === 409 ? "配置已变化或业务操作尚未结束，请重载后重试。" : error.message, "error");
+    if (!error.connectionChanged) showAdminFeedback("应用未完成：" + error.message, "error");
   } finally { setBusy("admin", false); }
 }
 
@@ -2003,6 +2081,9 @@ function bindEvents() {
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     // 一个页面级 resize 监听，按当前 DOM 重绘；移除卡片后不会遗留监听器或观察器。
     window.addEventListener("resize", function () { updateNoticeLayout(); document.querySelectorAll(".time-series").forEach(function (plot) { if (plot.redrawTrend) plot.redrawTrend(); }); });
+    window.addEventListener("beforeunload", function (event) {
+      if (state.adminDirty) { event.preventDefault(); event.returnValue = ""; }
+    });
   }
 
   document.querySelectorAll("[data-view]").forEach(function (button) { button.addEventListener("click", function () { navigate(button.dataset.view); }); });
@@ -2112,24 +2193,47 @@ function credentialInput(type, value, sensitive) {
   return input;
 }
 function credentialButton(label, action) {
-  const button = node("button", "secondary", label); button.type = "button"; button.addEventListener("click", action); return button;
+  const button = node("button", "secondary", label); button.type = "button";
+  button.addEventListener("click", async function () {
+    try { await action(); }
+    catch (error) { if (!error.connectionChanged) showAdminFeedback(error.message, "error"); }
+  });
+  return button;
+}
+function confirmCredential(title, message, action) {
+  openConfirm({title: title, message: message, submitLabel: title, danger: true, reason: false, action: action});
+}
+function renderCredentialLoadState(text, failed) {
+  ["ssh", "tokens", "model"].forEach(function (section) {
+    const container = $("admin-" + section);
+    if (!container) return;
+    const message = empty(text);
+    if (failed) message.append(credentialButton("重新加载凭据状态", function () { loadAdminCredentials(); }));
+    container.replaceChildren(message);
+    container.setAttribute("aria-busy", String(!failed));
+  });
 }
 async function loadAdminCredentials() {
-  if (!state.isAdmin || state.busy.has("admin")) return;
+  if (!state.isAdmin || state.busy.has("admin") || state.busy.has("credentials")) return;
   if (state.adminCredentials && state.admin && state.adminCredentials.revision === state.admin.revision) return;
+  state.busy.add("credentials");
+  renderCredentialLoadState("正在加载凭据与模型配置…", false);
   try {
     const generation = ++state.credentialGeneration;
     const result = await request("/admin/credentials");
     if (!state.isAdmin || generation !== state.credentialGeneration) return;
     state.adminCredentials = result; renderCredentials();
-  } catch (error) { if (!error.connectionChanged) showNotice(error.message, "error"); }
+  } catch (error) {
+    if (!error.connectionChanged) renderCredentialLoadState("加载失败：" + error.message, true);
+  } finally { state.busy.delete("credentials"); }
 }
 async function changeCredential(path, method, data) {
   if (!state.isAdmin || state.busy.has("admin")) return;
   if (state.adminDirty) return showNotice("请先保存或放弃管理草稿", "error");
   const revision = state.adminCredentials && state.adminCredentials.revision;
-  if (!revision) return;
+  if (!revision) return showAdminFeedback("凭据状态已失效，请先点击“重新加载凭据状态”再操作。", "error");
   clearCredentialInputs(); state.credentialGeneration++; setBusy("admin", true);
+  showAdminFeedback("正在保存，请等待服务端确认…", "");
   try {
     const result = await request("/admin/credentials/" + path, {method: method, body: {revision: revision, data: data}, timeout: 30000});
     state.adminCredentials = result; state.hostOptions = null; state.hostVerification = "";
@@ -2145,10 +2249,11 @@ async function changeCredential(path, method, data) {
     renderAdmin(); renderCredentials();
     if (once && state.adminSection === "tokens") {
       const output = $("admin-token-once"); output.value = once;
-      showNotice(refreshError ? "Token 已生成，请立即复制并重新连接；当前连接已失效或刷新失败" : "Token 已生成，请立即复制；离开页面即清除", "success");
-    } else showNotice(refreshError ? "配置已保存，状态刷新失败；请重新连接或重载" : "配置已保存并生效", "success");
+      showAdminFeedback(refreshError ? "Token 已生成，请立即复制并重新连接；当前连接已失效或刷新失败" : "Token 已生成，请立即复制；离开页面即清除", "success");
+    } else showAdminFeedback(refreshError ? "配置已保存，状态刷新失败；请重新连接或重载" : "配置已保存并生效", "success");
   } catch (error) {
-    if (!error.connectionChanged) showNotice(error.status === 409 ? "配置已变化或存在运行操作/未决审批，请重载后重试。" : error.message, "error");
+    if (error.connectionChanged) return;
+    showAdminFeedback("操作未完成：" + error.message + "。请重新加载凭据状态后核对结果，勿自动重试写操作。", "error");
     state.adminCredentials = null;
   } finally { setBusy("admin", false); }
 }
@@ -2157,13 +2262,24 @@ function renderCredentials() {
   const tokenBox = $("admin-tokens"), sshBox = $("admin-ssh"), modelBox = $("admin-model");
   if (!tokenBox || !sshBox || !modelBox) return;
   clearCredentialInputs(); tokenBox.replaceChildren(); sshBox.replaceChildren(); modelBox.replaceChildren();
+  ["ssh", "tokens", "model"].forEach(function (section) {
+    const feedback = node("div", "inline-feedback hidden"); feedback.id = "admin-" + section + "-feedback";
+    feedback.setAttribute("aria-live", "polite"); feedback.setAttribute("role", "status");
+    $("admin-" + section).setAttribute("aria-busy", "false");
+    $("admin-" + section).append(feedback);
+    $("admin-" + section).append(credentialButton("重新加载凭据状态", function () { state.adminCredentials = null; loadAdminCredentials(); }));
+  });
   const identity = credentialInput("text"); identity.maxLength = 128;
   tokenBox.append(node("p", "admin-help", "按身份名生成 Token。角色在安全与开关中授权；部署管理员和 Webhook 凭据只读保留。"), adminLabel("身份名", identity), credentialButton("生成用户 Token", function () { changeCredential("tokens", "POST", {identity: identity.value}); }));
   const once = node("textarea"); once.id = "admin-token-once"; once.readOnly = true; once.rows = 2; once.autocomplete = "off"; once.setAttribute("data-credential-sensitive", "true");
   tokenBox.append(adminLabel("一次性 Token（请立即复制）", once), credentialButton("清除明文", clearCredentialInputs));
   data.tokens.forEach(function (item) {
-    const row = node("div", "admin-card"); row.append(node("strong", "", item.identity + (item.managed ? " · 页面管理" : " · 部署只读")));
-    if (item.managed) row.append(credentialButton("轮换", function () { changeCredential("tokens/" + encodeURIComponent(item.id) + "/rotate", "POST", {}); }), credentialButton("撤销", function () { changeCredential("tokens/" + encodeURIComponent(item.id), "DELETE", {}); }));
+    const row = node("div", "admin-card credential-card"); row.append(node("strong", "", item.identity + (item.managed ? " · 页面管理" : " · 部署只读")));
+    if (item.managed) {
+      const actions = node("div", "credential-actions");
+      actions.append(credentialButton("轮换", function () { confirmCredential("轮换 Token", "将立即替换“" + item.identity + "”的此 Token，旧 Token 将失效。请在完成后复制新 Token。", function () { return changeCredential("tokens/" + encodeURIComponent(item.id) + "/rotate", "POST", {}); }); }), credentialButton("撤销", function () { confirmCredential("撤销 Token", "将立即撤销“" + item.identity + "”的此 Token，使用该 Token 的连接将失效。", function () { return changeCredential("tokens/" + encodeURIComponent(item.id), "DELETE", {}); }); }));
+      row.append(actions);
+    }
     tokenBox.append(row);
   });
   const id = credentialInput("text"), username = credentialInput("text"), method = node("select"), password = credentialInput("password", "", true), key = credentialInput("file", "", true), known = node("textarea");
@@ -2175,43 +2291,47 @@ function renderCredentials() {
   sshBox.append(credentialButton("保存 SSH 凭据", async function () {
     const update = {username: username.value.trim(), method: method.value}, profile = id.value.trim();
     const existing = data.ssh.find(function (item) { return item.managed && item.id === profile; });
-    if (!profile) { showNotice("请输入 SSH 凭据 ID", "error"); id.focus(); return; }
-    if (!update.username) { showNotice("请输入 SSH 用户名", "error"); username.focus(); return; }
+    if (!profile) { showFieldError(id, "请输入 SSH 凭据 ID"); return; }
+    if (!update.username) { showFieldError(username, "请输入 SSH 用户名"); return; }
     if (!known.value.trim() && !existing) {
-      showNotice("新建 SSH 凭据必须填写可信 known_hosts，用于验证服务器身份；密码和私钥认证都需要。", "error");
-      known.focus(); return;
+      showFieldError(known, "新建 SSH 凭据必须填写可信 known_hosts，用于验证服务器身份；密码和私钥认证都需要。"); return;
     }
     if (known.value.trim()) update.known_hosts = known.value;
     if (method.value === "password") {
       if (!password.value && (!existing || existing.method !== "password")) {
-        showNotice("请输入 SSH 密码", "error"); password.focus(); return;
+        showFieldError(password, "请输入 SSH 密码"); return;
       }
       if (password.value) update.password = password.value;
     }
     if (method.value === "private_key" && !(key.files && key.files[0]) && (!existing || existing.method !== "private_key")) {
-      showNotice("请选择无口令的 SSH 私钥文件", "error"); key.focus(); return;
+      showFieldError(key, "请选择无口令的 SSH 私钥文件"); return;
     }
     if (method.value === "private_key" && key.files && key.files[0]) {
-      if (key.files[0].size > 131072) return showNotice("私钥最长 128 KiB", "error");
+      if (key.files[0].size > 131072) return showFieldError(key, "私钥最长 128 KiB");
       const selectedFile = key.files[0]; update.private_key = await selectedFile.text();
       if (!state.isAdmin || state.adminSection !== "ssh" || key.files[0] !== selectedFile) return;
     }
     await changeCredential("ssh/" + encodeURIComponent(profile), "PUT", update);
   }));
   data.ssh.forEach(function (item) {
-    const row = node("div", "admin-card"); row.append(node("strong", "", item.id + " · " + item.username + " · " + item.method + (item.managed ? "" : " · 部署只读")));
-    if (item.managed) row.append(credentialButton("编辑", function () { clearCredentialInputs(); id.value = item.id; username.value = item.username; method.value = item.method; passwordLabel.hidden = method.value !== "password"; keyLabel.hidden = method.value !== "private_key"; }), credentialButton("删除", function () { changeCredential("ssh/" + encodeURIComponent(item.id), "DELETE", {}); }));
+    const row = node("div", "admin-card credential-card"); row.append(node("strong", "", item.id + " · " + item.username + " · " + item.method + (item.managed ? "" : " · 部署只读")));
+    if (item.managed) {
+      const actions = node("div", "credential-actions");
+      actions.append(credentialButton("编辑", function () { clearCredentialInputs(); id.value = item.id; username.value = item.username; method.value = item.method; passwordLabel.hidden = method.value !== "password"; keyLabel.hidden = method.value !== "private_key"; }), credentialButton("删除", function () { confirmCredential("删除 SSH 凭据", "将立即删除凭据“" + item.id + "”。关联约束由服务端检查。", function () { return changeCredential("ssh/" + encodeURIComponent(item.id), "DELETE", {}); }); }));
+      row.append(actions);
+    }
     sshBox.append(row);
   });
   // 已登记主机修改关联，目标地址仍由后端登记表决定。
   ((state.admin && state.admin.config.hosts) || []).forEach(function (host) {
-    const row = node("div", "admin-card"), select = node("select");
+    const row = node("div", "admin-card credential-card"), select = node("select");
     const placeholder = node("option", "", "选择凭据"); placeholder.value = ""; select.append(placeholder);
     data.ssh.forEach(function (item) { const option = node("option", "", item.id + " · " + item.username); option.value = item.id; select.append(option); }); select.value = host.ssh_ref || "";
     row.append(node("strong", "", host.name + " · " + host.host_id), adminLabel("SSH 凭据关联", select), credentialButton("更新关联", function () { changeCredential("hosts/" + encodeURIComponent(host.host_id) + "/ssh", "PUT", {credential_id: select.value}); })); row.append(credentialButton("测试已保存的 SSH 连接", async function () {
       if (state.busy.has("admin")) return; clearCredentialInputs(); setBusy("admin", true);
-      try { const result = await request("/admin/credentials/hosts/" + encodeURIComponent(host.host_id) + "/ssh/test", {method: "POST", timeout: 30000}); showNotice(result.detail, "success"); }
-      catch (error) { if (!error.connectionChanged) showNotice(error.message, "error"); }
+      showAdminFeedback("正在检查已保存的 SSH 连接…", "");
+      try { const result = await request("/admin/credentials/hosts/" + encodeURIComponent(host.host_id) + "/ssh/test", {method: "POST", timeout: 30000}); showAdminFeedback(result.detail, "success"); }
+      catch (error) { if (!error.connectionChanged) showAdminFeedback(error.message, "error"); }
       finally { setBusy("admin", false); }
     })); sshBox.append(row);
   });
@@ -2232,10 +2352,11 @@ function renderCredentials() {
     changeCredential("model", "PUT", update);
   }), credentialButton("测试已保存的模型连接", async function () {
     if (state.busy.has("admin")) return; clearCredentialInputs(); setBusy("admin", true);
-    try { const result = await request("/admin/credentials/model/test", {method: "POST", timeout: 20000}); showNotice(result.detail, "success"); }
-    catch (error) { if (!error.connectionChanged) showNotice(error.message, "error"); }
+    showAdminFeedback("正在测试已保存的模型连接…", "");
+    try { const result = await request("/admin/credentials/model/test", {method: "POST", timeout: 20000}); showAdminFeedback(result.detail, "success"); }
+    catch (error) { if (!error.connectionChanged) showAdminFeedback(error.message, "error"); }
     finally { setBusy("admin", false); }
-  }), credentialButton("重新加载凭据状态", function () { state.adminCredentials = null; loadAdminCredentials(); }));
+  }));
 }
 
 function initialize() {
