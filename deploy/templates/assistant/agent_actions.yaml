@@ -3,18 +3,10 @@
 # 与 rules.yaml 的自动处置命令相互独立。
 # enabled=false 时不向 Agent 提供任何写工具。
 # approval 只有超时和容量配置，不存在关闭审批的开关。
-# 命令目录可热应用；环境变量中的连接凭据变更需重启服务。
+# 命令目录可热应用；连接信息来自已登记主机。
 
 enabled: false
 
-target:
-  host: "${SSH_HOST:-localhost}"
-  port: 22                  # 必须 >= 1
-  username: "${SSH_USER:-ops}"
-  key_filename: "${SSH_KEY_FILENAME:-}"
-  password: "${SSH_PASSWORD:-}"
-  known_hosts: "${SSH_KNOWN_HOSTS:-}"  # 留空时使用系统 known_hosts
-  connect_timeout: 8       # SSH 连接与命令超时秒数，必须 >= 1
 
 output_limit: 4000  # SSH channel 最多保留的输出字符数；超出部分排空但不驻留内存
 

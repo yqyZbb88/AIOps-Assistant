@@ -45,14 +45,13 @@ def test_connect_timeout_default_has_a_single_source():
     Agent 写命令的配置模型是 8——同一个概念三条路径两个值，运维没法预期，也没人知道
     哪个才是「本项目的默认」。现在统一由 common/endpoint.py 定义，两边都引用它。
     """
-    from src.plugins.agent_actions.catalog import AgentActionsTarget
+    from src.interfaces.host import HostSshTarget
     from src.plugins.common.endpoint import DEFAULT_CONNECT_TIMEOUT
-    from src.plugins.diagnostics.commands import DiagnosticsTarget
 
     assert SshEndpoint(host="h1").connect_timeout == DEFAULT_CONNECT_TIMEOUT
     assert endpoint_from_params({"host": "h1"}).connect_timeout == DEFAULT_CONNECT_TIMEOUT
-    assert DiagnosticsTarget().connect_timeout == DEFAULT_CONNECT_TIMEOUT
-    assert AgentActionsTarget().connect_timeout == DEFAULT_CONNECT_TIMEOUT
+    assert HostSshTarget(host="h1").connect_timeout == DEFAULT_CONNECT_TIMEOUT
+    assert HostSshTarget(host="h1").connect_timeout == DEFAULT_CONNECT_TIMEOUT
     # 这个值同时是 ssh.py 的连接与命令超时上限，改它等于改所有 SSH 路径的行为；
     # 真要改，得连同 config/*.yaml 与 docs/configuration.md 一起改。
     assert DEFAULT_CONNECT_TIMEOUT == 8

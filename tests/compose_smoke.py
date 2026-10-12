@@ -44,7 +44,7 @@ def eventually(check, seconds=50):
 def main():
     secret = Path("/run/assistant-secrets/assistant.json")
     values = json.loads(secret.read_text())
-    assert not values.get("DEEPSEEK_API_KEY"), "Smoke stack must have no model key"
+    assert not values.get("MODEL_API_KEY"), "Smoke stack must have no model key"
     tokens = json.loads(values["OPS_API_TOKENS"])
     admin = next(k for k, v in tokens.items() if v == "admin")
     webhook = next(k for k, v in tokens.items() if v == "alertmanager")
@@ -80,7 +80,7 @@ def main():
         assert request("/hosts", token=state["managed_token"])
         credentials = request("/admin/credentials", token=admin)
         assert any(item["id"] == state["ssh_id"] for item in credentials["ssh"])
-        assert credentials["model"]["managed"] and credentials["model"]["model"] == "deepseek-chat"
+        assert credentials["model"]["managed"] and credentials["model"]["model"] == "synthetic-model"
         detail = request("/sessions/" + state["session_id"], token=admin)
         assert detail["session_id"] == state["session_id"]
         assert detail["messages"], "Chat history did not survive recreation"
@@ -111,7 +111,7 @@ def main():
     ssh_saved = request("/admin/credentials/ssh/" + ssh_id, token=admin, method="PUT", data={"revision": created["revision"], "data": {
         "username": "smoke", "method": "private_key", "private_key": private.getvalue(), "known_hosts": "fixture ssh-rsa " + key.get_base64()}})
     request("/admin/credentials/model", token=admin, method="PUT", data={"revision": ssh_saved["revision"], "data": {
-        "key_action": "clear", "model": "deepseek-chat", "base_url": "https://example.invalid", "timeout": 10, "max_retries": 0, "max_tokens": 32}})
+        "key_action": "clear", "model": "synthetic-model", "base_url": "https://example.invalid", "timeout": 10, "max_retries": 0, "max_tokens": 32}})
     snapshot = request("/admin/config", token=admin)
     snapshot["config"]["settings"]["host_access"]["smoke-user"] = ["local-node"]
     request("/admin/config", token=admin, method="PUT", data={

@@ -40,7 +40,7 @@ def configure_secrets(*, auth_tokens: str | None = None) -> None:
         tokens = {}
     if isinstance(tokens, Mapping):
         register_secrets(*tokens.keys())
-    register_secrets(os.getenv("DEEPSEEK_API_KEY"), os.getenv("SSH_PASSWORD"))
+    register_secrets(os.getenv("MODEL_API_KEY"))
     try:
         extra = json.loads(os.getenv("OPS_REDACTION_SECRETS", "[]"))
     except json.JSONDecodeError:

@@ -15,11 +15,6 @@ from src.plugins.agent_actions.catalog import (
 
 SAMPLE = """
 enabled: true
-target:
-  host: 10.0.0.9
-  port: 2222
-  username: ops
-  password: "placeholder-secret"
 output_limit: 1234
 approval:
   timeout_seconds: 60
@@ -49,9 +44,9 @@ def _cmd(config, key):
 def test_parse_full_sample():
     cfg = parse_agent_actions(SAMPLE)
     assert cfg.enabled is True
-    assert cfg.target.host == "10.0.0.9"
-    assert cfg.target.port == 2222
-    assert cfg.target.username == "ops"
+    assert not hasattr(cfg, "target")
+    assert not hasattr(cfg, "target")
+    assert not hasattr(cfg, "target")
     assert cfg.output_limit == 1234
     assert cfg.approval.timeout_seconds == 60
     assert cfg.approval.max_pending == 5
@@ -115,10 +110,9 @@ def test_bad_command_key_rejected():
         parse_agent_actions(bad)
 
 
-def test_empty_host_rejected():
-    bad = SAMPLE.replace("host: 10.0.0.9", 'host: ""')
-    with pytest.raises(AgentActionsConfigError, match="host"):
-        parse_agent_actions(bad)
+def test_global_target_is_rejected():
+    with pytest.raises(AgentActionsConfigError, match="target"):
+        parse_agent_actions(SAMPLE + "\ntarget: {host: old-host}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -134,9 +128,9 @@ def test_repo_config_is_valid():
     会让整个能力**静默关闭**（只留一行 ERROR 日志）。故这里按「文件可解析」锁住，
     enabled 改回 false 时本用例仍应通过（关闭是开关的语义，不是校验失败）。
     """
-    from src.plugins.agent_actions.catalog import DEFAULT_AGENT_ACTIONS_FILE
+    from pathlib import Path
 
-    cfg = parse_agent_actions(DEFAULT_AGENT_ACTIONS_FILE.read_text(encoding="utf-8"))
+    cfg = parse_agent_actions((Path(__file__).parents[1] / "deploy/templates/assistant/agent_actions.yaml").read_text(encoding="utf-8"))
     assert cfg.commands, "仓库写命令目录不应为空"
     assert all(c.template for c in cfg.commands), "每条命令都应有模板"
 
@@ -162,7 +156,7 @@ def test_load_valid_returns_config(tmp_path):
     f.write_text(SAMPLE, encoding="utf-8")
     cfg = load_agent_actions_config(f)
     assert cfg is not None
-    assert cfg.target.host == "10.0.0.9"
+    assert not hasattr(cfg, "target")
 
 
 # ---------------------------------------------------------------------------

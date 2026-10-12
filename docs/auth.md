@@ -10,7 +10,7 @@ docker compose run --rm --no-deps init show-token
 ```
 
 浏览器只将 Token 输入连接框；不粘贴到工单、截图或日志。根 `.env` 提供 Compose
-参数和可选模型/SSH 配置，不能替代持久化业务身份。应用不自动加载宿主机 .env。
+参数和可选模型配置，不能替代持久化业务身份。应用不自动加载宿主机 .env。
 
 运行 `.runtime/config/settings.yaml` 使用环境占位，密钥不写 YAML：
 
@@ -24,7 +24,7 @@ auth:
 ```
 
 全部业务 API 始终验证 Token 并解析身份，没有可用 Token 的容器拒绝启动。
-鉴权没有关闭开关；`auth.enabled` 已删除，init 会备份后移除旧字段。
+鉴权没有关闭开关；`auth.enabled` 已删除，旧字段必须先通过显式 migrate-config 迁移。
 
 ## 二、项目中涉及哪些密钥
 
@@ -32,8 +32,8 @@ auth:
 |---|---|---|
 | OPS_API_TOKENS | Token → 身份映射 | compose.env，合并页面用户 Token |
 | OPS_ADMIN_IDENTITIES / OPS_APPROVER_IDENTITIES | 管理员与审批人身份名单 | 部署凭据或管理页角色配置 |
-| SSH 私钥/密码和 known_hosts | 连接并验证目标主机 | 页面凭据目录或部署环境/ssh 目录 |
-| DEEPSEEK_API_KEY | 模型调用 | 页面模型配置或部署环境 |
+| SSH 私钥/密码和 known_hosts | 连接并验证目标主机 | 管理员 SSH 凭据目录；已登记主机只保存引用 |
+| MODEL_API_KEY | 模型调用 | 页面模型配置或部署环境 |
 | OPS_REDACTION_SECRETS | 额外精确脱敏值，JSON 数组 | 部署环境 |
 | Alertmanager Token 文件 | webhook Bearer Token | init 从部署映射派生 |
 

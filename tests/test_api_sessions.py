@@ -39,7 +39,7 @@ def disabled_client(tmp_path) -> TestClient:
 
 
 def _seed(store) -> str:
-    info = store.create(user="ops", host_id="legacy-default")
+    info = store.create(user="ops", host_id="local-node")
     store.append_turn(info.session_id, user_content="CPU 怎么样", assistant_content="45%")
     return info.session_id
 
@@ -85,7 +85,7 @@ def test_get_session_returns_metadata_and_messages(client):
 
 def test_get_session_shows_pending_messages(client):
     """展示口要看到 pending 行（与给模型看的窗口不同）。"""
-    info = client.store.create(user="ops", host_id="legacy-default")
+    info = client.store.create(user="ops", host_id="local-node")
     client.store.append_turn(
         info.session_id, user_content="重启 nginx", assistant_content="⚠️ 待审批",
         status="pending_approval", approval_id="ap1",
@@ -167,7 +167,7 @@ def test_create_session_returns_an_id(client):
     assert body["name"] == ""
     assert body["message_count"] == 0
     assert [s["session_id"] for s in client.get("/sessions").json()] == [body["session_id"]]
-    assert body["host_id"] == "legacy-default"
+    assert body["host_id"] == "local-node"
 
 
 def test_multi_host_session_requires_explicit_host_id(tmp_path):

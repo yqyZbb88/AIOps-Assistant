@@ -640,8 +640,9 @@ class AdminConfigManager:
         container.metrics_config()
         container.hosts()
         container.executors()
-        container.diagnostics()
-        container.agent_actions()
+        for host in container.hosts().enabled():
+            container.diagnostics(host.host_id)
+            container.agent_actions(host.host_id)
         agent = container.aiops_assistant()
         return RuntimeSnapshot("", settings, container, agent)
 

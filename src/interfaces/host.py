@@ -47,7 +47,6 @@ class Host:
     ssh: HostSshTarget | None = None
     credential_ref: str = ""
     capabilities: HostCapabilities = HostCapabilities()
-    legacy: bool = False
 
     def to_public_dict(self) -> dict[str, Any]:
         """只返回页面可用的主机摘要，不泄露 SSH 目标和凭据。
@@ -66,7 +65,6 @@ class Host:
                 "rule_actions": sorted(self.capabilities.rule_actions),
                 "agent_actions": sorted(self.capabilities.agent_actions),
             },
-            "legacy": self.legacy,
         }
 
 

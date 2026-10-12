@@ -168,7 +168,6 @@ def test_diagnostics_and_agent_action_use_bound_host_only(tmp_path, monkeypatch)
     diag_cfg = parse_diagnostics("""
 enabled: true
 provider: ssh
-target: {host: legacy, username: legacy, password: legacy}
 commands:
   memory: {summary: memory, template: "free -m", params: {}}
   disk: {summary: disk, template: "df -h", params: {}}
@@ -186,7 +185,6 @@ commands:
 
     action_cfg = parse_agent_actions("""
 enabled: true
-target: {host: legacy, username: legacy, password: legacy}
 commands:
   restart_service:
     summary: restart

@@ -35,7 +35,7 @@ def _make_app(
     """默认不落盘（测试不写真实 db）；给了 `db_path` 才打开持久化。
 
     **告警 AI 分析一律关掉**：`/alert` 会走 `AlertAnalyzer`，而那条路径**确实**受
-    `llm.enabled` 控制（与聊天 Agent 相反）——不关就是真调 DeepSeek。
+    `llm.enabled` 控制（与聊天 Agent 相反）——不关就是请求真实模型。
     """
     storage = (
         StorageSettings(enabled=False)
@@ -48,7 +48,7 @@ def _make_app(
             storage=storage,
             auth=AuthSettings(
                 tokens=tokens, alert_identity=alert_identity,
-                host_access='{"alice":["legacy-default"],"bob":["legacy-default"],"legacy-user":["legacy-default"]}'
+                host_access='{"alice":["local-node"],"bob":["local-node"],"legacy-user":["local-node"]}'
             ),
         )
     )
@@ -365,7 +365,7 @@ def test_legacy_row_is_invisible_until_a_key_maps_to_its_user(owned):
     要保住某段对话，把一条密钥映射到它原本的 `user` 值上即可——这条用例把那个
     逃生通道钉死，免得用户以为老数据「被删了」。
     """
-    legacy = owned.store.create(user="legacy-user", host_id="legacy-default").session_id
+    legacy = owned.store.create(user="legacy-user", host_id="local-node").session_id
 
     for token in ("k-alice", "k-bob"):
         assert owned.get(f"/sessions/{legacy}", headers=_as(token)).status_code == 404

@@ -11,11 +11,11 @@ pyyaml>=6.0
 ruamel.yaml>=0.18,<0.19
 
 # ---------- 可选 ① 聊天 Agent 与告警 AI 分析（agent/、plugins/llm_clients/） ----------
-#   模型统一复用init.py 的惰性 build_model 工厂；python-dotenv 仅解析部署凭据文件。
+#   模型统一复用 src/utils/model_loader.py 的惰性 build_model 工厂；python-dotenv 仅解析部署凭据文件。
 langchain>=1.0,<2.0
 langgraph>=1.0,<2.0
 langchain-core>=1.0,<2.0
-langchain-deepseek>=1.0,<2.0
+langchain-openai>=1.0,<2.0
 python-dotenv>=1.0
 
 # ---------- 可选 ② SSH 动作执行与只读诊断（plugins/actions/、plugins/diagnostics/） ----------

@@ -1,6 +1,6 @@
 """验证：未装 langchain / python-dotenv 时核心模块可 import、聊天照常回落。
 
-做法：在全新子解释器里先把 langchain/langchain_core/langgraph/langchain_deepseek/dotenv
+做法：在全新子解释器里先把 langchain/langchain_core/langgraph/langchain_openai/dotenv
 用 sys.modules[name]=None 屏蔽（等价"未安装"，任何 import 尝试都会报 ImportError），
 再 import container / core / plugins / storage / utils 并跑 OpsAgent 聊天回落。
 """
@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = r"""
 import sys
 for _name in ("langchain", "langchain_core", "langgraph",
-              "langchain_deepseek", "dotenv"):
+              "langchain_openai", "openai", "dotenv"):
     sys.modules[_name] = None  # 屏蔽：任何 import 尝试都报 ImportError
 
 sys.path.insert(0, __ROOT_REPR__)

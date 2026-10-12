@@ -67,7 +67,7 @@ class MonitorSettings:
 
 @dataclass(frozen=True)
 class LLMSettings:
-    provider: str = "deepseek"
+    provider: str = "openai_compatible"
     enabled: bool = True
 
 
@@ -101,7 +101,7 @@ class MetricsSettings:
 
 @dataclass(frozen=True)
 class HostsSettings:
-    """静态主机清单；空 file 保留旧单主机兼容方式。"""
+    """静态主机清单；必须显式配置或提供 OPS_HOSTS_FILE。"""
 
     file: str = ""
 
@@ -253,6 +253,8 @@ def interpolate_yaml(text: str) -> str:
 def parse_yaml(text: str) -> Any:
     """插值后安全解析；语法诊断仅保留位置，不附带可能含凭据的原文。"""
     import yaml
+    from src.utils.config_migration import reject_legacy_text
+    reject_legacy_text(text)
 
     try:
         return yaml.safe_load(interpolate_yaml(text))
@@ -369,6 +371,8 @@ def _validate_settings(settings: Settings) -> None:
 
 def _build_settings(data: dict[str, Any]) -> Settings:
     """从解析后的 dict 递归构造严格 Settings。"""
+    from src.utils.config_migration import reject_legacy_document
+    reject_legacy_document("settings", data)
     settings = _build_dataclass(Settings, data, prefix="")
     _validate_settings(settings)
     return settings

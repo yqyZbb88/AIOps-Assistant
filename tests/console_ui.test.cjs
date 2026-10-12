@@ -526,7 +526,7 @@ test("credential panes render only metadata and blank secret fields", () => {
   const {ui, elements} = setup();
   ["admin-tokens", "admin-ssh", "admin-model"].forEach((id) => elements.set(id, new Element("div")));
   ui.state.isAdmin = true; ui.state.admin = {config: {hosts: [{host_id: "node-a", name: "Node A", ssh_ref: "managed-key"}]}};
-  ui.state.adminCredentials = {tokens: [{id: "deploy-id", identity: "admin", managed: false}, {id: "managed-id", identity: "alice", managed: true}], ssh: [{id: "managed-key", username: "operator", method: "private_key", managed: true}], model: {configured: true, managed: true, model: "deepseek-chat", base_url: "https://example.invalid", timeout: 30, max_retries: 2, max_tokens: 2048}};
+  ui.state.adminCredentials = {tokens: [{id: "deploy-id", identity: "admin", managed: false}, {id: "managed-id", identity: "alice", managed: true}], ssh: [{id: "managed-key", username: "operator", method: "private_key", managed: true}], model: {configured: true, managed: true, model: "synthetic-model", base_url: "https://example.invalid", timeout: 30, max_retries: 2, max_tokens: 2048}};
   ui.renderCredentials();
   const fields = ["admin-tokens", "admin-ssh", "admin-model"].flatMap((id) => all(elements.get(id), (el) => el.getAttribute("data-credential-sensitive") === "true"));
   assert.ok(fields.length >= 5);
@@ -736,4 +736,26 @@ test("host grants for Alice and alice remain separate exact identities", () => {
   input.checked = true; input.listeners.change();
   assert.deepEqual(Array.from(ui.state.admin.config.settings.host_access.Alice), ["node-a"]);
   assert.deepEqual(Array.from(ui.state.admin.config.settings.host_access.alice), []);
+});
+
+
+test("model advanced output parameter is selected and submitted without secret persistence", async () => {
+  const {ui, elements, context} = setup();
+  ["admin-tokens", "admin-ssh", "admin-model"].forEach(id => elements.set(id, new Element("div")));
+  ui.state.isAdmin = true;
+  ui.state.admin = {config: {hosts: []}};
+  ui.state.adminCredentials = {tokens: [], ssh: [], model: {
+    configured: false, model: "synthetic-model", base_url: "http://model.invalid/v1",
+    timeout: 30, max_retries: 2, max_tokens: 2048, token_limit_param: "max_completion_tokens"}};
+  const saves = [];
+  context.changeCredential = async (path, method, data) => saves.push({path, method, data});
+  ui.renderCredentials();
+  const box = elements.get("admin-model");
+  const select = all(box, el => el.tagName === "select").find(el =>
+    all(el, option => option.tagName === "option" && option.value === "max_completion_tokens").length);
+  assert.equal(select.value, "max_completion_tokens");
+  select.value = "max_tokens";
+  await all(box, el => el.tagName === "button" && el.textContent === "保存模型配置")[0].listeners.click();
+  assert.equal(saves[0].data.token_limit_param, "max_tokens");
+  assert.equal(saves[0].data.api_key, undefined);
 });

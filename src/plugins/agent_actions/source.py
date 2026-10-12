@@ -6,7 +6,7 @@
 - 写（本模块）：sudo 按目录逐条声明；远端非零退出码**就是失败** → 抛 AgentActionError。
 
 安全要点（与只读诊断一致的部分）：
-- 连接凭据只在构造时注入的 AgentActionsConfig.target 里（密码由容器环境插值或主机凭据注入），
+- 连接凭据只在构造时注入的 已登记主机目标里，
   **模型上下文与工具参数里永无 host/密码/私钥**；
 - run() 只接受「命令名 + 语义参数」；params 里若出现任何连接字段（host/port/…）一律拒绝
   （工具层本就不会生成这些字段，这里是纵深防御）；
@@ -49,14 +49,14 @@ class SshAgentActionSource(AgentActionSource):
         self,
         config: AgentActionsConfig,
         *,
-        target: HostSshTarget | None = None,
+        target: HostSshTarget,
         allowed_commands: frozenset[str] | None = None,
     ) -> None:
         # 构造不读文件：config 由容器/测试注入，便于离线单测
-        if config is None or (target is None and not config.target.host):
+        if config is None or not target.host:
             raise AgentActionError("Agent 写命令配置缺少 target.host，无法构造 SshAgentActionSource")
         self.config = config
-        self.target = target or config.target
+        self.target = target
         self.allowed_commands = allowed_commands
         self.output_limit = config.output_limit
         self.execution_store: ActionExecutionStore | None = None

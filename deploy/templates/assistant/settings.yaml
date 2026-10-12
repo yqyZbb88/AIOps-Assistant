@@ -9,7 +9,7 @@ prometheus:
 monitor:
   provider: prometheus
 llm:
-  provider: deepseek
+  provider: openai_compatible
   enabled: ${OPS_LLM_ENABLED:-false}
 agent:
   enabled: ${OPS_AGENT_ENABLED:-false}
@@ -43,8 +43,8 @@ logging:
   audit_file: logs/audit.log
   inspection_file: logs/inspection.log
 auth:
-  # Stable identity -> registered host IDs; normal users default to no hosts.
-  # Administrators can access all hosts; session ownership still applies.
+  # 稳定身份对应已登记主机 ID；普通用户默认无主机权限。
+  # 管理员可访问所有主机；会话仍按创建者隔离。
   host_access: '{}'
   tokens: '${OPS_API_TOKENS}'
   approval_mode: approvers_only

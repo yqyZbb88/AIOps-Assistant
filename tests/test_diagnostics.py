@@ -3,6 +3,7 @@
 全部离线：不触发真实 SSH / paramiko / langchain。
 """
 from __future__ import annotations
+from src.interfaces.host import HostSshTarget
 
 import logging
 
@@ -25,12 +26,6 @@ from src.registry import registry
 SAMPLE = """
 enabled: true
 provider: ssh
-target:
-  host: 192.168.1.1
-  port: 22
-  username: root
-  password: "secret-in-test"
-  connect_timeout: 5
 output_limit: 20
 commands:
   memory:
@@ -75,7 +70,7 @@ class TestParse:
         assert [c.key for c in cfg.commands] == [
             "memory", "service_status", "service_logs",
         ]
-        assert cfg.target.host == "192.168.1.1"
+        assert not hasattr(cfg, "target")
         assert cfg.output_limit == 20
         status = _cmd(cfg, "service_status")
         (svc,) = status.params
@@ -156,8 +151,6 @@ class TestBuildCommand:
         # 允许空格的 pattern：证明动态值经过 shlex.quote，而非裸拼
         text = """
 enabled: true
-target:
-  host: 192.168.1.1
 commands:
   run:
     summary: 测试回显
@@ -176,7 +169,7 @@ commands:
 # ---------------------------------------------------------------------------
 @pytest.fixture()
 def diag():
-    return SshDiagnostics(parse_diagnostics(SAMPLE))
+    return SshDiagnostics(parse_diagnostics(SAMPLE), target=HostSshTarget(host="192.168.1.1", username="root", password="secret-in-test", connect_timeout=5))
 
 
 class TestSshRun:

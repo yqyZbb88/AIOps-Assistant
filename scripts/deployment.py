@@ -15,9 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_FILES = ("settings.yaml", "hosts.yaml", "metrics.yaml", "rules.yaml",
                 "actions.yaml", "agent_actions.yaml", "diagnostics.yaml")
 OPTIONAL_ENV = (
-    "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL", "DEEPSEEK_TIMEOUT",
-    "DEEPSEEK_MAX_RETRIES", "DEEPSEEK_MAX_TOKENS", "OPS_REDACTION_SECRETS",
-    "SSH_HOST", "SSH_PORT", "SSH_USER", "SSH_PASSWORD", "SSH_KEY_FILENAME", "SSH_KNOWN_HOSTS",
+    "MODEL_API_KEY", "MODEL_BASE_URL", "MODEL_NAME", "MODEL_TIMEOUT",
+    "MODEL_MAX_RETRIES", "MODEL_MAX_TOKENS", "MODEL_TOKEN_LIMIT_PARAM", "OPS_REDACTION_SECRETS",
 )
 
 
@@ -48,6 +47,8 @@ def read_credentials(runtime: Path) -> dict[str, str]:
         raise DeploymentError("部署尚未初始化，或 compose.env 丢失；请检查部署目录和备份。")
     values = {key: value for key, value in dotenv_values(path, interpolate=False).items()
               if value is not None}
+    from src.utils.config_migration import reject_legacy_environment
+    reject_legacy_environment(values)
     validate_credentials(values)
     return values
 
@@ -90,6 +91,9 @@ def initialization_lock(runtime: Path):
 
 def initialize(runtime: Path, *, templates: Path,
                environment: dict[str, str] | None = None) -> str:
+    from src.utils.config_migration import check_runtime, reject_legacy_environment
+    reject_legacy_environment(os.environ if environment is None else environment)
+    check_runtime(runtime)
     with initialization_lock(runtime):
         return _initialize(runtime, templates=templates, environment=environment)
 
@@ -125,7 +129,7 @@ def _initialize(runtime: Path, *, templates: Path,
                     atomic_write(marker, json.dumps({"version": 2, "config_source": "container", "credentials_initialized": True}) + "\n")
                 raise DeploymentError(f"缺少初始化配置 {name}；已有部署必须从备份恢复，拒绝覆盖为默认配置。")
     source = "container"
-    checkpoint = {"version": 2, "config_source": source}
+    checkpoint = {**metadata, "version": 2, "config_source": source}
     if metadata.get("initialized"):
         checkpoint["initialized"] = True
     if not marker.exists():
@@ -173,8 +177,7 @@ def _initialize(runtime: Path, *, templates: Path,
             if not original.is_file():
                 raise DeploymentError(f"缺少初始化配置 {name}；请恢复配置来源后重试。")
             atomic_write(target, original.read_text(encoding="utf-8"))
-    migrate_container_settings(runtime)
-    for name in ("assistant-data", "assistant-logs", "prometheus-targets", "textfile", "ssh"):
+    for name in ("assistant-data", "assistant-logs", "prometheus-targets", "textfile"):
         (runtime / name).mkdir(exist_ok=True)
     target_file = runtime / "prometheus-targets" / "assistant.yml"
     if not target_file.exists():
@@ -203,44 +206,9 @@ def _initialize(runtime: Path, *, templates: Path,
             (runtime / name).chmod(0o755)
     if os.name == "posix":
         target_file.chmod(0o644)
-    atomic_write(marker, json.dumps({"version": 2, "config_source": source, "initialized": True}) + "\n")
+    atomic_write(marker, json.dumps({**checkpoint, "initialized": True}) + "\n")
     return source
 
-
-def migrate_container_settings(runtime: Path) -> None:
-    """移除明确废弃的配置；先备份，保留有效配置、身份、ACL 与密钥。"""
-    import io
-    from ruamel.yaml import YAML
-
-    path = runtime / "config" / "settings.yaml"
-    original = path.read_text(encoding="utf-8")
-    try:
-        parser = YAML()
-        parser.preserve_quotes = True
-        document = parser.load(original)
-        if not isinstance(document, dict):
-            return
-        obsolete = []
-        if "server" in document:
-            obsolete.append((document, "server"))
-        for section, key in (("auth", "enabled"), ("alert", "trend_step"), ("app", "version")):
-            values = document.get(section)
-            if isinstance(values, dict) and key in values:
-                obsolete.append((values, key))
-        if not obsolete:
-            return
-        fingerprint = hashlib.sha256(original.encode("utf-8")).hexdigest()[:16]
-        backup = runtime / "assistant-data" / "config-backups" / ("obsolete-settings-" + fingerprint + ".yaml")
-        if not backup.exists():
-            atomic_write(backup, original)
-        for values, key in obsolete:
-            del values[key]
-        stream = io.StringIO()
-        parser.dump(document, stream)
-        atomic_write(path, stream.getvalue())
-    except Exception:
-        # 迁移失败时不输出原文或解析器的敏感上下文。
-        raise DeploymentError("容器配置迁移失败；原 settings.yaml 保留，请核对格式与目录权限。") from None
 
 
 def serve(secret_file: Path) -> None:
@@ -250,8 +218,13 @@ def serve(secret_file: Path) -> None:
             raise ValueError
     except (OSError, ValueError):
         raise DeploymentError("Assistant 部署凭据未就绪，请重新运行初始化服务。") from None
+    from src.utils.config_migration import reject_legacy_environment
+    reject_legacy_environment(values)
+    pending = Path("/app/data/config-migrations/current.json")
+    if pending.exists() and json.loads(pending.read_text()).get("status") != "complete":
+        raise DeploymentError("配置迁移未完成，请先运行 migrate-config")
     os.environ.update(values)
-    enabled = "true" if values.get("DEEPSEEK_API_KEY") else "false"
+    enabled = "true" if all(values.get(key) for key in ("MODEL_API_KEY", "MODEL_BASE_URL", "MODEL_NAME")) else "false"
     os.environ.setdefault("OPS_LLM_ENABLED", enabled)
     os.environ.setdefault("OPS_AGENT_ENABLED", enabled)
     os.execvp("uvicorn", ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"])
@@ -259,12 +232,25 @@ def serve(secret_file: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["init", "serve", "show-token", "show-grafana-password"])
+    parser.add_argument("command", choices=["init", "serve", "show-token", "show-grafana-password", "migrate-config"])
     parser.add_argument("--runtime", type=Path, default=Path("/runtime"))
+    parser.add_argument("--project-root", type=Path, default=Path("/migration-project"))
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.dry_run and args.command != "migrate-config":
+        parser.error("--dry-run 仅用于 migrate-config")
     try:
-        if args.command == "init":
-            source = initialize(args.runtime, templates=ROOT / "deploy" / "config")
+        if args.command == "migrate-config":
+            from src.utils.config_migration import migrate
+            with initialization_lock(args.runtime):
+                changed = migrate(args.runtime, args.project_root, dry_run=args.dry_run)
+            print(("迁移预览：" if args.dry_run else "迁移完成：") + ", ".join(changed))
+        elif args.command == "init":
+            from src.utils.config_migration import _dotenv, reject_legacy_environment
+            bootstrap = Path("/bootstrap-project/.env")
+            if bootstrap.is_file():
+                reject_legacy_environment(_dotenv(bootstrap.read_text(encoding="utf-8")))
+            source = initialize(args.runtime, templates=ROOT / "deploy" / "templates" / "assistant")
             print("部署初始化完成；配置来源=" + source + "；已有配置与密钥已保留。")
         elif args.command == "serve":
             serve(Path("/run/assistant-secrets/assistant.json"))
@@ -272,8 +258,8 @@ def main() -> int:
             values = read_credentials(args.runtime)
             key = "AIOPS_USER_TOKEN" if args.command == "show-token" else "GF_SECURITY_ADMIN_PASSWORD"
             print(values[key])
-    except (DeploymentError, OSError) as exc:
-        print(f"部署失败：{exc}", file=sys.stderr)
+    except (DeploymentError, OSError, ValueError) as exc:
+        print("部署失败：" + (str(exc) if isinstance(exc, ValueError) or isinstance(exc, DeploymentError) else "文件操作失败，请检查权限"), file=sys.stderr)
         return 1
     return 0
 

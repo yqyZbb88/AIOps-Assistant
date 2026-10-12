@@ -1,7 +1,7 @@
 """LLMClient：LLM 客户端抽象接口。
 
 core/analysis 做告警 AI 分析时只调用本接口的 complete()，
-不直接依赖具体模型供应商（DeepSeek / 其它）；实现见 src/plugins/llm_clients/。
+不直接依赖具体模型供应商；实现见 src/plugins/llm_clients/。
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class LLMError(Exception):
 class LLMClient(ABC):
     """LLM 客户端：单次补全（prompt → 生成文本），供「无需工具」的场景直连。"""
 
-    #: 供应商名（registry 键），如 "deepseek"
+    #: 供应商名（registry 键），如 "openai_compatible"
     name: str = ""
 
     @abstractmethod

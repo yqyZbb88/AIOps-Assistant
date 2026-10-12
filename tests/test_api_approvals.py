@@ -34,7 +34,7 @@ class FakeApprovalAssistant:
                 approval_id="abc123",
                 created_at="2026-01-01T00:00:00+00:00",
                 actions=({"name": "restart_service", "args": {"service": "nginx"}},),
-                user=pending_user, host_id="legacy-default",
+                user=pending_user, host_id="local-node",
             )
         ]
 
@@ -67,7 +67,7 @@ class FakeApprovalAssistant:
 
 @pytest.fixture
 def client() -> TestClient:
-    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}')))
+    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["local-node"],"bob":["local-node"]}')))
     fake = FakeApprovalAssistant()
     # 注入假 assistant：绕过 langchain/网络，同时保住真实路由与 OpsAgent 转发链路
     app.state.agent.chat_service._assistant = fake
@@ -121,7 +121,7 @@ def test_unknown_id_is_404(client):
 
 def test_unavailable_agent_is_503():
     """未启用写命令能力时：列表为空，提交决策 503（功能没开 ≠ 找错 id）。"""
-    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}')))
+    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["local-node"],"bob":["local-node"]}')))
     # _assistant 保持 None 且工厂会失败（无 langchain/无 key）→ 审批不可用
     app.state.agent.chat_service._agent_broken = True
     with TestClient(app, headers=_as("k-alice")) as c:
@@ -143,7 +143,7 @@ def test_chat_without_session_id_is_422(client):
 # -- 归属隔离 --------------------------------------------------
 def _auth_app(pending_user: str):
     """鉴权开着的 client，待审批项归属 `pending_user`。"""
-    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}')))
+    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["local-node"],"bob":["local-node"]}')))
     app.state.agent.chat_service._assistant = FakeApprovalAssistant(pending_user=pending_user)
     return app
 
@@ -227,7 +227,7 @@ def _approvers_only_app(pending_user: str = "alice"):
         settings=Settings(
             auth=AuthSettings(
                 tokens=_TOKENS,
-                host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}',
+                host_access='{"alice":["local-node"],"bob":["local-node"]}',
                 approval_mode="approvers_only",
                 approver_identities='["bob"]',
             )
@@ -331,7 +331,7 @@ def test_anonymous_request_cannot_leave_approval_audit(caplog):
 
 
 def test_approvals_routes_registered():
-    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["legacy-default"],"bob":["legacy-default"]}')))
+    app = create_app(settings=Settings(auth=AuthSettings(tokens=_TOKENS, host_access='{"alice":["local-node"],"bob":["local-node"]}')))
     paths = {r.path for r in app.routes}
     assert "/approvals" in paths
     assert "/approvals/{approval_id}" in paths
@@ -344,8 +344,8 @@ def test_approval_waits_for_published_turn_then_can_resume(client, tmp_path):
     from src.storage.session import SqliteSessionStore
     store = SqliteSessionStore(open_database(tmp_path / "sessions.db"))
     client.app.state.agent.chat_service._sessions = store
-    session = store.create(user="alice", host_id="legacy-default")
-    client.fake._pending = [PendingApproval("abc123", "test-time", session_id=session.session_id, user="alice", host_id="legacy-default")]
+    session = store.create(user="alice", host_id="local-node")
+    client.fake._pending = [PendingApproval("abc123", "test-time", session_id=session.session_id, user="alice", host_id="local-node")]
     response = client.post("/approvals/abc123", json={"action": "approve"})
     assert response.status_code == 503
     assert client.fake.decisions == []

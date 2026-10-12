@@ -9,9 +9,10 @@ import yaml
 
 from scripts import deployment, stack
 from src.utils.admin_config import AdminConfigManager
-from src.utils.config_loader import _build_settings, interpolate
+from src.utils.config_loader import _build_settings, parse_yaml
+from src.utils.config_migration import migrate, ConfigMigrationError
 
-TEMPLATES = Path(__file__).resolve().parents[1] / "deploy" / "config"
+TEMPLATES = Path(__file__).resolve().parents[1] / "deploy" / "templates" / "assistant"
 
 
 def initialize(runtime, **kwargs):
@@ -40,10 +41,10 @@ def test_fresh_deployment_secure_consistent_and_idempotent(tmp_path):
 def test_reinitialize_preserves_user_config_targets_and_demo(tmp_path):
     initialize(tmp_path)
     for name in ("config/settings.yaml", "prometheus-targets/assistant.yml", "textfile/aiops_demo_fault.prom"):
-        (tmp_path / name).write_text("user changes", encoding="utf-8")
+        (tmp_path / name).write_text("# user changes\napp: {name: custom}\n" if name.endswith("settings.yaml") else "user changes", encoding="utf-8")
     initialize(tmp_path)
     for name in ("config/settings.yaml", "prometheus-targets/assistant.yml", "textfile/aiops_demo_fault.prom"):
-        assert (tmp_path / name).read_text() == "user changes"
+        assert (tmp_path / name).read_text() == ("# user changes\napp: {name: custom}\n" if name.endswith("settings.yaml") else "user changes")
 
 
 def test_missing_derived_secrets_are_repaired_without_rotation(tmp_path):
@@ -72,17 +73,20 @@ def test_legacy_upgrade_preserves_tokens_config_and_migrates_server(tmp_path, mo
     settings.write_text(settings.read_text(encoding="utf-8") + "server:\n  host: 127.0.0.1\n  port: 9000\n", encoding="utf-8")
     before = settings.read_text(encoding="utf-8")
     (tmp_path / "deployment.json").write_text(json.dumps({"version": 1, "config_source": "legacy", "initialized": True}))
+    with pytest.raises(ConfigMigrationError, match="migrate-config"):
+        initialize(tmp_path)
+    migrate(tmp_path, tmp_path / "project")
     assert initialize(tmp_path) == "container"
     assert deployment.read_credentials(tmp_path) == original_credentials
     assert "server" not in yaml.safe_load(settings.read_text(encoding="utf-8"))
-    backups = list((tmp_path / "assistant-data/config-backups").glob("obsolete-settings-*.yaml"))
+    backups = [p for p in (tmp_path / "assistant-data/config-migrations").glob("*/*.before") if p.read_bytes() == before.encode("utf-8")]
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == before
     assert json.loads((tmp_path / "deployment.json").read_text())["version"] == 2
     # Quoted environment placeholders must remain strings after the migration round trip.
     for key, value in json.loads((tmp_path / "secrets/assistant.json").read_text()).items():
         monkeypatch.setenv(key, value)
-    loaded = _build_settings(yaml.safe_load(interpolate(settings.read_text(encoding="utf-8"))))
+    loaded = _build_settings(parse_yaml(settings.read_text(encoding="utf-8")))
     assert loaded.auth.tokens == original_credentials["OPS_API_TOKENS"]
     assert loaded.app.version == "0.6.2"
 
@@ -108,12 +112,12 @@ def test_corrupt_existing_credentials_fail_without_overwrite(tmp_path):
 
 def test_model_settings_roundtrip_literal_values_and_update(tmp_path):
     key = "test-$literal-'quoted'-\\value"
-    initialize(tmp_path, DEEPSEEK_API_KEY=key, DEEPSEEK_MODEL="model-one")
-    assert deployment.read_credentials(tmp_path)["DEEPSEEK_API_KEY"] == key
-    initialize(tmp_path, DEEPSEEK_API_KEY="", DEEPSEEK_MODEL="model-two")
+    initialize(tmp_path, MODEL_API_KEY=key, MODEL_NAME="model-one")
+    assert deployment.read_credentials(tmp_path)["MODEL_API_KEY"] == key
+    initialize(tmp_path, MODEL_API_KEY="", MODEL_NAME="model-two")
     values = deployment.read_credentials(tmp_path)
-    assert values["DEEPSEEK_API_KEY"] == key
-    assert values["DEEPSEEK_MODEL"] == "model-two"
+    assert values["MODEL_API_KEY"] == key
+    assert values["MODEL_NAME"] == "model-two"
 
 
 def test_template_set_passes_application_cross_validation(tmp_path, monkeypatch):
@@ -124,7 +128,7 @@ def test_template_set_passes_application_cross_validation(tmp_path, monkeypatch)
     monkeypatch.setenv("OPS_LLM_ENABLED", "false")
     monkeypatch.setenv("OPS_AGENT_ENABLED", "false")
     text = (tmp_path / "config/settings.yaml").read_text(encoding="utf-8")
-    settings = _build_settings(yaml.safe_load(interpolate(text)))
+    settings = _build_settings(parse_yaml(text))
     paths = {name[:-5] + "_file": tmp_path / "config" / name for name in deployment.CONFIG_FILES}
     manager = AdminConfigManager(settings, **paths)
     manager._validate(manager._load_docs())
@@ -133,7 +137,7 @@ def test_template_set_passes_application_cross_validation(tmp_path, monkeypatch)
 
 def test_serve_sets_optional_ai_and_single_worker(tmp_path, monkeypatch):
     path = tmp_path / "secrets.json"
-    path.write_text(json.dumps({"DEEPSEEK_API_KEY": "example-key"}))
+    path.write_text(json.dumps({"MODEL_API_KEY": "example-key", "MODEL_BASE_URL": "http://localhost/v1", "MODEL_NAME": "synthetic-model"}))
     for key in ("OPS_LLM_ENABLED", "OPS_AGENT_ENABLED"):
         monkeypatch.delenv(key, raising=False)
     calls = []
@@ -239,7 +243,7 @@ def test_failed_precredential_validation_can_retry_with_empty_mounts(tmp_path):
     missing = tmp_path / "missing"
     with pytest.raises(deployment.DeploymentError, match="单行"):
         deployment.initialize(runtime, templates=missing,
-                              environment={"DEEPSEEK_API_KEY": "synthetic\ninvalid"})
+                              environment={"MODEL_API_KEY": "synthetic\ninvalid"})
     assert not (runtime / "compose.env").exists()
     assert initialize(runtime) == "container"
 
@@ -261,14 +265,14 @@ def test_upgrade_removes_obsolete_fields_without_resetting_acl_or_credentials(tm
     path = tmp_path / "config/settings.yaml"
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     doc["auth"]["enabled"] = legacy_auth
-    doc["auth"]["host_access"] = '{"alice":["local-node"]}'
+    doc["auth"]["host_access"] = '{"admin":["local-node"]}'
     doc.setdefault("app", {})["version"] = "outdated"
     doc["alert"]["trend_step"] = "5m"
     doc["server"] = {"host": "127.0.0.1", "port": 9000}
-    doc["unrecognized"] = {"keep_for_validation": True}
     path.write_text(yaml.safe_dump(doc), encoding="utf-8")
     before = path.read_bytes()
     credentials = deployment.read_credentials(tmp_path)
+    migrate(tmp_path, tmp_path / "project")
     initialize(tmp_path)
     result = yaml.safe_load(path.read_text(encoding="utf-8"))
     expected = yaml.safe_load(before)
@@ -278,27 +282,9 @@ def test_upgrade_removes_obsolete_fields_without_resetting_acl_or_credentials(tm
     del expected["server"]
     assert result == expected
     assert deployment.read_credentials(tmp_path) == credentials
-    backups = list((tmp_path / "assistant-data/config-backups").glob("obsolete-settings-*.yaml"))
+    backups = [p for p in (tmp_path / "assistant-data/config-migrations").glob("*/*.before") if p.read_bytes() == before]
     assert len(backups) == 1 and backups[0].read_bytes() == before
     saved = path.read_bytes()
     initialize(tmp_path)
     assert path.read_bytes() == saved
-    assert list((tmp_path / "assistant-data/config-backups").glob("obsolete-settings-*.yaml")) == backups
-
-
-@pytest.mark.parametrize("failure", ["backup", "settings"])
-def test_obsolete_settings_migration_write_failure_preserves_original(tmp_path, monkeypatch, failure):
-    initialize(tmp_path)
-    path = tmp_path / "config/settings.yaml"
-    path.write_text(path.read_text(encoding="utf-8") + "server: {}\n", encoding="utf-8")
-    before = path.read_bytes()
-    original_write = deployment.atomic_write
-    def fail(target, content, **kwargs):
-        if (failure == "settings" and target == path) or (failure == "backup" and target.name.startswith("obsolete-settings-")):
-            raise OSError("synthetic sensitive context")
-        return original_write(target, content, **kwargs)
-    monkeypatch.setattr(deployment, "atomic_write", fail)
-    with pytest.raises(deployment.DeploymentError) as caught:
-        deployment.migrate_container_settings(tmp_path)
-    assert "sensitive" not in str(caught.value)
-    assert path.read_bytes() == before
+    assert [p for p in (tmp_path / "assistant-data/config-migrations").glob("*/*.before") if p.read_bytes() == before] == backups

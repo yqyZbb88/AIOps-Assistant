@@ -221,15 +221,16 @@ SSH 凭据或主机 SSH 连接字段。`PUT /admin/config` 必须传入原 revis
 | PUT / DELETE | `/ssh/{id}` | 新增/更新/删除页面 SSH 凭据 |
 | PUT | `/hosts/{host_id}/ssh` | `data.credential_id` 更新已有主机关联 |
 | POST | `/hosts/{host_id}/ssh/test` | 仅认证连接，不执行命令 |
-| PUT | `/model` | 保存 DeepSeek 配置，不请求模型 |
+| PUT | `/model` | 保存 OpenAI 兼容模型 配置，不请求模型 |
 | POST | `/model/test` | 显式短请求测试 |
 
 写入 body 为 `{"revision":"64位版本摘要","data":{...}}`，DELETE 也携带 body。
 SSH data：username、method=password/private_key、password 或 private_key（上传内容）、known_hosts。
 缺省敏感字段表示保留；不接受服务器 key_filename 路径，私钥和 known_hosts 各最多 128 KiB。
 凭据 ID 为小写字母开头，含小写字母/数字/下划线/连字符，最长 63 字符；不支持带口令私钥。
-模型 data：key_action=keep/replace/clear、api_key、base_url、model、timeout（0~300 秒）、
-max_retries（0~10）、max_tokens（1~131072）。replace 必须提供新密钥；clear 覆盖部署来源。
-Base URL 只允许无用户信息、查询串、片段的 HTTP(S)。模型供应商仍只有 DeepSeek。
+模型 data：key_action=keep/replace/clear、api_key、base_url、model、timeout（大于 0 且不超过 300 秒）、
+max_retries（0~10）、max_tokens（1~131072）、token_limit_param（max_tokens 或 max_completion_tokens，默认 max_tokens）。replace 必须提供新密钥；clear 覆盖部署来源。
+Base URL 只允许无用户信息、查询串、片段的 HTTP(S)。只支持 OpenAI 兼容的 Chat Completions 接口；Base URL 是接口根地址，完整 Agent 需要标准工具调用。
+非空密钥要求同时填写 Base URL 和模型名。页面配置整组覆盖环境配置，默认地址和模型名为空。
 401 未鉴权、403 非管理员、409 revision/运行操作/审批/凭据引用冲突、422 输入无效或部署只读、
 500 持久化失败并回滚、503 配置不可读；模型显式连接测试失败 502。

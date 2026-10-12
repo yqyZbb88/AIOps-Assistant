@@ -51,12 +51,26 @@ def compose_secret(*, grafana: bool = False) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["up", "down", "status", "logs", "doctor", "show-token", "show-grafana-password"], nargs="?", default="up")
+    parser.add_argument("command", choices=["up", "down", "status", "logs", "doctor", "show-token", "show-grafana-password", "migrate-config"], nargs="?", default="up")
     parser.add_argument("--wait-timeout", type=int, default=180, help="等待就绪的秒数，不含构建时间")
+    parser.add_argument("--dry-run", action="store_true", help="只预览配置迁移，不写入文件")
     args = parser.parse_args()
+    if args.dry_run and args.command != "migrate-config":
+        parser.error("--dry-run 仅用于 migrate-config")
     if args.wait_timeout < 1:
         parser.error("--wait-timeout 必须大于 0")
     try:
+        if args.command == "migrate-config":
+            result = subprocess.run(compose_command("ps", "--status", "running", "--quiet"), cwd=ROOT, capture_output=True, text=True, check=False)
+            if result.returncode or result.stdout.strip():
+                raise RuntimeError("请先 docker compose down 停止此项目业务栈，再运行 migrate-config")
+            code = compose("build", "init")
+            if code:
+                return code
+            arguments = ["run", "--rm", "--no-deps", "-v", str(ROOT) + ":/migration-project", "init", "migrate-config"]
+            if args.dry_run:
+                arguments.append("--dry-run")
+            return compose(*arguments)
         if args.command in {"show-token", "show-grafana-password"}:
             print(compose_secret(grafana=args.command == "show-grafana-password"))
             return 0

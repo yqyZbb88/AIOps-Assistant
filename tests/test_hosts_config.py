@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from src.interfaces.host import HostConfigError, HostError
-from src.utils.hosts_config import LEGACY_HOST_ID, legacy_registry, parse_hosts
+from src.utils.hosts_config import load_host_registry, parse_hosts
 
 
 SAMPLE = """
@@ -65,13 +65,10 @@ def test_invalid_host_configs_are_rejected(text, message):
         parse_hosts(text)
 
 
-def test_legacy_registry_has_stable_id(monkeypatch):
-    monkeypatch.setenv("SSH_HOST", "legacy.example")
-    registry = legacy_registry(instance="legacy:9100")
-    host = registry.require(LEGACY_HOST_ID)
-    assert host.legacy is True
-    assert host.monitor.instance == "legacy:9100"
-    assert host.ssh.host == "legacy.example"
+def test_missing_host_file_never_creates_a_default_target(monkeypatch):
+    monkeypatch.delenv("OPS_HOSTS_FILE")
+    with pytest.raises(HostConfigError, match="hosts.file"):
+        load_host_registry(None)
 
 
 @pytest.mark.parametrize("password", ["  test-password  ", "Ｔｅｓｔ①", "  "])

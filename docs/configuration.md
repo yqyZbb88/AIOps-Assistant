@@ -1,7 +1,7 @@
 # AIOps-Assistant YAML 配置指南
 
 本文覆盖七个运行时 YAML 文件。容器使用 `.runtime/config/`，首次从
-`deploy/config/` 复制，升级保留已有值。下文 `config/`
+`deploy/templates/assistant/` 复制，升级保留已有值。下文 `config/`
 是相对于应用工作目录的路径，在容器内为 `/app/config/`。部署入口见 [deployment.md](deployment.md)。
 
 配置文件包括：
@@ -35,10 +35,10 @@ value: ${VAR:-default}
 
 - `${VAR}`：读取环境变量；变量缺失时替换为空字符串并记录 WARNING。
 - `${VAR:-default}`：变量存在时取变量值，否则取 default。
-- Compose 的根 `.env` 提供可选模型/SSH 参数与发布端口；身份由初始化服务生成。
+- Compose 的根 `.env` 提供可选模型参数与发布端口；身份由初始化服务生成。
   初始化将凭据保存至 `.runtime/compose.env`，Assistant 入口导入其派生 JSON 后启动。
-  新模板的 `OPS_LLM_ENABLED` / `OPS_AGENT_ENABLED` 随模型密钥是否存在赋值；管理页保存固定开关后以配置为准。
-- 密钥不要直接写入 YAML；使用环境变量占位，并给字符串字段加引号，例如 `password: "${SSH_PASSWORD:-}"`。
+  新模板的 `OPS_LLM_ENABLED` / `OPS_AGENT_ENABLED` 随密钥、地址和模型名是否全部存在赋值；管理页保存固定开关后以配置为准。
+- 密钥不要直接写入 YAML；使用环境变量占位，并给字符串字段加引号，SSH 密钥通过管理员“SSH 凭据”保存。
   引号内插值会保留环境值中的引号、反斜线、换行和 Unicode，不需要手工再做 YAML 转义。
   未加引号字段仍按 YAML 标量解析，用于数值、布尔值等；块标量沿用原文本插值，不适合包含多行环境密钥的场景。
   YAML 语法错误只报告行列位置，不在解析诊断中显示插值后的原文；请根据位置检查配置文件。
@@ -82,12 +82,37 @@ settings.yaml
 | `OPS_DIAGNOSTICS_FILE` | `config/diagnostics.yaml` |
 
 `metrics.yaml` 没有单独的路径环境变量；它由 `settings.yaml` 的 `metrics.file` 指定。
-`hosts.yaml` 通常由 `hosts.file` 指定；该值为空时才读取 `OPS_HOSTS_FILE`，两者都为空则启用
-`legacy-default` 单主机兼容方式。相对路径按容器应用根目录 /app 解析。
+`hosts.yaml` 通常由 `hosts.file` 指定；该值为空时才读取 `OPS_HOSTS_FILE`，两者都为空则拒绝构造主机清单。相对路径按容器应用根目录 /app 解析。
+
+### 5. 通用模型参数与来源
+
+模型仅使用 OpenAI 兼容的 Chat Completions 接口，统一入口为 `src/utils/model_loader.py`。
+新部署的密钥、地址和名称均为空，需要管理员明确配置。保存配置只做校验；管理员点击
+“测试已保存的模型连接”才发出请求。完整 Agent 需要标准工具调用能力。
+
+| 环境变量 | 页面字段 | 默认值 |
+|---|---|---|
+| `MODEL_API_KEY` | `api_key` | 空 |
+| `MODEL_BASE_URL` | `base_url` | 空，填写接口根地址，不含 /chat/completions |
+| `MODEL_NAME` | `model` | 空 |
+| `MODEL_TIMEOUT` | `timeout` | 30 秒，须大于 0 且不超过 300 |
+| `MODEL_MAX_RETRIES` | `max_retries` | 2，范围 0~10 |
+| `MODEL_MAX_TOKENS` | `max_tokens` | 2048，范围 1~131072 |
+| `MODEL_TOKEN_LIMIT_PARAM` | `token_limit_param` | max_tokens，也可选 max_completion_tokens |
+
+页面模型配置整组优先于环境配置，不逐字段混合；明确清除页面密钥后也不回退环境密钥。
+配置版本变化后新请求使用新实例，旧请求继续使用旧实例。未提供供应商推理参数或任意请求参数入口。
+超时和重试约束单次 SDK 请求，不等同整轮 Agent 时限。
+
+根 `.env` 是 Compose 的可选输入；首次及重新初始化时，非空模型值持久化到
+`.runtime/compose.env`，再单向派生至 `.runtime/secrets/assistant.json`。
+已有持久模型值不会被空环境值清除。要撤销环境密钥，删除其所有输入来源和持久字段后重建。
+页面凭据位于 `.runtime/assistant-data/admin-credentials/`，不进入 YAML 或普通配置备份。
+详见 [部署与迁移](deployment.md)。
 
 ## 二、settings.yaml
 
-下列表格的“默认值”指 deploy/config/settings.yaml 模板及其未覆盖的程序默认值；环境变量占位符
+下列表格的“默认值”指 deploy/templates/assistant/settings.yaml 模板及其未覆盖的程序默认值；环境变量占位符
 按启动进程的环境求值。启动时读取该 YAML，未配置的字段使用程序内置默认值。
 Compose 首次部署使用独立模板：强制身份校验、`local-node` 指向 `node-exporter:9100`、
 没有 SSH 授权和处置规则，命令目录关闭；不提供模型密钥时 AI 关闭。模板不会改变旧部署设置。
@@ -100,7 +125,7 @@ Compose 首次部署使用独立模板：强制身份校验、`local-node` 指�
 
 应用版本不在 YAML 中配置，由程序内置版本号统一提供。
 
-容器入口固定单 worker、监听 0.0.0.0:8000，发布端口由 Compose 控制。旧 server 段由 init 迁移移除。
+容器入口固定单 worker、监听 0.0.0.0:8000，发布端口由 Compose 控制。旧字段通过显式 migrate-config 迁移移除。
 
 ### prometheus
 
@@ -123,7 +148,7 @@ Compose 首次部署使用独立模板：强制身份校验、`local-node` 指�
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `llm.provider` | string | `deepseek` | LLM 插件名 |
+| `llm.provider` | string | `openai_compatible` | OpenAI 兼容 Chat Completions 插件名 |
 | `llm.enabled` | bool | 随部署模型密钥 | `false` 时跳过告警 AI 分析；不控制聊天 Agent |
 
 聊天 Agent 的总开关是 `agent.enabled`。
@@ -155,7 +180,7 @@ Compose 首次部署使用独立模板：强制身份校验、`local-node` 指�
 
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `hosts.file` | string | `config/hosts.yaml` | 静态主机清单；空字符串启用旧单主机兼容方式 |
+| `hosts.file` | string | `config/hosts.yaml` | 静态主机清单；空时须显式设置 OPS_HOSTS_FILE |
 
 ### alert
 
@@ -263,12 +288,7 @@ auth:
 
 ```yaml
 version: 1
-credentials:
-  ops-a:
-    username: ops
-    key_filename: "${SSH_A_KEY_FILENAME:-}"
-    password: "${SSH_A_PASSWORD:-}"
-    known_hosts: "${SSH_KNOWN_HOSTS:-}"
+credentials: {} # 敏感材料保存在管理员凭据存储，示例需先创建 ops-a
 hosts:
   - id: node-a
     name: 节点 A
@@ -288,19 +308,19 @@ hosts:
 约束：
 
 - `version` 当前必须为 `1`；`hosts` 必须是非空数组，且至少一台启用。
-- `id` 必须匹配 `^[a-z][a-z0-9-]{0,62}$`，`legacy-default` 是保留值。
+- `id` 必须匹配 `^[a-z][a-z0-9-]{0,62}$`。
 - 启用主机的 Prometheus `instance` 必须唯一；`job` 和 `instance` 都不能为空。
 - `ssh` 可省略；省略时三个 `allow` 列表必须为空，该主机仍可监控但不能 SSH。
 - `ssh.connect_timeout` 默认 8 秒，分别限制 TCP、banner、认证、通道打开和命令输出等待，
   不代表整次 SSH 调用的总时限。
-- `credential_ref` 必须引用 `credentials`；凭据经环境变量插值，不能返回给 API 或模型。
+- `credential_ref` 必须引用页面管理的 SSH 凭据 ID（也可引用已有显式 credentials）；凭据不会返回给 API 或模型。
 - SSH 密码保留解析后的原始字符串，包括首尾空白和 Unicode 字符；空字符串或 null 表示未配置。
 - `allow.diagnostics`、`allow.rule_actions`、`allow.agent_actions` 分别引用三个命令目录中的 key。
 - 示例默认不授权任何写动作。启用规则自动处置还必须同时设置规则 `auto_execute: true`。
 - 多主机模式不会使用 `diagnostics.yaml`、`agent_actions.yaml` 或规则参数中的默认地址改向执行。
 
-手工修改后须由管理员显式应用；环境变量中的 SSH 凭据变化仍需重启。单主机兼容模式会从旧 `SSH_*` 环境变量和全局 Prometheus instance 构造
-`legacy-default`，用于原部署平滑升级，不应作为多主机配置捷径。
+手工修改后须由管理员显式应用。页面凭据支持多份，同一凭据可供多台已登记主机引用；
+用户通过主机访问授权使用对应凭据，不能自行传入连接参数。
 管理员向导当前只支持新增主机，不能从页面删除、停用或迁移现有 `host_id`。
 手改清单前须核对规则与历史引用；不能把删除一行 YAML 当作已支持的主机清理流程。
 
@@ -507,14 +527,6 @@ commands:
 
 ```yaml
 enabled: false
-target:
-  host: "${SSH_HOST:-localhost}"
-  port: 22
-  username: "${SSH_USER:-ops}"
-  key_filename: "${SSH_KEY_FILENAME:-}"
-  password: "${SSH_PASSWORD:-}"
-  known_hosts: "${SSH_KNOWN_HOSTS:-}"
-  connect_timeout: 8
 output_limit: 4000
 approval:
   timeout_seconds: 900
@@ -533,13 +545,6 @@ commands:
 | 字段 | 类型 | 含义 |
 |---|---:|---|
 | `enabled` | bool | 是否启用 Agent 写命令 |
-| `target.host` | string | 目标主机 |
-| `target.port` | int | SSH 端口 |
-| `target.username` | string | SSH 用户名 |
-| `target.password` | string | 密码，建议环境变量占位 |
-| `target.key_filename` | string | 私钥路径，与 password 二选一 |
-| `target.known_hosts` | string | known_hosts 路径；空则使用系统路径 |
-| `target.connect_timeout` | int | TCP、banner、认证、通道及命令输出各阶段等待秒数，省略则 **8**（`≥1`，写 0 报配置错误） |
 | `output_limit` | int | 回传 Agent 的输出字符上限 |
 | `approval.timeout_seconds` | int | 待审批超时秒数 |
 | `approval.max_pending` | int | 最大待审批数量 |
@@ -551,7 +556,7 @@ commands:
 
 审批段只接受 `timeout_seconds` 和 `max_pending`，没有关闭审批的开关。命令 key 不能与聊天指标工具或 SSH 诊断工具重名。
 
-`target` 段为旧单主机/直接构造兼容保留。生产多主机会话按 `host_id` 使用 `hosts.yaml` 的
+命令目录只定义命令和执行策略。会话按 `host_id` 使用已登记主机的
 SSH 目标，并要求该命令出现在主机的 `allow.agent_actions`；审批冻结目标摘要、动作快照和
 配置指纹，批准时再次复核，配置漂移会拒绝旧申请。
 
@@ -562,14 +567,6 @@ SSH 目标，并要求该命令出现在主机的 `allow.agent_actions`；审批
 ```yaml
 enabled: true
 provider: ssh
-target:
-  host: "${SSH_HOST:-localhost}"
-  port: 22
-  username: "${SSH_USER:-ops}"
-  key_filename: "${SSH_KEY_FILENAME:-}"
-  password: "${SSH_PASSWORD:-}"
-  known_hosts: "${SSH_KNOWN_HOSTS:-}"
-  connect_timeout: 8
 output_limit: 4000
 commands:
   memory:
@@ -584,7 +581,6 @@ commands:
 |---|---:|---|
 | `enabled` | bool | 是否启用只读诊断 |
 | `provider` | string | 诊断实现，当前为 `ssh` |
-| `target` | map | SSH 连接参数，同 agent_actions（`connect_timeout` 省略则 8） |
 | `output_limit` | int | 单条命令回传上限 |
 | `commands` | map | 只读命令白名单 |
 
@@ -598,7 +594,7 @@ commands:
 - 非零退出码只作为可读结果，不触发写动作。
 - 管理页面保存诊断目录后立即重建可用工具；手工修改后须显式应用。
 
-`target` 段为旧单主机/直接构造兼容保留。多主机 Agent 使用会话 `host_id` 对应的
+命令目录不包含连接目标。Agent 使用会话 `host_id` 对应的
 `hosts.yaml` SSH 目标，并只暴露 `allow.diagnostics` 授权的诊断命令。
 
 ## 九、常见配置流程
@@ -654,7 +650,7 @@ metrics:
 |---|---|
 | `配置节 xxx 存在未知字段` | 拼写错误或使用了旧字段 |
 | `metrics.yaml 含未知指标` | 指标 ID 不在代码目录 |
-| `非法或保留的 host id` | 主机 ID 格式不合法，或使用了 `legacy-default` |
+| `非法或保留的 host id` | 主机 ID 格式不合法 |
 | `Prometheus instance 重复` | 两台启用主机配置了相同 instance，无法唯一归属告警 |
 | `warning < critical` / `warning > critical` | 阈值方向不符 |
 | `observe 指标不能启用 severity` | observe 指标只能记录 |
@@ -758,7 +754,7 @@ Prometheus 容器里的 `localhost:9100` 指向该容器自身，远程 Exporter
 容器内为 `/app/data/admin-credentials/`，宿主机为 `.runtime/assistant-data/admin-credentials/`；
 采用与普通配置相同的锁、revision 和运行快照，成功立即生效，失败保留旧配置。
 详细字段、长度和错误码见 [管理员凭据 API](api.md#管理员凭据-api)，操作见
-[控制台](console.md#管理员配置操作)。环境变量与旧部署凭据仍保留且页面只读；SSH/模型
+[控制台](console.md#管理员配置操作)。环境模型与持久部署 Token 保留且页面只读；SSH/模型
 页面配置优先，Token 合并身份映射。普通配置保存不能把解析到内存中的凭据写回 YAML。
 显式清除模型密钥不回退环境值；设置 API Key 后按需启用 LLM 与 Agent 开关。
 
@@ -823,6 +819,6 @@ docker compose kill -s SIGHUP prometheus
 
 `auth.enabled` 和管理 API 的 `auth_enabled` 已删除，不能关闭身份验证。
 `alert.trend_step` 已没有调用方；`app.version` 改为只读代码元信息；
-`server` 段随本机服务入口删除。容器 init 先备份旧 settings，再移除上述 YAML 字段。
+`server` 段随本机服务入口删除。运行 migrate-config 先备份，再移除上述 YAML 字段。
 业务加载器直接读取残留旧字段会拒绝启动，管理 API 提交未知 settings 字段返回 422。
 备份位置与恢复边界见 [部署指南](deployment.md)。其他有效配置保持。

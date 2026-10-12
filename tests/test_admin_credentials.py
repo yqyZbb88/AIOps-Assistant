@@ -120,20 +120,20 @@ def test_password_keep_and_unsupported_key_paths(tmp_path, trusted_key):
 def test_model_save_lazy_keep_clear_cache_versions_and_explicit_test(tmp_path, monkeypatch):
     from src.utils import model_loader
     paths, settings, manager = _setup(tmp_path)
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-model-secret")
+    monkeypatch.setenv("MODEL_API_KEY", "env-model-secret")
     calls = []
     monkeypatch.setattr(model_loader, "get_model", lambda config=None: SimpleNamespace(invoke=lambda *a, **k: calls.append(config) or SimpleNamespace(content="OK")))
     with TestClient(create_app(settings=settings, admin_config_manager=manager)) as client:
         snap = get(client).json(); assert snap["model"]["configured"]
-        data = {"key_action": "replace", "api_key": "managed-model-secret", "model": "deepseek-chat", "base_url": "https://model.example/v1", "timeout": 12, "max_retries": 1, "max_tokens": 200}
+        data = {"key_action": "replace", "api_key": "managed-model-secret", "model": "synthetic-model", "base_url": "https://model.example/v1", "timeout": 12, "max_retries": 1, "max_tokens": 200}
         saved = update(client, "model", snap["revision"], data)
         assert saved.status_code == 200, saved.text
         assert "managed-model-secret" not in saved.text and not calls
         old_container = manager.runtime.current.container
         assert old_container._model_config["api_key"] == "managed-model-secret"
-        kept = update(client, "model", saved.json()["revision"], {"key_action": "keep", "model": "deepseek-v4-flash"})
+        kept = update(client, "model", saved.json()["revision"], {"key_action": "keep", "model": "synthetic-model-next"})
         assert kept.status_code == 200, kept.text
-        assert old_container._model_config["model"] == "deepseek-chat"
+        assert old_container._model_config["model"] == "synthetic-model"
         assert client.post("/admin/credentials/model/test", headers=_auth("user-token")).status_code == 403
         tested = client.post("/admin/credentials/model/test", headers=_auth("admin-token"))
         assert tested.status_code == 200 and len(calls) == 1
@@ -198,21 +198,6 @@ def test_registered_ssh_test_only_connects_and_invalidates_prior_tickets(tmp_pat
         assert client.post("/admin/credentials/hosts/node-a/ssh/test", headers=_auth("admin-token")).status_code == 200
         assert calls[-1]["username"] == "u" and calls[-1]["password"] == "page-pass"
 
-
-def test_model_factory_cache_is_shared_per_configuration_and_retains_old_instance(monkeypatch):
-    import init
-    from src.utils import model_loader
-    import runpy
-    from pathlib import Path
-    # 独立加载缓存实现，保持 conftest 对应用模型入口的全局保护。
-    get_model = runpy.run_path(str(Path(model_loader.__file__)))["get_model"]
-    calls = []
-    monkeypatch.setattr(init, "build_model", lambda config: calls.append(config) or object())
-    first = get_model({"api_key": "isolated-key-a", "model": "a"})
-    assert get_model({"model": "a", "api_key": "isolated-key-a"}) is first
-    second = get_model({"api_key": "isolated-key-b", "model": "b"})
-    assert second is not first and len(calls) == 2
-    assert get_model({"api_key": "isolated-key-a", "model": "a"}) is first
 
 
 def test_anonymous_credentials_remain_protected_when_business_auth_disabled(tmp_path):

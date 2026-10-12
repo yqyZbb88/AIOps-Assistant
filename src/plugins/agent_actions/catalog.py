@@ -23,7 +23,6 @@ from src.interfaces.agent_action import AgentActionError
 from src.interfaces.command import CommandSpec, ParamSpec
 from src.plugins.common import cmddef as _cmddef
 from src.plugins.common.cmddef import CmdDef, CmdDefError, ParamError
-from src.plugins.common.endpoint import DEFAULT_CONNECT_TIMEOUT
 from src.utils.config_loader import ROOT_DIR, parse_yaml
 
 logger = logging.getLogger("aiops_assistant.agent_actions.catalog")
@@ -53,20 +52,6 @@ class AgentActionsConfigError(ValueError):
 # 配置模型
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
-class AgentActionsTarget:
-    """目标主机（连接凭据只在此处，构造后留在实例内，模型上下文永不出现）。"""
-
-    host: str = ""
-    port: int = 22
-    username: str = "root"
-    password: str = ""
-    key_filename: str = ""
-    known_hosts: str = ""
-    #: 连接与命令超时；默认值来自 SSH 层唯一的那处定义（见 common/endpoint.py）
-    connect_timeout: int = DEFAULT_CONNECT_TIMEOUT
-
-
-@dataclass(frozen=True)
 class ApprovalPolicy:
     """审批策略——**不含开关**（审批恒为强制），只有容量与时限。"""
 
@@ -77,7 +62,6 @@ class ApprovalPolicy:
 @dataclass(frozen=True)
 class AgentActionsConfig:
     enabled: bool = True
-    target: AgentActionsTarget = AgentActionsTarget()
     output_limit: int = 4000
     approval: ApprovalPolicy = ApprovalPolicy()
     commands: tuple[CmdDef, ...] = field(default_factory=tuple)
@@ -86,12 +70,6 @@ class AgentActionsConfig:
 # ---------------------------------------------------------------------------
 # YAML 解析 + config 级结构校验
 # ---------------------------------------------------------------------------
-def _as_str(value: Any, what: str) -> str:
-    if value is None:
-        raise AgentActionsConfigError(f"{what} 不能为空")
-    return str(value).strip()
-
-
 def _as_int(value: Any, what: str, *, minimum: int | None = None) -> int:
     try:
         num = int(value)
@@ -101,33 +79,6 @@ def _as_int(value: Any, what: str, *, minimum: int | None = None) -> int:
         raise AgentActionsConfigError(f"{what} 不能小于 {minimum}")
     return num
 
-
-def _parse_target(data: Any) -> AgentActionsTarget:
-    if not isinstance(data, Mapping):
-        raise AgentActionsConfigError("target 必须是映射（host/port/username/password 等）")
-    host = _as_str(data.get("host"), "target.host")
-    if not host:
-        raise AgentActionsConfigError("target.host 不能为空（需与 SSH 凭据对应的主机）")
-    password = data.get("password", "") or ""
-    key_filename = data.get("key_filename", "") or ""
-    known_hosts = data.get("known_hosts", "") or ""
-    if not password and not key_filename:
-        logger.warning(
-            "agent_actions.target 未配置 password/key_filename，连接将走 agent/默认密钥或失败"
-        )
-    return AgentActionsTarget(
-        host=host,
-        port=_as_int(data.get("port", 22), "target.port", minimum=1),
-        username=_as_str(data.get("username", "root"), "target.username") or "root",
-        password=str(password),
-        key_filename=str(key_filename),
-        known_hosts=str(known_hosts),
-        connect_timeout=_as_int(
-            data.get("connect_timeout", DEFAULT_CONNECT_TIMEOUT),
-            "target.connect_timeout",
-            minimum=1,
-        ),
-    )
 
 
 def _parse_approval(data: Any) -> ApprovalPolicy:
@@ -173,7 +124,8 @@ def build_config(data: Mapping[str, Any]) -> AgentActionsConfig:
         raise AgentActionsConfigError("enabled 必须是布尔值")
 
     output_limit = _as_int(data.get("output_limit", 4000), "output_limit", minimum=1)
-    target = _parse_target(data.get("target")) if enabled else AgentActionsTarget()
+    if "target" in data:
+        raise AgentActionsConfigError("旧全局 target 已移除，请先运行 migrate-config")
     approval = _parse_approval(data.get("approval")) if enabled else ApprovalPolicy()
 
     raw_cmds = data.get("commands") or {}
@@ -187,7 +139,6 @@ def build_config(data: Mapping[str, Any]) -> AgentActionsConfig:
         logger.warning("agent_actions.yaml 未声明任何 commands，Agent 写命令目录为空")
     return AgentActionsConfig(
         enabled=enabled,
-        target=target,
         output_limit=output_limit,
         approval=approval,
         commands=commands,
@@ -223,14 +174,6 @@ def load_agent_actions_config(path: str | Path | None = None) -> AgentActionsCon
     if not config.enabled:
         logger.info("agent_actions.enabled=false，Agent 写命令能力关闭")
         return None
-    if not config.target.host:
-        logger.warning("agent_actions.target.host 为空，Agent 写命令能力关闭")
-        return None
-    logger.info(
-        "已加载 Agent 写命令目录: %d 条: %s（审批强制开启）",
-        len(config.commands),
-        [f"{c.key}(sudo={c.sudo})" for c in config.commands],
-    )
     return config
 
 
