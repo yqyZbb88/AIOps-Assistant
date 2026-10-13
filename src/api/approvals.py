@@ -111,7 +111,7 @@ def _audit_decision(
         "action": "approval_decision",
         "approval_id": approval_id,
         "decision": action,
-        # 空串 = 当时鉴权未启用（没有身份可言）。这一条本身就是审计要回答的问题。
+        # HTTP 决策有已核验身份；内部调用缺失时留空，不猜测或补成申请人。
         "decided_by": identity or "",
         "reason": reason,
         "commands": [a.get("name") for a in pending.actions],
@@ -204,7 +204,8 @@ def decide(
 ) -> ApprovalResponse:
     """提交一次审批决策并续跑。
 
-    approve → 命令真正执行；reject → 放弃执行（两者都会让 Agent 继续把话说完）。
+    approve → 复核冻结目标与权限后续跑动作；reject → 不执行本次动作并续跑反馈。
+    本轮续跑完成不等于动作成功，执行结果以独立审计记录为准。
     审批 id 单次有效：重复提交返回 404。
     """
     agent = _agent(request)

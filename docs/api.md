@@ -1,5 +1,10 @@
 # HTTP API 参考与错误语义
 
+本文按当前 `0.6.2` 代码描述公开接口及 `/console` 使用的契约。精确字段、枚举和交互式
+schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档路由当前公开，部署到
+不可信网络时需在反向代理限制。本文示例中的 `node-a`、Token 和告警值是占位符，
+不代表真实环境。不要把实际 Token、SSH 目标、数据库内容或审批理由贴进工单。
+
 ## 当前身份、删除和审批历史
 
 | 方法与路径 | 请求与响应 | 权限及失败语义 |
@@ -37,11 +42,6 @@ Agent 的非零失败 `detail` 保存 `exit_code=数值`，即使没有输出也
 审批 POST 的 completed 表示续跑回合结束，不等于其中动作 succeeded；应查独立执行行。
 旧 failed/空 detail 行没有保存退出码，不能据此推断成功、失败原因或自动回写。
 
-本文按当前 `0.6.2` 代码描述公开接口及 `/console` 使用的契约。精确字段、枚举和交互式
-schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档路由当前公开，部署到
-不可信网络时需在反向代理限制。本文示例中的 `node-a`、Token 和告警值是占位符，
-不代表真实环境。不要把实际 Token、SSH 目标、数据库内容或审批理由贴进工单。
-
 ## 通用规则
 
 - 基址默认是 `http://127.0.0.1:8000`。所有普通业务接口始终需带
@@ -61,9 +61,10 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 |---|---|---|---|
 | GET | `/health` | 进程与缓存健康快照；不主动访问 Prometheus | 公开 |
 | GET | `/ready` | 探测 Prometheus 并核对启用的存储/巡检；不就绪 503 | 公开 |
+| GET | `/identity` | 当前服务端身份、角色与审批模式 | 普通 Bearer |
 | GET | `/console`、`/console-assets/console.css`、`/console-assets/console.js` | 公开的无数据页面与同源资源 | 公开 |
 | GET | `/console-assets/markdown.js`、`/console-assets/vendor/marked.umd.js` | 本地 Markdown 展示组件与固定版本分词器；不开放静态目录 | 公开 |
-| GET | `/hosts`、`/hosts/{host_id}` | 登记主机公开摘要 | 普通 Bearer |
+| GET | `/hosts`、`/hosts/{host_id}` | 授权主机的脱敏登记摘要 | 普通 Bearer |
 | GET | `/hosts/{host_id}/status` | Exporter、核心指标和活动告警 | 普通 Bearer |
 | GET | `/hosts/{host_id}/metrics/{metric_id}` | 指定指标即时样本 | 普通 Bearer |
 | GET | `/hosts/{host_id}/metrics/{metric_id}/trend` | 指定时段统计及设备时间序列 | 普通 Bearer |
@@ -75,11 +76,16 @@ schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档�
 | GET | `/alerts/recent`、`/alerts/history`、`/alerts/active` | 内存热缓冲、SQLite 归档、监控源实时告警 | 普通 Bearer |
 | GET | `/inspections/recent` | 异常巡检归档 | 普通 Bearer |
 | GET | `/approvals` | 列可决策的待审批项 | 按审批模式授权 |
+| GET | `/approvals/history` | 已结束申请的分页历史及独立执行结果 | 按审批模式与主机授权 |
+| GET | `/approvals/{approval_id}/progress` | 已提交决策及动作执行进度 | 按审批模式及双方主机授权 |
 | POST | `/approvals/{approval_id}` | 提交审批决策 | 按审批模式授权 |
 | GET、PUT | `/admin/config` | 脱敏配置草稿、revision 写回 | 始终管理员 Bearer |
 | POST | `/admin/config/apply` | 显式应用磁盘 YAML；请求 `{"revision":"..."}` | 始终管理员 Bearer |
 | GET | `/admin/hosts/options` | 已登记主机、Prometheus 已发现目标、凭据 ID | 始终管理员 Bearer |
 | POST | `/admin/hosts/preview`、`/admin/hosts/ssh-check`、`/admin/hosts/add` | 新主机预览、只认证 SSH 测试与登记 | 始终管理员 Bearer |
+| DELETE | `/admin/hosts/{host_id}` | 删除登记，可明确选择停止对应托管目标 | 始终管理员 Bearer |
+| DELETE | `/admin/targets` | 停止无登记引用的项目托管目标 | 始终管理员 Bearer |
+| GET、POST、PUT、DELETE | `/admin/credentials` 及子路径 | SSH、用户 Token 和模型专用管理，详见下表 | 始终管理员 Bearer |
 
 `/status` 与 `/status-assets/*` 已删除，访问返回 404；不设置重定向。
 业务 API 始终校验身份，鉴权开关已删除。缺少/无效 Token 返回 401，无可用身份配置返回 503。
@@ -146,7 +152,8 @@ Content-Type: application/json
 提供 `host_id`；只有一台获授权且启用的主机时可省略。`GET /sessions?limit=50` 按最后活动时间
 倒序列出当前身份仍有主机访问权的会话；`GET /sessions/{id}` 返回元信息及最近 100 条消息的状态。
 `PATCH /sessions/{id}` 的 `{"name":"新名称"}` 改标签，空白名清除标签；
-`DELETE /sessions/{id}` 删除消息并取消未决审批。删除/越权/未知会话统一 404；
+`DELETE /sessions/{id}` 删除会话及消息、清理关联旧决策并取消未决审批，独立的
+`approval_requests` 和执行记录按各自保留策略保留。已删除、越权或未知会话统一 404；
 改名后的返回读取若遇到并发删除，同样返回 404。名称经 NFKC 规范化与空白折叠，
 拒绝控制字符，非空名称限 1～64 个 Unicode 码点；允许同名，改名不更新最后活动时间。
 存储关闭时会话列表为空，创建、详情等需要验证会话的操作返回 503。

@@ -45,9 +45,8 @@ class MonitorSource(ABC):
     ) -> list[MetricSample]:
         """通用即时指标查询；默认实现表示当前监控源未支持。
 
-        `selector` **只用于补充 `instance`**（同一指标按实例取数）：标签范围的正主是
-        指标定义与 metrics.yaml 里的 selector，调用方不得用它替换底层查询文本。
-        所有 kind（含 alert_count）都必须认这个参数。
+        兼容 selector 只读取 instance；其它过滤来自目录和 metrics.yaml，不能替换查询文本。
+        已登记 target 的精确 job/instance 优先于 selector；数值与告警计数共用此边界。
         """
         raise MonitorError(f"监控源不支持通用指标查询: {metric_id}")
 

@@ -127,7 +127,7 @@ def template_param_order(template: str, declared: dict[str, CmdParam]) -> list[s
 def parse_command_def(key: str, spec: Any, *, allow_sudo: bool = True) -> CmdDef:
     """解析目录里一条命令；模板/参数/占位一致性非法抛 CmdDefError。
 
-    allow_sudo=False 时若声明 sudo: true 直接拒绝（只读目录不许提权）。
+    allow_sudo=False 时拒绝 sudo: true；不解析模板是否自行提权或写入，须由管理员保证只读。
     """
     if not isinstance(spec, Mapping):
         raise CmdDefError(f"命令 {key} 必须是映射（summary/template/params）")
@@ -228,7 +228,7 @@ def build_command(cmd: CmdDef, values: Mapping[str, Any] | None) -> str:
     """校验参数后把每个 {name} 占位替换为 shell 安全字面量，返回最终命令字符串。
 
     - str 参数已按 pattern 全匹配 → 再 shlex.quote 双保险；int 直接转十进制；
-    - 命令模板静态部分 + 已转义参数拼成单条命令，交给远端 sh 执行。
+    - 模板静态部分 + 已转义参数交给 SSH 边界；sudo 使用 POSIX sh，普通路径保留远端 shell。
     """
     norm = validated_params(cmd, values)
     out = cmd.template

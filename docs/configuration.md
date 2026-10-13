@@ -215,7 +215,7 @@ Compose 首次部署使用独立模板：强制身份校验、`local-node` 指�
 | `storage.session_ttl_hours` | int | `72` | 会话过期时间 |
 | `storage.max_sessions` | int | `200` | 最大会话数，超出淘汰最旧会话 |
 | `storage.message_window` | int | `20` | 每轮发送给模型的历史消息上限 |
-| `storage.history_ttl_hours` | int | `168` | 告警/处置/AI 建议归档保留时间 |
+| `storage.history_ttl_hours` | int | `168` | 告警、处置、AI 建议、审批历史、执行和幂等记录的保留时间 |
 | `storage.max_history_rows` | int | `5000` | 各归档与幂等表的容量上限；待审批消息引用的决策暂不淘汰，见数据库说明 |
 | `storage.purge_interval_seconds` | int | `60` | 过期清理节流间隔 |
 
@@ -321,8 +321,11 @@ hosts:
 
 手工修改后须由管理员显式应用。页面凭据支持多份，同一凭据可供多台已登记主机引用；
 用户通过主机访问授权使用对应凭据，不能自行传入连接参数。
-管理员向导当前只支持新增主机，不能从页面删除、停用或迁移现有 `host_id`。
-手改清单前须核对规则与历史引用；不能把删除一行 YAML 当作已支持的主机清理流程。
+管理员可通过“监控主机”新增或删除登记；删除前须撤销用户主机授权、移除规则引用，并处理
+未决审批和运行/未知执行。仍须保留至少一台启用主机，候选清单无效时删除被拒绝。
+删除登记默认继续采集；停止项目托管目标须明确选择，外部 Prometheus 不由本项目修改。
+会话、告警、审批及执行历史不随登记删除。页面不提供停用或迁移现有 `host_id` 的入口；
+完整操作见[控制台说明](console.md#系统管理配置草稿与独立凭据保存)。
 
 ## metrics.yaml
 
@@ -429,10 +432,11 @@ error > critical > warning > normal
 - `cpu.usage`、`memory.usage`、`disk.usage`：巡检 + 聊天 + 告警分析，参与等级。
 - `alerts.active_count`：巡检 + 聊天，参与等级。
 - 其余新指标：参与巡检，默认只观察，不进入聊天和告警分析。
-- 磁盘 I/O 和网络的 `*_bytes` 指标是 rate；`memory.available_bytes` 是当前可用容量。
+- 磁盘 I/O 和网络的 `*_bytes` 指标是 rate；`memory.available` 是当前可用容量。
 - 网络指标默认排除 `lo`。
 
-所有 17 项 Linux node_exporter 指标具有即时和趋势行为：数值指标缺少独立 range 表达式
+全部 17 项内置指标均支持即时和趋势，其中 16 项来自 Linux node_exporter，活动告警数来自
+Prometheus 的 ALERTS。数值指标缺少独立 range 表达式
 时复用即时表达式，活动告警采用历史 ALERTS。磁盘按挂载点/设备/文件系统、I/O 和网络
 按设备返回；无 Swap 为“不适用”。缺少采集器、标签不匹配、rate 采样不足按 no_data。
 告警补零的 up 探测内嵌同一查询，不增加巡检请求数，原每主机预算仍含独立 Exporter 查询。
@@ -614,8 +618,8 @@ commands:
 
 命令参数格式与 `actions.yaml` 相同，但：
 
-- 永远不 sudo。
-- 非零退出码只作为可读结果，不触发写动作。
+- 执行器不添加 sudo；管理员仍须保证模板只查询数据，不在模板中自行提权或写入。
+- 真实非零退出码作为可读结果返回；连接错误、超时或缺少退出状态仍是查询异常。
 - 管理页面保存诊断目录后立即重建可用工具；手工修改后须显式应用。
 
 命令目录不包含连接目标。Agent 使用会话 `host_id` 对应的
@@ -627,12 +631,13 @@ commands:
 
 ```yaml
 # metrics.yaml
-disk.io_util:
-  enabled: true
-  surfaces: { inspection: true, chat: false, alert_analysis: false }
-  warning: 80
-  critical: 95
-  severity_enabled: true
+metrics:
+  disk.io_util:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: false }
+    warning: 80
+    critical: 95
+    severity_enabled: true
 ```
 
 管理员应用磁盘配置后，后续巡检轮次会包含该指标。
@@ -640,10 +645,11 @@ disk.io_util:
 ### 把指标加入聊天 Agent
 
 ```yaml
-cpu.iowait:
-  enabled: true
-  surfaces: { inspection: true, chat: true, alert_analysis: false }
-  severity_enabled: false
+metrics:
+  cpu.iowait:
+    enabled: true
+    surfaces: { inspection: true, chat: true, alert_analysis: false }
+    severity_enabled: false
 ```
 
 管理员应用磁盘配置后，后续 Agent 会话和关键词兜底会包含该指标。
@@ -651,10 +657,11 @@ cpu.iowait:
 ### 让指标进入告警 AI 分析
 
 ```yaml
-memory.available:
-  enabled: true
-  surfaces: { inspection: true, chat: false, alert_analysis: true }
-  severity_enabled: false
+metrics:
+  memory.available:
+    enabled: true
+    surfaces: { inspection: true, chat: false, alert_analysis: true }
+    severity_enabled: false
 ```
 
 同时调整 `max_alert_analysis_metrics`，避免一次查询过多指标。
@@ -686,7 +693,7 @@ metrics:
 | 配置 | 生效方式 |
 |---|---|
 | `settings.yaml` | 页面身份、用户主机授权、LLM/Agent/巡检开关热生效；监听、SQLite/日志路径与环境密钥需重启 |
-| `hosts.yaml` | 管理员新增主机或修改授权后立即切换主机注册表；手改后显式应用 |
+| `hosts.yaml` | 管理员新增/删除主机、更新 SSH 关联或修改授权后热生效；手改后显式应用 |
 | `metrics.yaml` | 纳入 revision；手改后显式应用 |
 | `rules.yaml` | 页面保存或手动应用后热生效 |
 | `actions.yaml` | 页面保存或手动应用后热生效 |
@@ -779,8 +786,8 @@ Prometheus 容器里的 `localhost:9100` 指向该容器自身，远程 Exporter
 容器内为 `/app/data/admin-credentials/`，宿主机为 `.runtime/assistant-data/admin-credentials/`；
 采用与普通配置相同的锁、revision 和运行快照，成功立即生效，失败保留旧配置。
 详细字段、长度和错误码见 [管理员凭据 API](api.md#管理员凭据-api)，操作见
-[控制台](console.md#管理员配置操作)。环境模型与持久部署 Token 保留且页面只读；模型
-页面配置整组优先，SSH 由显式凭据引用解析，Token 合并身份映射。普通配置保存不能把解析到内存中的凭据写回 YAML。
+[控制台](console.md#管理员配置操作)。部署模型来源和持久 Token 不由页面改写；模型
+页面保存的是整组优先配置，SSH 由显式凭据引用解析，Token 合并身份映射。普通配置保存不能把解析到内存中的凭据写回 YAML。
 显式清除模型密钥不回退环境值；设置 API Key 后按需启用 LLM 与 Agent 开关。
 
 ## 主机告警 PromQL 编写约束

@@ -16,7 +16,7 @@ class ActionError(Exception):
 
 
 class ActionOutcomeUnknown(ActionError):
-    """传输失败时远端写操作可能已完成，调用方不得自动重试。"""
+    """派发后传输异常或缺少退出状态，远端可能已写入，调用方不得自动重试。"""
 
 
 class ActionExecutor(ABC):

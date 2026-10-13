@@ -256,7 +256,9 @@ class SessionStore(ABC):
 
     @abstractmethod
     def delete(self, session_id: str, *, user: str | None = None) -> bool:
-        """删除会话**连同其全部消息与审批决策记录**（同事务；不依赖外键）。
+        """同事务删除会话、全部消息及关联旧审批决策，不依赖外键。
+
+        独立的 approval_requests 及执行审计保留，按各自历史策略清理。
 
         `user` 给定时要求归属匹配，**不匹配则什么都不写、直接返回 False**。守卫必须在
         同一事务内、在**任何写之前**判定：先删 messages 再判归属，会让一次未授权的删除

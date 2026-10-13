@@ -69,7 +69,7 @@ def query_document():
         "活动告警计数分 pending/firing 独立保留，仅 up=1 时将空 ALERTS 补零；up=0 或缺失时不补零。所有登记主机计数入口使用相同的 ALERTS 表达式；AI 告警工具、总览/详情的告警明细和旧无目标内部入口使用 /api/v1/alerts 并按精确 job/instance 过滤，目的是列举规则实例，列表本身不门控 up，空列表不等于主机健康。演示指标是告警验收专用 gauge 分支，不进入普通指标面板；真实分支优先且按 job/instance 去重。", "",
         "默认 CPU/内存/磁盘告警阈值分别为 80/85/80，与指标目录 warning 一致。Prometheus 静态规则不会随用户修改 metrics.yaml 自动调整；自定义阈值需管理员单独同步外部规则。未配置其它 14 项告警规则，不把观察指标冒充已启用告警。Exporter down 规则覆盖 node/node-exporter/aiops-hosts；外部 job 需其管理员维护。", "",
         "Windows Exporter（常见端口 9182）不提供本目录 node_* 指标，即使 up=1 仍可能无数据；不能通过替换端口猜测协议。核对 Targets 的最终 job、instance、抓取地址与 collector，再登记准确标签。控制台标签提示仅显示当前已授权主机的预期值，不暴露其它目标。", "",
-        "项目原来只提供 Grafana datasource，没有仪表盘。新增托管仪表盘由目录生成，经 provisioning 加载；既有业务仪表盘不在仓库内，无法审计其查询。Grafana 具有独立认证和权限，Assistant 的主机 ACL 不会自动传递给 Grafana。", ""])
+        "托管 Grafana 仪表盘由指标目录生成，经 provisioning 加载；既有业务仪表盘不在仓库内，查询需部署负责人单独核验。Grafana 具有独立认证和权限，Assistant 的主机 ACL 不会自动传递给 Grafana。", ""])
     return "\n".join(lines)
 
 

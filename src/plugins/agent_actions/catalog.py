@@ -183,8 +183,7 @@ def load_agent_actions_config(path: str | Path | None = None) -> AgentActionsCon
 def colliding_keys(action_keys: Iterable[str], occupied: Iterable[str]) -> frozenset[str]:
     """返回 action_keys 与 occupied 的交集。
 
-    create_agent 对重名工具**不报错**（静默遮蔽，见 2026-09-10 实测），
-    因此必须在装配前显式检测：写命令 key 不能与监控工具名或只读诊断命令名冲突。
+    重名工具可能在装配时静默遮蔽；必须预先检测，避免写工具与监控/诊断工具共用名字。
     """
     return frozenset(action_keys) & frozenset(occupied)
 

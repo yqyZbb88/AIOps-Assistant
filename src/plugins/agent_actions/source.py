@@ -1,7 +1,7 @@
 """Agent 写命令源插件（SshAgentActionSource）：经 SSH 执行 config/agent_actions.yaml 白名单写命令。
 
 与只读诊断（plugins/diagnostics/ssh_diagnostics.py）是**近亲但边界相反**：
-- 读：恒不 sudo；远端非零退出码**不算失败**（grep 无匹配 / systemctl 查 failed 返回 3），
+- 读：执行器不添加 sudo；真实非零退出码可返回（grep 无匹配 / systemctl 查 failed 返回 3），
       输出照常回传，ok=False 交给 Agent 判断；
 - 写（本模块）：sudo 按目录逐条声明；远端非零退出码**就是失败** → 抛 AgentActionError。
 
@@ -132,8 +132,9 @@ class SshAgentActionSource(AgentActionSource):
     ) -> dict[str, Any]:
         """执行已批准的目录动作，验证主机能力、参数与执行幂等记录。
 
-        配置执行 Store 时必须有审批上下文，先落执行行再派发 SSH。传输不确定
-        标为 unknown；非零退出码为 failed，均抛 AgentActionError，不重试命令。
+        配置执行 Store 时必须有审批上下文，先落执行行再派发 SSH。派发后传输异常或缺少
+        退出状态为 unknown，抛 AgentActionOutcomeUnknown；真实非零为 failed，抛
+        AgentActionError。两类结果都不自动重试命令。
         """
         cmd_def = next((c for c in self.config.commands if c.key == command), None)
         if self.allowed_commands is not None and command not in self.allowed_commands:

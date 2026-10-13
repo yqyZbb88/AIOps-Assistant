@@ -73,7 +73,7 @@ class OpsAgent:
     ) -> ChatReply:
         """带会话的一轮：返回回答文本 + 会话 id / 会话名（`/chat` 走这里）。
 
-        `user` 是调用者身份，由 API 层从有效密钥推出（None 仅供可信内部旧入口）。
+        `user` 是调用者身份，由 API 层核验服务端 Token 映射（None 仅供可信内部旧入口）。
         `session_id` 未知**或不属于 `user`** 一律抛 SessionNotFoundError（api 层转 404，
         不静默重建、也不区分「不存在」与「不是你的」）。
         """
@@ -140,7 +140,7 @@ class OpsAgent:
                 ack.remediation = remediation
                 self._print_remediation(remediation)
 
-            # 2) 无自动处理规则的告警 → LLM 根因分析（失败仅日志，不阻塞）
+        # 2) 未命中已加载规则的告警 → LLM 分析；命中但禁用自动执行也不转给 AI。
             unmatched = self.rule_engine.unmatched_alerts(payload)
             advice = self.analysis.analyze_many(unmatched)
             if advice:

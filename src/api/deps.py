@@ -1,12 +1,12 @@
 """共享的 FastAPI 依赖：共享密钥鉴权。
 
-**身份由密钥推断**（服务端事实），不再从请求体里读客户端自报的 `user` —— 这是
+**身份由服务端 Token 映射核验**，不从 Token 内容或请求体中的 `user` 推断——这是
 「不同用户不能进同一段对话」得以成立的前提：自报的用户名无从核实，基于它的校验
 只是装饰。
 
 挂载方式见 `src/main.py`：`include_router(..., dependencies=[Depends(require_auth)])`。
 这种写法让普通业务 router 显式挂鉴权；`/health`、`/ready` 与 `/console`
-公开但不返回业务数据。`/admin/config` 单独使用 `require_admin`，不随普通鉴权开关放行。
+公开但不返回业务数据。管理员路由单独使用 `require_admin`；业务鉴权没有关闭开关。
 `/docs`、`/redoc`、`/openapi.json` 属于 FastAPI 应用级路由，不经过这些 router 依赖。
 
 两条纪律：
@@ -22,9 +22,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.utils.auth import AuthConfigError, parse_admins, parse_tokens, resolve_identity
 
-# auto_error=False：缺 Authorization 头时**不由 FastAPI 直接拒绝**。
-# auto_error=True 会返回 403，而「没带凭据」语义上是 401（FastAPI 的已知行为）。
-# 顺带一个好处：/docs 里会出现标准的 Authorize 按钮。
+# 由 require_auth 统一处理缺失/无效凭据的 401，避免依赖 SDK 默认异常文案。
+# 使用 HTTPBearer 同时为 OpenAPI 提供标准的 Authorize 入口。
 _bearer = HTTPBearer(auto_error=False, description="形如 `Bearer <密钥>`")
 
 
@@ -104,7 +103,7 @@ def require_alert_identity(
     任何持有效密钥的聊天用户都能构造告警去踩那条路径，等于从「聊天用户」越权到
     「可触发写命令」。
 
-    三种放行/拒绝：
+    已通过身份认证后的附加规则：
 
     - `alert_identity` **留空** → 放行（有意的 fail-open，保持既有部署不变；
       启动时会有 WARNING 提醒）；

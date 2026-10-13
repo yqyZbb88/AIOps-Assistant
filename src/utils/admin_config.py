@@ -384,8 +384,7 @@ class AdminConfigManager:
         )
         approvers = self._identity_list(
             section.get("approver_identities"), "approver_identities", available, required=False,
-            # Revoked or old identities may remain dormant; preserving them grants no new role.
-            # Do not block unrelated host ACL edits or reinterpret their spelling/case.
+            # 已撤销或旧身份项可保留，不新增授权、不改写大小写，也不阻塞其它主机授权编辑。
             retained=parse_approvers(interpolate(str(auth.get("approver_identities") or ""))),
         )
         mode = _text(section.get("approval_mode"), "approval_mode", required=True, maximum=32)

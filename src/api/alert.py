@@ -14,7 +14,7 @@
 （`core/agent.py` 的 `process_alert`，`auto_execute: true` 时**不经人工审批**）。
 不设限的话，任何持有效密钥的聊天用户都能构造告警去踩那条写路径。
 
-⚠️ 因此打开 auth 之后，**必须在 Alertmanager 侧同步配置**，否则告警会被静默挡住：
+配置 webhook 时必须在 Alertmanager 侧同步设置 Bearer，否则投递会被拒绝：
 在 receiver 的 `webhook_configs` 里给它加 `http_config.authorization`
 （`type: Bearer` + 密钥，见 `require_alert_identity`）。**两个常见坑**：
 ① 漏配 → 401，服务侧一条都收不到，只有 Alertmanager 的日志看得到；
@@ -56,7 +56,7 @@ def alert(
 
     **鉴权：除「密钥有效」外还要求身份是 `auth.alert_identity`（403 否则）。**
     因为这条路径能触发规则引擎执行写命令（`auto_execute: true` 时无需人工审批），
-    不能让人人都能构造告警打进来。本组其他路由（`/alerts/*`）仍是「任意有效密钥」。
+    不能让普通聊天身份构造告警触发写路径。`/alerts/*` 只读查询另按当前主机权限过滤。
     """
     logger.info(
         "收到 Alertmanager 通知 from=%s: %d 条, 整组状态=%s, receiver=%s",

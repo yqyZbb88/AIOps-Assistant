@@ -495,7 +495,7 @@ def test_delete_without_user_does_not_check(store):
 
 
 def test_delete_rejects_unowned_row(store):
-    """存量行 `user` 为空 → **任何身份都不匹配**（2026-09-12 用户选的「一律拒绝」）。"""
+    """存量行 user 为空时，不按调用者身份猜测或认领归属。"""
     info = store.create()  # user=""
 
     assert store.delete(info.session_id, user="alice") is False

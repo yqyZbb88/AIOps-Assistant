@@ -1,9 +1,8 @@
-"""状态日志的 SQLite 实现：告警 / 处置 / AI 建议三张归档表 + 两张运维记录表。
+"""SQLite 告警、处置和 AI 建议的批量归档及运维历史清理。
 
-除 `_TABLES` 里的三张归档表外，本模块的清理还负责两张**不归它写入**的表
-（写它们的是幂等守卫与会话存储，但保留期属于「运维历史记录」这一档配置）：
-`remediation_claims`（自动处置幂等抢占）与 `approval_decisions`（审批决策记录）。
-理由见 purge_expired 里的逐条说明。
+除 `_TABLES` 的三张归档表，本模块按同一历史策略清理 remediation_claims、
+approval_decisions、approval_requests 和 action_executions。相关写入分别由对应 Store
+负责；清理须保护 pending 申请及仍被待审批消息引用的决策。
 
 契约见 src/interfaces/history.py::HistoryStore。要点：
 
@@ -218,7 +217,7 @@ class SqliteHistoryStore(HistoryStore):
 
     # -- 清理 ---------------------------------------------------------------
     def purge_expired(self) -> int:
-        """按 TTL 过期 + 容量上限清理三张归档表、幂等抢占表与审批决策记录。"""
+        """按 TTL/容量清理归档、幂等、审批及执行历史，保留仍待处理的申请/决策证据。"""
         cutoff = cutoff_iso(self._clock(), self.ttl_seconds)
         removed = 0
         try:

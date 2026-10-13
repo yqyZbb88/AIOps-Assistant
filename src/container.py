@@ -535,7 +535,7 @@ class Container:
             assistant_factory=None,
             host_assistant_factory=host_assistant_factory,
             hosts=self.hosts(),
-            sessions=self.sessions(),  # 未启用/打不开 → None，聊天照常
+            sessions=self.sessions(),  # 关闭时为 None、开库失败时降级内存；HTTP 仍须可验证会话
             message_window=settings.storage.message_window,
             metrics_config=self.metrics_config(),
         )

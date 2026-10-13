@@ -1,9 +1,8 @@
 """统一审计写入（aiops_assistant.audit）。
 
-收敛动作（原 SshActionBase._audit）与只读诊断（原 SshDiagnostics._record）里近乎重复的
-JSON 拼装，两条边界共用同一通道与结构。安全不变量：
-- params 一律过 redact_sensitive（password/token/secret/api_key → ***），绝不落密码；
-- 整段命令输出不落日志；error/result 只记状态与字符信息。
+规则动作、Agent 写命令与只读诊断共用结构化通道：
+- params 经敏感键、已注册值及文本模式脱敏，不保证识别未知的任意秘密；
+- 调用方只传轻量结果与错误元信息，不把整段命令输出交给本函数。
 
 结构 {action, command?, host, params(打码), started_at, finished_at, result|error}。
 """
@@ -35,7 +34,7 @@ def record_execution(
     """写一条真实 SSH 尝试的结构化审计（成功记 info，失败记 error）。
 
     - action:   动作名 / 诊断通道名（如 restart_service、diagnostics）；
-    - command:  命令标识（写命令 = 实际构建的命令串；诊断 = 命令 key）；
+    - command:  命令标识（规则动作可为构建命令串，Agent/诊断为目录 key）；
     - params:   入参副本，内部做敏感打码，调用方可传原值；
     - result/error 二选一：result 只放轻量状态（不含整段输出）。
     """

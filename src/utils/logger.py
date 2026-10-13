@@ -40,7 +40,7 @@ class RedactingFormatter(logging.Formatter):
 
 
 class RedactingFilter(logging.Filter):
-    """清理 LogRecord，使第三方 handler 也不会收到常见明文凭据。"""
+    """清理消息和参数；异常文本另由 RedactingFormatter 处理，不替代第三方 handler 审查。"""
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.msg = redact_sensitive(record.msg)
@@ -198,8 +198,8 @@ def write_audit(record: dict[str, Any], *, level: int = logging.INFO) -> None:
     更是明令禁止。把「怎么写一条审计」收敛到 utils 这个叶子层，两边都能用，
     格式也不会漂。
 
-    只负责序列化与投递，**不做打码**：调用方自己保证不落密码（动作那边过
-    `redact_sensitive`）。失败只记 ERROR——审计写不进去不该让主流程炸掉。
+    序列化前再次调用 redact_sensitive；调用方仍须限制字段、长度和敏感内容，脱敏不保证
+    识别任意秘密。异常只记 ERROR，不向业务抛出；需要持久审计前置时须由执行 Store 保证。
     """
     try:
         get_audit_logger().log(

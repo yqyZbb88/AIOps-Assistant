@@ -16,7 +16,7 @@ Grafana 使用自身权限体系，不能假定 Assistant 主机 ACL 自动生�
 <details>
 <summary>维护者需要知道的运行限制</summary>
 
-当前版本 0.6.2 使用单进程、单 worker，SQLite 数据库版本为 schema 7。
+当前版本 0.6.2 使用单进程、单 worker，SQLite 数据库版本为 schema 8。
 不支持多实例共享配置目录。宿主机不需要安装项目 Python/Node 依赖。
 
 </details>
@@ -568,7 +568,8 @@ python scripts/stack.py up
 迁移可重复执行。备份含凭据，不要提交或公开；不能删除 pending 标记绕过校验。
 
 部署 Token、身份、主机授权、历史及 Grafana 数据保持原值。普通用户默认没有主机访问权，
-管理员显式授权；具名会话仍要求身份及主机权限，匿名会话不自动认领。SQLite schema 仍为 7。
+管理员显式授权；具名会话仍要求身份及主机权限，匿名会话不自动认领。配置迁移不操作 SQLite；
+当前 Assistant 启动时将受支持的旧库升级到 schema 8，数据库回退边界见[数据库说明](database.md#schema-和迁移)。
 回退前停止服务，恢复对应版本代码和完整运行备份，不要通过删除初始化检查点来重试。
 
 ## 部署失败排查

@@ -7,7 +7,7 @@
 - 凭据只存在于插件构造时注入的 主机 SSH 目标，**模型上下文里永无 host/密码/私钥**；
 - 命令 = 配置文件声明的模板 + 已校验语义参数（见 plugins/diagnostics/commands.py），
   模型自由文本永不拼进 shell；
-- 只读：sudo 恒 False，命令模板由人在 config/diagnostics.yaml 声明。
+- 执行器的 sudo 标志恒 False；模板由管理员声明并保证只读，本层不解析 shell 副作用。
 
 core / agent 层只依赖本接口；具体实现（SSH、将来的 Agent 直连等）在 plugins/diagnostics/。
 """
@@ -30,10 +30,10 @@ class DiagnosticSource(ABC):
     """只读诊断源：按命令名执行白名单只读命令，返回结果 dict。
 
     run() 语义：
-    - 成功（无论远端退出码）：返回 {ok, host, command, exit_code, output}；
+    - 收到真实退出码：返回 {ok, host, command, exit_code, output}；
       只读命令非零退出码常见（grep 无匹配、systemctl 查 failed 服务返回 3），
       这类不算"调用失败"，ok=False 但输出照常回传，由 Agent 判断；
-    - 未知命令 / 参数非法 / 连接认证失败 / 执行异常：抛 DiagnosticError，
+    - 未知命令 / 参数非法 / 连接认证失败 / 超时或缺少退出状态：抛 DiagnosticError，
       调用方（工具层）捕获后返回友好文本，不中断 Agent。
     """
 

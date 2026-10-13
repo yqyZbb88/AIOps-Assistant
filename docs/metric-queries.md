@@ -55,4 +55,4 @@ Assistant 对目录定义的百分比边界做 0–100 展示保护，并跳过 
 
 Windows Exporter（常见端口 9182）不提供本目录 node_* 指标，即使 up=1 仍可能无数据；不能通过替换端口猜测协议。核对 Targets 的最终 job、instance、抓取地址与 collector，再登记准确标签。控制台标签提示仅显示当前已授权主机的预期值，不暴露其它目标。
 
-项目原来只提供 Grafana datasource，没有仪表盘。新增托管仪表盘由目录生成，经 provisioning 加载；既有业务仪表盘不在仓库内，无法审计其查询。Grafana 具有独立认证和权限，Assistant 的主机 ACL 不会自动传递给 Grafana。
+托管 Grafana 仪表盘由指标目录生成，经 provisioning 加载；既有业务仪表盘不在仓库内，查询需部署负责人单独核验。Grafana 具有独立认证和权限，Assistant 的主机 ACL 不会自动传递给 Grafana。

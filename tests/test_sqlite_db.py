@@ -63,7 +63,7 @@ def test_sessions_columns_are_exact(tmp_path):
 
     注意**没有** pending_approvals 列：待审批数由 messages 状态实时统计得出。
     存成列就得在 append_turn / update_pending / reconcile_pending 三处同步维护，
-    批量作废时极易漂移；实时统计则不可能算错。
+    批量作废时容易漂移；查询时统计避免维护冗余计数。
 
     `name` 是 v2 加的会话别名列（客户端可读；session_id 仍是服务端随机值）。
     """

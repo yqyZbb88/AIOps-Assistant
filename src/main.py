@@ -158,17 +158,12 @@ def create_app(
             if operation:
                 runtime.end_operation()
 
-    # 鉴权在这里挂：include_router 是本仓库唯一的挂载点，一屏看完，
-    # 且形状是 **fail-closed** —— 新增业务 router 时必须在这里显式决定是否挂鉴权。
-    #
-    # 不用中间件：中间件在路由匹配**之前**跑，拿不到「这条路由要不要鉴权」，只能手工
-    # 维护路径白名单，而白名单漏掉一个新路由 = 新路由默认敞开（最坏的失败方向）。
-    # 也不用各模块单独声明 router 级依赖：集中挂载更容易审查完整业务接口面。
-    #
-    # /docs、/redoc、/openapi.json 是 app 级路由，不在任何 router 里，不会被拦。
+    # 路由在此集中挂载，便于核对完整鉴权面；新增业务路由必须显式挂 require_auth。
+    # 管理员端点各自使用 require_admin；集中挂载本身不会自动保护遗漏依赖的路由。
+    # 探针、控制台空壳和 app 级 /docs、/redoc、/openapi.json 保持公开。
     app.include_router(health_api.router)  # 探针豁免：健康检查不该要密钥
     app.include_router(status_api.router)  # 控制台空壳；真实数据 API 仍要求 Bearer
-    app.include_router(admin_api.router)  # 端点内部强制 require_admin，不受普通鉴权开关影响
+    app.include_router(admin_api.router)  # 端点内部独立校验 require_admin
     app.include_router(chat_api.router, dependencies=[Depends(require_auth)])
     app.include_router(alert_api.router, dependencies=[Depends(require_auth)])
     app.include_router(approvals_api.router, dependencies=[Depends(require_auth)])
@@ -184,8 +179,8 @@ def _check_auth(settings: Settings, *, require_tokens: bool = True) -> None:
     内部直接构造的空 Token 配置允许装配，但所有业务接口返回 503。
     """
     try:
-        # Explicit injected Settings may omit credentials for internal health-only tests.
-        # File-based startup and injected deployment managers must have usable identities.
+        # 内部健康测试可显式注入空凭据 Settings，业务端点仍拒绝访问。
+        # 文件启动及注入部署管理器时必须有可用身份。
         if require_tokens or (settings.auth.tokens or "").strip():
             ensure_usable(
                 settings.auth.tokens,

@@ -421,8 +421,7 @@ def _write_agent_actions(tmp_path, cmd="restart_service"):
 def test_agent_actions_none_when_disabled(monkeypatch, tmp_path):
     """enabled: false → 能力关闭。
 
-    原用例读仓库文件断言「出厂关」，2026-09-10 仓库改开后不再成立。改为显式喂一份
-    关闭的配置，断言的仍是同一个机制（开关语义），且不随仓库当前状态漂移。
+    显式使用临时关闭配置，验证开关语义，不依赖发布模板的当前默认值。
     """
     f = tmp_path / "agent_actions_off.yaml"
     f.write_text(

@@ -215,7 +215,7 @@ def _env_value(match: re.Match) -> str:
     if value is None:
         if default is not None:
             return default
-        # 未提供默认值的变量缺失：给空字符串（避免启动失败），同变量只提示一次
+    # 解析阶段对缺失变量返回空串并告警；字段及启动鉴权仍会继续校验，同变量只提示一次。
         if name not in _warned_missing_vars:
             _warned_missing_vars.add(name)
             logger.warning("环境变量 %s 未设置且无默认值，已按空字符串处理", name)
@@ -342,7 +342,7 @@ def _build_dataclass(model_type: type, data: Any, *, prefix: str) -> Any:
 
 
 def _validate_settings(settings: Settings) -> None:
-    """跨字段配置约束；只在服务启动加载时执行。"""
+    """跨字段约束，供启动加载及管理员候选配置校验共用。"""
     from src.utils.auth import AuthConfigError
     from src.utils.host_access import parse_host_access
     try:
@@ -384,7 +384,7 @@ def _build_settings(data: dict[str, Any]) -> Settings:
 # ---------------------------------------------------------------------------
 # 这里**刻意没有** `default_settings()` 之类的兜底构造函数：配置缺失 / 解析失败一律抛
 # ConfigError，由调用方拒绝启动。一个「读不到配置就退回全默认值」的入口看起来更健壮，
-# 实际上是把「鉴权没开」「存储没开」这类静默降级直接放行——正是本模块严格校验要防的事。
+# 实际上可能把缺失身份或意外关闭存储的默认值放行；严格加载要求调用方明确处理失败。
 
 
 def load_settings(path: str | Path | None = None) -> Settings:

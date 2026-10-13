@@ -39,7 +39,7 @@ class Alert(BaseModel):
 
     @property
     def instance(self) -> str:
-        """触发告警的实例，如 192.168.1.10:9100。"""
+        """触发告警的 instance 标签，如 node-a:9100。"""
         return self.labels.get("instance", "unknown")
 
     @property
@@ -51,9 +51,8 @@ class Alert(BaseModel):
     def alert_key(self) -> str:
         """归档表之间的关联键（告警 / 处置 / AI 建议三表靠它串起来）。
 
-        **不能直接用 fingerprint**：它默认为空串，而 Alertmanager 之外的来源
-        （含全部既有测试的构造）根本不设它——空串当 join key 会把不同告警并成一条。
-        故回落成「告警名 + 实例 + 开始时间」的复合键。
+        优先使用非空 fingerprint；来源未提供时回退到告警名、instance 与 startsAt 的
+        复合键，避免不同告警因空关联键被合并。
         """
         return self.fingerprint or f"{self.alertname}|{self.instance}|{self.startsAt}"
 

@@ -20,7 +20,7 @@
 
 ## 数据库中保存什么
 
-九张表分为四类：
+十张表分为四类：
 
 ### 会话
 
@@ -41,6 +41,7 @@
 
 | 表 | 内容 |
 |---|---|
+| `approval_requests` | 冻结申请、申请人及生命周期；独立保留审批历史 |
 | `approval_decisions` | 人工审批决策记录 |
 | `remediation_claims` | 自动处置幂等抢占记录 |
 | `action_executions` | 规则与 Agent 写动作的统一目标、幂等和结果记录 |
@@ -114,12 +115,33 @@ alertname | instance | startsAt
 ```text
 ok
 failed
+unknown
 matched_but_auto_execute_disabled
 instance_mismatch
+host_unresolved
+host_action_unauthorized
 duplicate_ignored
 ```
 
 ## 审批与幂等表
+
+### `approval_requests`
+
+schema 8 起独立保存申请快照和生命周期：
+
+| 字段 | 说明 |
+|---|---|
+| `approval_id` / `session_id` | 申请 ID 与原会话，可独立于会话保留 |
+| `requester` / `host_id` / `target_summary` | 申请人、冻结主机与脱敏目标摘要 |
+| `actions_json` | 冻结动作及脱敏参数 |
+| `created_at` | 可证明的申请时间 |
+| `status` | pending、approve、reject、expired、cancelled、evicted、abandoned |
+| `decided_by` / `decided_at` | 人工决策身份及时间；系统作废不填写 |
+
+新申请先持久化，再入进程内队列；人工决策同时更新本表与 `approval_decisions`。
+历史接口排除 pending 项，并将审批结果与 `action_executions` 的执行结果分开返回。
+旧消息/决策只读投影可能显示 unknown，无法证明的归属或时间保持未知。
+删除会话或主机登记不删除本表；按历史 TTL/容量清理时保护 pending 行。
 
 ### `approval_decisions`
 
@@ -171,7 +193,7 @@ TTL 清理或恢复旧备份后不能保证键仍在。
 | `target_summary` | 脱敏目标摘要 |
 | `config_fingerprint` | 执行/审批使用的配置指纹 |
 | `approval_id` / `alert_key` | 对应审批或告警，可为空 |
-| `status` | `running`、`succeeded`、`failed`、`rejected` 等状态 |
+| `status` | `pending`、`running`、`succeeded`、`failed`、`unknown`、`rejected`、`skipped` |
 | `detail` | 脱敏结果或错误摘要 |
 | `created_at` / `started_at` / `finished_at` | UTC 时间 |
 
@@ -215,6 +237,8 @@ GET /sessions/{id}
 GET /alerts/history
 GET /inspections/recent
 GET /approvals
+GET /approvals/history
+GET /approvals/{id}/progress
 GET /executions
 ```
 
@@ -242,7 +266,7 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 
 | 字段 | 当前默认 | 说明 |
 |---|---:|---|
-| `history_ttl_hours` | 168 | 告警、处置、AI 建议、幂等抢占、审批决策和动作执行记录 |
+| `history_ttl_hours` | 168 | 告警、处置、AI 建议、幂等抢占、审批申请/决策和动作执行记录 |
 | `max_history_rows` | 5000 | 上述各表的容量上限 |
 
 `approval_decisions` 有**两条**清理路径，缺一不可：
@@ -257,6 +281,9 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 兜底不能省：快路径只在会话被删时才跑，既扫不到 `session_id` 为空的行，也扫不到会话
 早已消失的孤儿行。`remediation_claims` 和 `action_executions` 同样由归档清理按 TTL 与
 容量上限回收。
+
+`approval_requests` 独立于会话清理，保护 pending 行；已结束申请按历史 TTL 与容量回收。
+因此删除会话后新版本的审批历史仍可查，旧决策/消息投影则可能随旧清理路径消失。
 
 ### 巡检清理
 
@@ -440,6 +467,7 @@ UNION ALL SELECT 'messages', COUNT(*) FROM messages
 UNION ALL SELECT 'alerts', COUNT(*) FROM alerts
 UNION ALL SELECT 'remediations', COUNT(*) FROM remediations
 UNION ALL SELECT 'ai_advice', COUNT(*) FROM ai_advice
+UNION ALL SELECT 'approval_requests', COUNT(*) FROM approval_requests
 UNION ALL SELECT 'approval_decisions', COUNT(*) FROM approval_decisions
 UNION ALL SELECT 'remediation_claims', COUNT(*) FROM remediation_claims
 UNION ALL SELECT 'inspection_runs', COUNT(*) FROM inspection_runs

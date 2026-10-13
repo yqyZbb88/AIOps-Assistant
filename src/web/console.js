@@ -162,7 +162,7 @@ function statusTone(value) {
 function badge(text, value) { return node("span", "badge " + statusTone(value), text); }
 
 async function request(path, options) {
-  // 统一请求边界：只用相对路径、默认带 Bearer、禁缓存且有超时；401/403 留给调用方展示。
+  // 统一请求边界：相对路径、Bearer、禁缓存和超时；401 清除旧身份，错误交给调用方展示。
   // 超时是浏览器放弃等待，不代表服务端写入已取消；调用方不可据此盲目重试审批/保存。
   const opts = options || {};
   const authenticated = opts.authenticated !== false;

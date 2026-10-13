@@ -4,7 +4,7 @@
 # bash load_gen.sh 8     全部可用核心，8 分钟
 # bash load_gen.sh 6 4   4 个负载进程，6 分钟
 # bash load_gen.sh 0     显式不限时，Ctrl+C 结束
-# 当前仓库默认告警：CPU >80%，for 30s，使用 2 分钟 rate 窗口。
+# 当前仓库默认告警：CPU >80%，for 30s，使用 5 分钟 rate 窗口。
 
 load_fail() { printf '错误：%s\n' "$*" >&2; exit 2; }
 load_integer() {

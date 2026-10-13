@@ -1,69 +1,5 @@
 # 0.6.2 容器测试与验收
 
-## 本次控制台改进的隔离验收
-
-SSH 结果回归 `tests/test_ssh_write_outcome.py` 覆盖真实审批图续跑、规则 SQLite 共库路径、
-退出码 0/1/137、缺少状态 -1、发送脚本异常、幂等不重放、审计详情和送给模型的实际工具
-反馈。Paramiko 网络边界替换为合成通道，不连接真实 SSH 或模型。另以本地 POSIX sh
-对照固定加载器与原 sh -c 的 18 项非交互式语义：管道、条件、命令替换、here-doc、
-cat/read 和超过输入缓冲区的长模板、显式 stdin、set -e、trap、exec、cd、显式 Bash、
-命令缺失、语法错误、末尾反斜线、空输出、内部变量清理；读取失败拒绝执行部分脚本。
-
-另可使用已有 `golang:1.26.8` 镜像中的 Python 和 procps 验证真实 Linux 进程行为：
-
-```powershell
-docker run --rm --network none --mount "type=bind,source=$PWD/src,target=/app/src,readonly" --mount "type=bind,source=$PWD/tests,target=/app/tests,readonly" --workdir /app --entrypoint python3 golang:1.26.8 -m tests.ssh_process_acceptance
-```
-
-该脚本只允许临时 Linux Docker 容器，用唯一匹配词创建合成进程；sudo 以不提权的包装
-替身模拟，SSH 网络也替换为本地子进程。实际公共 SSH 内核和真实 shell/pkill 验证旧包装
-被误杀、新 stdin 包装正常返回 0、无匹配保留 1，以及中文/引号/多行、stdout/stderr 和
-非零退出码保持原义，同时通过实际公共 SSH 内核运行上述 18 项语义对照和加载器失败检查。
-镜像需自带 Python 3 和 procps，不下载包、不挂载业务运行目录。
-这不替代真实 sshd、sudoers 和主机业务验收；本次未连接真实 SSH/模型，也未修改业务部署。
-
-规则/审批反馈回归新增 `test_rule_claim_regression.py` 与 `test_approval_progress.py`：
-真实临时 SQLite 共库路径、并发告警仅执行一次、审计失败回滚且不运行命令，以及模拟 AI
-阻塞时进度仍可读、角色/主机隔离。前端补充提前阶段反馈、超时无重放、旧身份响应丢弃及刷新失败保留结果。
-真实 Chrome 阶段验收可将下方 preview 服务启动命令末尾加 `--slow-approval`，再运行
-`python tests/approval_progress_browser_acceptance.py`。该模式延迟合成动作与 AI 反馈，不连接真实 SSH/模型。
-
-沿用下方完整离线流程。新增 `test_console_improvements.py` 覆盖服务端身份、管理员删除、
-revision 冲突、引用/运行屏障、外部目标拒绝修改、双文件失败回滚、历史分页/权限、独立执行
-结果及 v7→v8 结构一致。既有凭据测试继续覆盖关联热生效、保留原值、可信 known_hosts、
-失败恢复和 SSH 检查票据失效；Node 测试补充编辑定位、取消清理、编辑 revision 保留及身份展示。
-
-使用独立 test 镜像和合成数据可显式运行真实浏览器验收（宿主机需 Python Playwright 与 Chrome）：
-
-```powershell
-docker run --rm -d --name aiops-console-improvements-preview -p 127.0.0.1:18769:8000 --entrypoint python aiops-regression:0.6.2 -m tests.console_preview
-python tests/console_browser_acceptance.py
-docker stop aiops-console-improvements-preview
-```
-
-该服务仅在容器临时目录创建合成身份、SSH 材料和记录，监控调用替换为固定合成响应，禁用
-模型和 SSH 测试，不可作为业务服务。端口占用时先定位占用者，不停止已有容器。浏览器
-检查身份切换/失效、SSH 编辑真实 API 保存、敏感输入清理、审批/执行结果分列、移动端溢出
-与页面异常。截图和结果写 `.runtime/console-improvements/`，不提交私有运行报告。
-
-`python -m scripts.metric_contract --check` 检查查询表/Grafana JSON 与指标目录和告警规则
-一致；该命令需完整工作区，test 镜像不打包 docs。生成用 `python -m scripts.metric_contract`。
-下方 promtool 指标/告警验收继续适用；全部 17 项即时与趋势表达式均需真实引擎通过。
-
-可额外验证实时 file_sd 更新（仅固定本机测试端口，使用 Prometheus 自身作为采集目标）：
-
-```powershell
-python tests/prometheus_file_sd_acceptance.py --prepare
-docker run --rm -d --name aiops-prometheus-file-sd-test -p 127.0.0.1:19069:9090 --mount "type=bind,source=$PWD/.runtime/console-improvements/prometheus-live,target=/fixtures,readonly" prom/prometheus:v3.13.3 --config.file=/fixtures/prometheus.yml --storage.tsdb.path=/prometheus
-python tests/prometheus_file_sd_acceptance.py
-docker stop aiops-prometheus-file-sd-test
-```
-
-该项抓取/发现间隔缩短到 1 秒，生产模板仍为 15/30 秒。验证 17 项 HTTP 查询、缺 node
-采集器返回无数据、精确 job/instance 和目标移除后 up 序列消失；有效指标值、多磁盘/网卡、
-零值、无 Swap 与采样不足由 promtool 合成验收负责。此验收不等同真实 SSH/模型、完整
-Compose 重建、业务 Grafana 或备份恢复演练；未执行项必须单独记录。
-
 本文用于在开发机或部署机上验证 AIOps-Assistant 的功能、异常处理和数据保留。
 每个场景给出操作与预期结果；测试报告按实际执行填写，不把部署成功等同于业务验收通过。
 部署准备见 [部署与升级](deployment.md)，页面操作见 [控制台说明](console.md)。
@@ -135,6 +71,70 @@ docker run --rm --network none aiops-regression:0.6.2 -q tests/test_admin_creden
 `test_config_migration.py` 覆盖预览、新旧冲突、页面配置、材料缺失、写入回滚、
 备份失败、迁移中断和重复执行。SSH 回归保留主机隔离、白名单、审批及主机密钥拒绝。
 前端回归同时检查通用模型字段和敏感输入清理。
+
+## 控制台、审批与执行的隔离验收
+
+SSH 结果回归 `tests/test_ssh_write_outcome.py` 覆盖真实审批图续跑、规则 SQLite 共库路径、
+退出码 0/1/137、缺少状态 -1、发送脚本异常、幂等不重放、审计详情和送给模型的实际工具
+反馈。Paramiko 网络边界替换为合成通道，不连接真实 SSH 或模型。另以本地 POSIX sh
+对照固定加载器与原 sh -c 的 18 项非交互式语义：管道、条件、命令替换、here-doc、
+cat/read 和超过输入缓冲区的长模板、显式 stdin、set -e、trap、exec、cd、显式 Bash、
+命令缺失、语法错误、末尾反斜线、空输出、内部变量清理；读取失败拒绝执行部分脚本。
+
+另可使用已有 `golang:1.26.8` 镜像中的 Python 和 procps 验证真实 Linux 进程行为：
+
+```powershell
+docker run --rm --network none --mount "type=bind,source=$PWD/src,target=/app/src,readonly" --mount "type=bind,source=$PWD/tests,target=/app/tests,readonly" --workdir /app --entrypoint python3 golang:1.26.8 -m tests.ssh_process_acceptance
+```
+
+该脚本只允许临时 Linux Docker 容器，用唯一匹配词创建合成进程；sudo 以不提权的包装
+替身模拟，SSH 网络也替换为本地子进程。实际公共 SSH 内核和真实 shell/pkill 验证旧包装
+被误杀、新 stdin 包装正常返回 0、无匹配保留 1，以及中文/引号/多行、stdout/stderr 和
+非零退出码保持原义，同时通过实际公共 SSH 内核运行上述 18 项语义对照和加载器失败检查。
+镜像需自带 Python 3 和 procps，不下载包、不挂载业务运行目录。
+该验收不连接真实 SSH/模型，不替代现场 sshd、sudoers 和业务主机验收。
+
+规则与审批反馈回归使用 `test_rule_claim_regression.py` 与 `test_approval_progress.py`：
+真实临时 SQLite 共库路径、并发告警仅执行一次、审计失败回滚且不运行命令，以及模拟 AI
+阻塞时进度仍可读、角色/主机隔离。前端补充提前阶段反馈、超时无重放、旧身份响应丢弃及刷新失败保留结果。
+真实 Chrome 阶段验收可将下方 preview 服务启动命令末尾加 `--slow-approval`，再运行
+`python tests/approval_progress_browser_acceptance.py`。该模式延迟合成动作与 AI 反馈，不连接真实 SSH/模型。
+
+先完成第 2 节的离线流程与镜像构建。`test_console_improvements.py` 覆盖服务端身份、管理员删除、
+revision 冲突、引用/运行屏障、外部目标拒绝修改、双文件失败回滚、历史分页/权限、独立执行
+结果及 v7→v8 结构一致。既有凭据测试继续覆盖关联热生效、保留原值、可信 known_hosts、
+失败恢复和 SSH 检查票据失效；Node 测试补充编辑定位、取消清理、编辑 revision 保留及身份展示。
+
+使用独立 test 镜像和合成数据可显式运行真实浏览器验收（宿主机需 Python Playwright 与 Chrome）：
+
+```powershell
+docker run --rm -d --name aiops-console-improvements-preview -p 127.0.0.1:18769:8000 --entrypoint python aiops-regression:0.6.2 -m tests.console_preview
+python tests/console_browser_acceptance.py
+docker stop aiops-console-improvements-preview
+```
+
+该服务仅在容器临时目录创建合成身份、SSH 材料和记录，监控调用替换为固定合成响应，禁用
+模型和 SSH 测试，不可作为业务服务。端口占用时先定位占用者，不停止已有容器。浏览器
+检查身份切换/失效、SSH 编辑真实 API 保存、敏感输入清理、审批/执行结果分列、移动端溢出
+与页面异常。截图和结果写 `.runtime/console-improvements/`，不提交私有运行报告。
+
+`python -m scripts.metric_contract --check` 检查查询表/Grafana JSON 与指标目录和告警规则
+一致；该命令需完整工作区，test 镜像不打包 docs。生成用 `python -m scripts.metric_contract`。
+下方 promtool 指标/告警验收继续适用；全部 17 项即时与趋势表达式均需真实引擎通过。
+
+可额外验证实时 file_sd 更新（仅固定本机测试端口，使用 Prometheus 自身作为采集目标）：
+
+```powershell
+python tests/prometheus_file_sd_acceptance.py --prepare
+docker run --rm -d --name aiops-prometheus-file-sd-test -p 127.0.0.1:19069:9090 --mount "type=bind,source=$PWD/.runtime/console-improvements/prometheus-live,target=/fixtures,readonly" prom/prometheus:v3.13.3 --config.file=/fixtures/prometheus.yml --storage.tsdb.path=/prometheus
+python tests/prometheus_file_sd_acceptance.py
+docker stop aiops-prometheus-file-sd-test
+```
+
+该项抓取/发现间隔缩短到 1 秒，生产模板仍为 15/30 秒。验证 17 项 HTTP 查询、缺 node
+采集器返回无数据、精确 job/instance 和目标移除后 up 序列消失；有效指标值、多磁盘/网卡、
+零值、无 Swap 与采样不足由 promtool 合成验收负责。此验收不等同真实 SSH/模型、完整
+Compose 重建、业务 Grafana 或备份恢复演练；未执行项必须单独记录。
 
 ## 3. 建立独立 Compose 测试栈
 
@@ -261,8 +261,10 @@ Token 输入控制台连接框，Grafana 用户名为 `admin`。报告中不记�
 
 新增主机只登记现有 Exporter，不会安装或启动远程服务。测试目标必须从 Prometheus 容器
 可达；容器中的 `localhost` 指向容器自身。HOST-01/02 未准备第二个 Exporter 时标记“未执行”。
-清退测试主机需按 [配置指南](configuration.md)核对规则与历史引用，不能把页面不存在的删除操作
-当作测试失败。新建专用测试栈可在完成测试后整体停止保留证据。
+清退测试主机使用管理员“删除主机登记”入口，先撤销用户授权、移除规则引用并处理未决/运行
+任务；仅登记移除时采集继续，停止托管采集须明确选择。仍须保留至少一台启用主机，历史
+按各自保留策略保留；外部 Prometheus 由其维护者处理。完整约束见[配置指南](configuration.md#hostsyaml)。
+专用测试栈可在完成验收后整体停止并保留证据。
 
 ## 6. 告警和异常恢复
 
@@ -392,14 +394,18 @@ bash load_disk.sh
 CPU 只清理自己启动的负载进程，内存随进程退出释放，磁盘只删除本次创建的临时文件。
 脚本不会修改告警规则或自动处置设置；如果启用了自动处置，告警仍会按现有配置执行。
 
-**第三步：观察告警和恢复。** 当前项目规则为 CPU >80%、内存/磁盘 >85%，
-连续超限 30 秒。CPU 使用最近 2 分钟的平均速率，还需要等待抓取、规则评估和通知，
+**第三步：观察告警和恢复。** 默认规则为 CPU >80%、内存 >85%、磁盘 >80%，
+连续超限 30 秒。CPU 使用最近 5 分钟的 rate，还需要等待抓取、规则评估和通知，
 所以启动后不会立刻收到告警，默认 5 分钟用于留出观察时间。
 
 1. 在 Prometheus 的 Alerts 页面找到 `HighCPUUsage`、`HighMemoryUsage` 或 `HighDiskUsage`。
 2. 确认状态从 `pending` 变为 `firing`，并在 Alertmanager 中看到同一测试主机的告警。
 3. 在 Assistant 的“运维记录”查看告警归档；记录告警名、主机和触发时间。
-4. 脚本结束后等待使用率回落，确认告警恢复为 `resolved`。CPU 的两分钟统计窗口需要时间衰减。
+4. 脚本结束后等待使用率回落，确认告警恢复为 `resolved`。CPU 的五分钟统计窗口需要时间衰减。
+
+脚本显示的 CPU 是约 1 秒间隔的 `/proc/stat` 差分，便于观察负载是否启动；控制台与 CPU
+告警使用 5 分钟 rate。两者窗口不同，瞬时读数上升或回落不要求五分钟指标立即同步。
+既有部署以实际加载的规则为准，默认阈值和各指标口径见[查询对照表](metric-queries.md)。
 
 如果脚本显示高使用率而没有告警，先核对 Prometheus 的实际指标、规则和实例标签，
 再检查 Alertmanager 投递及 Assistant 日志。**脚本退出成功，只说明负载测试完成，

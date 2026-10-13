@@ -159,4 +159,4 @@ class HistoryStore(ABC):
 
     @abstractmethod
     def purge_expired(self) -> int:
-        """按 TTL + 容量上限清理三张表，返回清理的行数。"""
+        """按 TTL/容量清理归档及关联历史，返回总删除数；实现须保护仍待处理的证据。"""

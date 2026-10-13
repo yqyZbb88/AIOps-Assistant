@@ -723,8 +723,7 @@ def test_container_wiring_injects_write_addendum(monkeypatch, tmp_path):
         assistant_mod, "get_model", lambda: ScriptedChatModel(responses=[AIMessage(content="x")])
     )
 
-    # 未启用 → 不带写能力说明。用临时关闭的配置，**不依赖仓库当前开关**
-    # （仓库 2026-09-10 起为 true；若这里读仓库文件，开关一改用例就红）
+    # 未启用时不带写能力说明；临时关闭配置使测试不依赖发布模板的默认值。
     cfg_off = tmp_path / "agent_actions_off.yaml"
     cfg_off.write_text(
         AGENT_ACTIONS_YAML.replace("enabled: true", "enabled: false"), encoding="utf-8"

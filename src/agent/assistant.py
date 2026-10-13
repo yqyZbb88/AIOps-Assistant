@@ -693,4 +693,4 @@ class OpsAssistant:
         except Exception as exc:  # pragma: no cover - 清理失败不应影响主流程
             logger.debug("删除线程 %s 失败: %s", thread_id, exc)
 
-    # Agent 是单例，不保存实例级对话历史；多轮历史由 reply_turn(history=...) 传入。
+# 每台主机复用自己的 Agent 实例，不保存实例级对话历史；历史由调用方每轮传入。

@@ -2,7 +2,7 @@
 
 用真 create_app + 真 SQLite（落在 tmp_path），不触发 Agent 构建、不联网。
 
-**两段式契约**（2026-09-12 起）：建会话只认 `POST /sessions`，`/chat` 的 `session_id`
+**两段式契约**：建会话使用 `POST /sessions`，`/chat` 的 `session_id`
 是必填字段——它不再兼职建会话，名字也不再从 `/chat` 传。
 """
 from __future__ import annotations
@@ -425,11 +425,7 @@ def test_chat_response_shape_is_unchanged(chat_client):
 
 
 def test_chat_without_session_id_is_422(chat_client):
-    """`session_id` 是必填字段（2026-09-12 破坏性变更）。
-
-    以前不传就新建——那让「我这次是新建还是续聊」变成调用方要猜的事，
-    现在建会话只认 `POST /sessions`。
-    """
+    """session_id 必填；创建会话使用 POST /sessions，聊天不隐式创建。"""
     assert chat_client.post("/chat", json={"message": "你好"}).status_code == 422
 
 

@@ -12,11 +12,11 @@
 设计约束：
 - 每个工具返回 str，docstring 写清 Args / Returns / Examples；
 - 监控工具（build_tools）是**薄接线**：查询+格式化的真正实现收编在
-  src/core/capabilities.py（无 langchain 纯函数，Agent 工具与关键词兜底共用同一套）；
+  src/core/capabilities.py（不依赖 LangChain，Agent 工具与关键词兜底共用查询/格式化逻辑）；
   只读诊断工具（build_diag_tools）内部捕获 DiagnosticError 返回友好提示——诊断命令
   失败只是「查询失败」可读返回，不中断 Agent；
-- 写命令工具（build_agent_action_tools）捕获 AgentActionError 转可读文本；它**不会**
-  在模型调用时执行——HumanInTheLoopMiddleware 先中断，人工批准后才真正执行；
+- 写命令工具捕获 AgentActionError，并单独保留 AgentActionOutcomeUnknown 的未知语义；
+  Agent 编排由 HumanInTheLoopMiddleware 先中断，人工批准后才运行工具；
 - 顶层 import langchain 无碍：本模块只会在构建 Agent（assistant 工厂）时被导入。
 
 扩展方式：新指标加入 src/metrics/catalog.py 并配置 metrics.yaml 的 chat 范围，
@@ -181,7 +181,7 @@ def build_inspection_tools(
 def _tool_args_model(spec: CommandSpec):
     """按参数声明建 pydantic args schema（int/str + 默认值；不做取值约束）。
 
-    取值边界（正则 / min / max）只在服务端 commands.build_command 校验，这里保持薄，
+    取值边界（正则 / min / max）由服务端 common.cmddef.build_command 校验，这里保持薄，
     规避 pydantic v1/v2 Field 约束差异；无默认值 = 必填。
     """
     fields = {}

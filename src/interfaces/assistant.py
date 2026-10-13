@@ -33,8 +33,8 @@ class ApprovalCapable(Protocol):
     本就是能力探测而非必经契约。调用方用 isinstance(assistant, ApprovalCapable)
     守卫——这也是它标 runtime_checkable 的原因。
 
-    只读 Agent（无写命令目录）不实现本协议，属正常状态：
-    core/chat.py 对不支持者返回空列表 / 抛 ApprovalError。
+    结构上支持本协议不等于当前已启用写命令；目录关闭时也可返回空列表或能力不可用。
+    core/chat.py 同时检查协议支持和实际审批能力，不为查询审批触发新 Agent 构造。
     """
 
     def pending_approvals(self) -> list[PendingApproval]:
@@ -71,7 +71,7 @@ class ApprovalCancellable(Protocol):
     """可**作废**待审批项的 Agent（可选能力）。
 
     用于「会话被删除 → 该会话的未决审批一并作废」：宁可让人重新发起，也不能让一个
-    陈旧的写命令不能继续挂在队列里等待执行。
+    陈旧的写命令继续挂在队列里等待执行。
 
     **刻意另立协议而不往 `ApprovalCapable` 里加方法**：它是 runtime_checkable 的
     结构化协议，加方法会让所有既有实现（如 tests 的 FakeApprovalAssistant）**静默地
@@ -93,7 +93,7 @@ class ApprovalContextCapable(Protocol):
 
     - `/approvals` 要能**按身份隔离**：否则任何持有效密钥的人都能列出并批准**所有人**
       的待执行写命令；
-    - `approval_decisions` 表要记 `session_id`，没有它那张表根本写不进去。
+    - 持久申请/决策需关联原会话及申请人；未知关联保持为空，不从其他身份猜测。
 
     两件事要的是同一样东西：**「这条待审批是谁、在哪个会话里触发的」必须是审批记录
     自身的属性**，而不能靠外部关联去反推（反推不出时只剩 fail-open 或 fail-closed

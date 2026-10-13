@@ -1,5 +1,0 @@
-# Linux 压测入口始终使用 LF，避免 Windows 检出后上传导致 Bash 解析失败。
-scripts/load_gen.sh text eol=lf
-scripts/load_mem.sh text eol=lf
-scripts/load_disk.sh text eol=lf
-tests/safe_stress.test.sh text eol=lf

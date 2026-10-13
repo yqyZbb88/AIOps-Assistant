@@ -53,7 +53,7 @@ _TITLE_MAX_CHARS = 40
 
 # 会话查询的公共列：待审批数与消息数**实时统计**，不落成列。
 # 存成列就得在 append_turn / update_pending / reconcile_pending 三处同步维护，
-# 批量作废时极易漂移；实时统计则不可能算错。
+# 批量作废时容易漂移；查询时统计可避免维护冗余计数。
 _SESSION_COLUMNS = """
     s.session_id, s.user, s.name, s.title, s.status, s.created_at, s.updated_at, s.host_id,
     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.session_id) AS message_count,
@@ -250,6 +250,7 @@ class SqliteSessionStore(SessionStore):
             # 也没人会因为会话消失而回头清理它；不删就留下一批 session_id 指向不存在会话的
             # 孤儿行，只能等状态日志清理按 TTL 兜底扫掉。
             conn.execute("DELETE FROM approval_decisions WHERE session_id = ?", (session_id,))
+            # 独立审批历史 approval_requests 和执行审计保留，按各自 TTL/容量清理。
             cur = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
             deleted = cur.rowcount > 0
         return deleted
@@ -370,12 +371,13 @@ class SqliteSessionStore(SessionStore):
     def reconcile_pending(self, live_approval_ids: Collection[str], *, host_id: str | None = None) -> tuple[int, int]:
         """收敛不在 live 里的 pending 轮，返回 `(作废轮数, 结果未知轮数)`。
 
-        两类的判据是「**有没有决策记录**」，不能混：没有 → 命令一定没执行（abandoned）；
-        有 → 决策提交过，命令可能已执行（unknown）。反过来标就是审计结论错误。
+        当前申请无决策则 abandoned，有决策但没有最终消息则 unknown。
+        链式前序动作可能已执行，不能用当前申请作废推断整个会话从未写入。
+        host_id 非空时仅收敛该主机；启动恢复时才以全局空 live 集合收敛。
         """
         live = tuple(str(x) for x in live_approval_ids)
         if not live:
-            # 新进程里任何 pending 行必然是孤儿（审批存在进程内存，不可能跨重启存活）
+            # live 为空时将当前查询范围的 pending 视为失效；后续仍施加 host_id 过滤。
             cond, cond_params = "status = ?", (STATUS_PENDING_APPROVAL,)
         else:
             placeholders = ",".join("?" for _ in live)
@@ -410,7 +412,7 @@ class SqliteSessionStore(SessionStore):
                     f"UPDATE messages SET status = ? WHERE {cond} AND approval_id IN ({ph})",
                     (STATUS_UNKNOWN, *cond_params, *risky),
                 )
-            # ② 剩下的 → abandoned（决策从没提交过，命令一定没执行）
+            # ② 当前申请没有决策则 abandoned；不据此推断链式前序动作的结果。
             abandoned_turns = conn.execute(
                 f"SELECT COUNT(*) FROM messages WHERE {cond} AND role = ?",
                 (*cond_params, ROLE_ASSISTANT),
@@ -486,8 +488,7 @@ class SqliteSessionStore(SessionStore):
             if ids:
                 marks = ",".join("?" for _ in ids)
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({marks})", ids)
-                # 决策记录跟着会话一起走：它只为「重启后判 unknown」而存在，
-                # 会话没了就没人再读它。
+                # 旧决策保持随会话清理的兼容路径；独立 approval_requests 留存追溯。
                 #
                 # 这是**快路径**，不是唯一路径：只按 session_id 删，扫不到 session_id 为空
                 # 的行与「会话已被 DELETE」的孤儿行；而且本方法只在**新建会话**时被节流触发，
@@ -683,7 +684,7 @@ class InMemorySessionStore(SessionStore):
                     continue
                 if msg.approval_id is not None and msg.approval_id in live:
                     continue
-                # 有决策记录 = 决策提交过、命令可能已执行 → unknown；否则一定没执行
+                # 有决策但结果未确认则 unknown；无决策仅表示当前申请作废。
                 status = (
                     STATUS_UNKNOWN
                     if msg.approval_id in self._decisions

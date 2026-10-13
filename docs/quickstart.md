@@ -205,7 +205,8 @@ docker compose run --rm --no-deps init show-grafana-password
 ```
 
 它和 Assistant Token 是两套密码。密码无效时看 [Grafana 登录排查](deployment.md#grafana-登录失败与旧数据卷)。
-Grafana 没有预置仪表盘；看项目指标可以直接用 Assistant。
+Grafana 预置“Assistant 主机指标 · 统一口径”仪表盘，选择实际的 job 和 instance 后可查看
+17 项指标。它使用 Grafana 自己的权限，Assistant 的主机授权不会自动同步过去。
 远程访问 Grafana 时，在个人电脑另开终端执行：
 
 ```bash
