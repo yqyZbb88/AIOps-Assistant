@@ -1,5 +1,42 @@
 # HTTP API 参考与错误语义
 
+## 当前身份、删除和审批历史
+
+| 方法与路径 | 请求与响应 | 权限及失败语义 |
+|---|---|---|
+| `GET /identity` | 返回 `identity`、`roles`（user/admin/approver/webhook）、`approval_mode`；禁止缓存 | 当前 Bearer 的服务端鉴权结果；不返回 Token，不根据 Token 内容解析角色 |
+| `DELETE /admin/hosts/{host_id}` | JSON：`revision`、`stop_collection`（默认 false）；返回新 revision、backup_id、message | 管理员；用户主机授权、规则、pending/running/unknown 执行或未决审批导致 409；只删登记不停止采集 |
+| `DELETE /admin/targets` | JSON：`revision`、`address` | 管理员；只能删除 managed 模式指定 file_sd 中的托管目标；仍有登记引用则 409，外部目标 422 |
+| `GET /admin/hosts/options?discover=false` | 同现有选项响应，新增 `managed_targets`，不请求 Prometheus | 管理员；发现服务不可用时仍可查看并删除登记；不能据此登记外部新目标 |
+| `GET /approvals/history` | `host_id`、`status` 可选；`limit=25`（1–100）、`offset=0`（0–100000） | 按当前主机权限与审批模式过滤后分页；管理员不自动成为审批人；存储不可用返回 storage=off，查询失败 503 |
+| `GET /approvals/{approval_id}/progress` | 返回审批 `status`、实际审批人/时间及独立 `executions` | 与未决审批相同的角色及双方主机权限；未知/越权 404，存储不可用 503；禁止缓存，不触发命令或模型 |
+
+删除登记与停止采集可以在一个请求中明确选择 `stop_collection=true`。仅当主机对应
+项目托管目标才接受；无效请求、revision 冲突或校验失败不写文件。写入普通异常会恢复原文件，
+运行快照只在全部写入成功后切换。多文件替换不保证断电原子性；沿用单 worker 约束。
+
+审批历史返回 `{storage, items, total, limit, offset}`。每条包含 `approval_id`、`session_id`、
+`requester`、`decided_by`、`host_id`、`target_summary`、`actions`、`created_at`、`decided_at`、
+`status`、`executions`。状态筛选接受 approve/reject/expired/cancelled/evicted/abandoned/unknown。
+`executions` 独立列出每个动作的执行 ID、状态及执行时间，不能把 approve 当 succeeded。
+无可证明的信息返回空串/空数组，页面显示未知。主机归属未知的旧记录无法安全授权，不列出。
+管理员可查询已删除登记主机的已知历史，但仍须满足审批模式；普通用户撤权后不能查询。
+
+即时/趋势指标响应新增 `query_semantics`，包括单位、计算窗口及求值时间含义。
+所有表达式及入口差异见[查询对照表](metric-queries.md)。
+
+审批 POST 保持同步续跑契约。决策提交后、POST 尚在等待 SSH 或 AI 时，进度 GET 可以读取
+已提交的 SQLite 决策和执行状态。该接口不把 approve 解释为执行成功，也不证明 AI 回复已完成；
+前端只在原 POST 返回后标明 AI 反馈已返回。存储关闭时无法提前核实进度，应等待当前请求，
+不得将轮询失败或浏览器超时当作命令未执行并自动重试。
+
+Agent 与规则执行使用同一退出状态口径：服务端退出码 0 为 succeeded，真实非零为
+failed；派发后断线、超时或服务端未提供退出状态（Paramiko `-1`）为 unknown。
+Agent 的非零失败 `detail` 保存 `exit_code=数值`，即使没有输出也有明确说明；规则
+失败详情保留 `rc=数值`。执行接口没有新增独立退出码字段或数据库版本迁移。
+审批 POST 的 completed 表示续跑回合结束，不等于其中动作 succeeded；应查独立执行行。
+旧 failed/空 detail 行没有保存退出码，不能据此推断成功、失败原因或自动回写。
+
 本文按当前 `0.6.2` 代码描述公开接口及 `/console` 使用的契约。精确字段、枚举和交互式
 schema 以运行中服务的 `/openapi.json`、`/docs` 为准；这两个文档路由当前公开，部署到
 不可信网络时需在反向代理限制。本文示例中的 `node-a`、Token 和告警值是占位符，

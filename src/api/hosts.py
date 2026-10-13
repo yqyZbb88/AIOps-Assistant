@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from src.api.access import can_access, require_host, recent_records
 from src.interfaces.monitor import MetricNotApplicable, MonitorError
+from src.metrics.catalog import query_semantics
 
 router = APIRouter()
 
@@ -84,6 +85,7 @@ def get_host_metric(host_id: str, metric_id: str, request: Request) -> dict[str,
         "host_id": host.host_id,
         "metric_id": metric_id,
         "state": "ok" if samples else "no_data",
+        "query_semantics": query_semantics(metric_id),
         "samples": [
             {
                 "labels": dict(sample.labels),
@@ -123,4 +125,5 @@ def get_host_metric_trend(
         "metric_id": metric_id,
         "state": trend.get("state", "ok" if trend.get("points") else "no_data"),
         "trend": trend,
+        "query_semantics": {**query_semantics(metric_id), "trend_minutes": minutes},
     }

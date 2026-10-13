@@ -351,6 +351,12 @@ class Container:
         self._execution_store = SqliteActionExecutionStore(db)
         return self._execution_store
 
+    def approval_history(self):
+        """审批历史只读取持久化事实；存储关闭/失败时不伪造历史。"""
+        from src.storage.approval_history import ApprovalHistory
+        db = self._database()
+        return ApprovalHistory(db) if db is not None else None
+
     def inspection_scheduler(self):
         """构造并缓存单进程巡检调度器。"""
         if self._inspection_scheduler is None:

@@ -95,7 +95,8 @@ class SqliteActionExecutionStore(ActionExecutionStore):
             ).rowcount
             if not changed:
                 return None
-            execution = self.create(_connection=conn, **create_kwargs)
+            # alert_key 已由函数签名消费，必须显式传给审计行，不能在调用方重复展开。
+            execution = self.create(_connection=conn, alert_key=alert_key, **create_kwargs)
             if execution is None:
                 conn.execute(
                     "DELETE FROM remediation_claims WHERE alert_key = ? AND action = ? "

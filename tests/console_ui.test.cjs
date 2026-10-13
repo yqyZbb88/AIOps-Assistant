@@ -91,6 +91,7 @@ function setup() {
     .replace(/\ninitialize\(\);\s*$/, "\n");
   const context = {document, getComputedStyle: () => ({marginTop: "16px"}), localStorage: {getItem: () => null}, console};
   vm.runInNewContext(source + "\nglobalThis.uiTest = {renderOverview, renderOverviewContext, renderHostDetail, selectHost, renderAdminHostAccess, renderAdminSecurity, loadHosts, renderCredentials, changeCredential, createTrendPlot, trendStep, clearCredentialInputs, loadFavoriteTrends, createSummarySvg, trendCard, appendSnapshot, appendRecordDetail, activateAdminSection, activateAdminCatalog, bindAdminTablist, clearAdminView, formatValue, loadHostStatus, loadConversation, loadRecords, loadSessions, request, bindEvents, prepareDiagnostic, sendChat, refreshAll, loadSelectedTrend, loadAdminAccess, reloadAdminConfig, saveAdminConfig, renderAdminStatus, markAdminDirty, finishPendingTurn, METRIC_MAP, state};", context);
+  vm.runInNewContext("Object.assign(uiTest, {decideApproval, renderApprovalProgress})", context);
   return {ui: context.uiTest, tabs, panes, catalogTabs, catalogPanes, elements, context};
 }
 
@@ -101,6 +102,83 @@ function setupOverview() {
   }
   return env;
 }
+
+function setupApprovalProgress() {
+  const env = setup(), {context, ui, elements} = env;
+  elements.set("approval-progress", new Element("section"));
+  const timers = new Map(); let timerId = 0;
+  context.setTimeout = callback => { timers.set(++timerId, callback); return timerId; };
+  context.clearTimeout = id => timers.delete(id);
+  context.setBusy = (key, active) => active ? ui.state.busy.add(key) : ui.state.busy.delete(key);
+  context.loadApprovals = context.loadSessions = context.loadRecords = async () => {};
+  context.renderOverview = context.showNotice = () => {};
+  return {...env, timers};
+}
+
+test("approval progress confirms decision and execution before slow AI reply; submits only once", async () => {
+  const {context, ui, elements, timers} = setupApprovalProgress();
+  let finish, posts = 0, execution = "running";
+  context.request = async (path, options) => {
+    if (options.method === "POST") { posts++; assert.equal(options.timeout, 120000); return new Promise(resolve => { finish = resolve; }); }
+    return {status: "approve", executions: [{action_name: "restart", status: execution}]};
+  };
+  const pending = ui.decideApproval("ap", "approve", "");
+  await new Promise(setImmediate);
+  assert.match(contents(elements.get("approval-progress")), /审批已通过/);
+  assert.match(contents(elements.get("approval-progress")), /执行中/);
+  assert.doesNotMatch(contents(elements.get("approval-progress")), /AI 反馈已返回|执行成功/);
+  await ui.decideApproval("ap", "approve", ""); assert.equal(posts, 1);
+  execution = "succeeded";
+  const [id, callback] = [...timers][0]; timers.delete(id); await callback();
+  assert.match(contents(elements.get("approval-progress")), /执行成功/);
+  assert.match(contents(elements.get("approval-progress")), /等待 AI 后续反馈/);
+  finish({decision: "approve", reply: "completed", status: "completed"});
+  await pending;
+  assert.match(contents(elements.get("approval-progress")), /AI 反馈已返回/);
+  assert.equal(ui.state.busy.has("approval"), false); assert.equal(timers.size, 0);
+});
+
+test("approval timeout preserves confirmed failure and never retries POST", async () => {
+  const {context, ui, elements, timers} = setupApprovalProgress();
+  let fail, posts = 0;
+  context.request = async (_, options) => {
+    if (options.method === "POST") { posts++; return new Promise((resolve, reject) => { fail = reject; }); }
+    return {status: "approve", executions: [{action_name: "restart", status: "failed"}]};
+  };
+  const pending = ui.decideApproval("ap", "approve", ""); await new Promise(setImmediate);
+  fail(new Error("请求超时")); await pending;
+  const text = contents(elements.get("approval-progress"));
+  assert.match(text, /审批已通过/); assert.match(text, /执行失败/); assert.match(text, /不要重复提交/);
+  assert.doesNotMatch(text, /AI 反馈已返回|执行成功/);
+  assert.equal(posts, 1); assert.equal(timers.size, 0);
+});
+
+test("missing progress cannot fabricate approval acceptance; old identity results stay discarded", async () => {
+  const {context, ui, elements, timers} = setupApprovalProgress();
+  let finish;
+  context.request = async (_, options) => {
+    if (options.method === "POST") return new Promise(resolve => { finish = resolve; });
+    throw new Error("503 unavailable");
+  };
+  const pending = ui.decideApproval("ap", "approve", ""); await new Promise(setImmediate);
+  assert.match(contents(elements.get("approval-progress")), /等待服务端确认/);
+  assert.doesNotMatch(contents(elements.get("approval-progress")), /审批已通过/);
+  ui.state.connectionEpoch++; ui.state.approvalProgress = null; ui.renderApprovalProgress();
+  finish({decision: "approve", reply: "old reply"}); await pending;
+  assert.equal(elements.get("approval-progress").hidden, true); assert.equal(timers.size, 0);
+});
+
+test("completed approval with failed list refresh keeps execution result and AI reply", async () => {
+  const {context, ui, elements} = setupApprovalProgress();
+  context.request = async (_, options) => options.method === "POST"
+    ? {decision: "approve", reply: "reply"} : {status: "approve", executions: [{action_name: "restart", status: "unknown"}]};
+  context.loadApprovals = async () => { throw new Error("refresh failed"); };
+  await ui.decideApproval("ap", "approve", "");
+  assert.match(contents(elements.get("approval-progress")), /执行结果未知/);
+  assert.match(contents(elements.get("approval-progress")), /AI 反馈已返回/);
+  assert.match(contents(elements.get("approval-progress")), /列表刷新失败/);
+  assert.equal(ui.state.approvalProgress.error, undefined);
+});
 
 function contents(element) {
   return all(element, () => true).map((item) => item.textContent).join(" ");
@@ -643,7 +721,7 @@ test("refresh blocked by an old token resumes for the current token", async () =
   context.sessionStorage = {getItem: () => token};
   context.testHealth = () => ++healthCalls === 1 ? new Promise((done) => { finishHealth = done; }) : Promise.resolve();
   context.testHosts = async () => { loadedTokens.push(token); };
-  vm.runInNewContext("loadHealth = testHealth; loadHosts = testHosts; loadAllHostStatuses = async () => {}; loadSessions = async () => {}; loadApprovals = async () => {}; loadRecords = async () => {}; loadAdminAccess = async () => {}; updateControls = () => {}; updateConnection = () => {}; renderOverview = () => {};", context);
+  vm.runInNewContext("loadHealth = testHealth; loadIdentity = async () => {}; loadHosts = testHosts; loadAllHostStatuses = async () => {}; loadSessions = async () => {}; loadApprovals = async () => {}; loadRecords = async () => {}; loadAdminAccess = async () => {}; updateControls = () => {}; updateConnection = () => {}; renderOverview = () => {};", context);
   const pending = ui.refreshAll(false);
   token = "test-token-b";
   await ui.refreshAll(false);
@@ -820,6 +898,58 @@ test("existing password credential can preserve blank password and known hosts",
   assert.equal(form.saves.length, 1);
   assert.equal(Object.hasOwn(form.saves[0].data, "known_hosts"), false);
   assert.equal(Object.hasOwn(form.saves[0].data, "password"), false);
+});
+
+test("SSH edit activates the visible editor, preserves revision and submits new metadata", async () => {
+  const form = sshCredentialForm([{id: "local", username: "old-user", method: "password", managed: true}]);
+  const edit = all(form.elements.get("admin-ssh"), el => el.tagName === "button" && el.textContent === "编辑")[0];
+  await edit.listeners.click();
+  assert.equal(form.ui.state.sshEditing, true);
+  assert.equal(form.id.value, "local"); assert.equal(form.id.readOnly, true);
+  assert.equal(form.username.value, "old-user"); assert.equal(form.username.focused, true);
+  assert.equal(form.password.value, ""); assert.equal(form.known.value, "");
+  form.username.value = "new-user";
+  await form.save.listeners.click();
+  assert.equal(form.saves[0].data.username, "new-user");
+  assert.equal(form.saves[0].data.password, undefined);
+  assert.equal(form.saves[0].data.known_hosts, undefined);
+  form.password.value = "temporary";
+  const original = form.context.document.querySelectorAll;
+  form.context.document.querySelectorAll = selector => selector === "[data-credential-sensitive]" ? [form.password, form.known, form.key] : original(selector);
+  await all(form.elements.get("admin-ssh"), el => el.tagName === "button" && el.textContent === "取消编辑 / 新建")[0].listeners.click();
+  assert.equal(form.password.value, ""); assert.equal(form.id.readOnly, false);
+  assert.equal(form.ui.state.sshEditing, false);
+});
+
+test("identity display uses server name and roles, never the stored token", () => {
+  const {ui, context, elements} = setup();
+  elements.set("identity-name", new Element("strong")); elements.set("identity-roles", new Element("span"));
+  ui.state.identity = {identity: "审核员", roles: ["user", "approver"]};
+  vm.runInNewContext("renderIdentity()", context);
+  assert.equal(elements.get("identity-name").textContent, "审核员");
+  assert.equal(elements.get("identity-roles").textContent, "用户 · 审批人");
+  ui.state.identity = null; vm.runInNewContext("renderIdentity()", context);
+  assert.equal(elements.get("identity-name").textContent, "未连接");
+});
+
+test("SSH automatic reload cannot replace the DOM or advance an edit revision", async () => {
+  const form = sshCredentialForm([{id: "local", username: "u", method: "password", managed: true}]);
+  form.ui.state.sshEditing = true;
+  form.ui.state.adminCredentials.revision = "a".repeat(64);
+  form.ui.state.admin.revision = "b".repeat(64);
+  let called = false; form.context.request = async () => { called = true; };
+  await vm.runInNewContext("loadAdminCredentials()", form.context);
+  assert.equal(called, false);
+  assert.equal(form.ui.state.adminCredentials.revision, "a".repeat(64));
+});
+
+test("explicit SSH reload exits editing and recovers after a failed save", async () => {
+  const form = sshCredentialForm([{id: "local", username: "u", method: "password", managed: true}]);
+  form.ui.state.sshEditing = true; form.ui.state.adminCredentials = null;
+  let reloaded = false;
+  form.context.loadAdminCredentials = async () => { reloaded = true; };
+  await all(form.elements.get("admin-ssh"), el => el.tagName === "button" && el.textContent === "重新加载凭据状态")[0].listeners.click();
+  assert.equal(form.ui.state.sshEditing, false); assert.equal(reloaded, true);
 });
 
 test("new private key credential still requires its key file", async () => {

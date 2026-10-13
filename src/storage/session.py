@@ -367,7 +367,7 @@ class SqliteSessionStore(SessionStore):
             )
         return True
 
-    def reconcile_pending(self, live_approval_ids: Collection[str]) -> tuple[int, int]:
+    def reconcile_pending(self, live_approval_ids: Collection[str], *, host_id: str | None = None) -> tuple[int, int]:
         """收敛不在 live 里的 pending 轮，返回 `(作废轮数, 结果未知轮数)`。
 
         两类的判据是「**有没有决策记录**」，不能混：没有 → 命令一定没执行（abandoned）；
@@ -385,6 +385,9 @@ class SqliteSessionStore(SessionStore):
             )
             cond_params = (STATUS_PENDING_APPROVAL, *live)
 
+        if host_id is not None:
+            cond += " AND session_id IN (SELECT session_id FROM sessions WHERE host_id = ?)"
+            cond_params += (host_id,)
         decided = self.decided_approval_ids()
         with self._tx() as conn:
             orphans = [
@@ -416,6 +419,13 @@ class SqliteSessionStore(SessionStore):
                 f"UPDATE messages SET status = ? WHERE {cond}",
                 (STATUS_ABANDONED, *cond_params),
             )
+            live_marks = ",".join("?" for _ in live)
+            conn.execute(
+                "UPDATE approval_requests SET status = 'abandoned' WHERE status = 'pending'"
+                + (f" AND approval_id NOT IN ({live_marks})" if live else "")
+                + (" AND host_id = ?" if host_id is not None else ""),
+                (*live, host_id) if host_id is not None else live,
+            )
         return int(abandoned_turns), int(unknown_turns)
 
     def record_decision(
@@ -431,16 +441,29 @@ class SqliteSessionStore(SessionStore):
         config_fingerprint: str = "",
     ) -> None:
         """落一条审批决策记录（含决策人）。调用时机是全部要害，见 ABC 的说明。"""
-        self._execute(
-            "INSERT INTO approval_decisions "
-            "(approval_id, session_id, action, decided_at, decided_by, host_id, "
-            "target_summary, actions_json, config_fingerprint) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                approval_id, session_id, action, to_iso(self._clock()), decided_by or "",
-                host_id, target_summary, actions_json, config_fingerprint,
-            ),
-        )
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT INTO approval_decisions "
+                "(approval_id, session_id, action, decided_at, decided_by, host_id, "
+                "target_summary, actions_json, config_fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    approval_id, session_id, action, to_iso(self._clock()), decided_by or "",
+                    host_id, target_summary, actions_json, config_fingerprint,
+                ),
+            )
+            conn.execute(
+                "UPDATE approval_requests SET status = ?, decided_by = ?, decided_at = ? WHERE approval_id = ?",
+                (action, decided_by or "", to_iso(self._clock()), approval_id),
+            )
+
+    def record_request(self, record):
+        from src.storage.approval_history import ApprovalHistory
+        ApprovalHistory(self.db).record_request(record)
+
+    def terminal_request(self, approval_id, status):
+        from src.storage.approval_history import ApprovalHistory
+        ApprovalHistory(self.db).terminal(approval_id, status)
 
     def decided_approval_ids(self) -> set[str]:
         return {r["approval_id"] for r in self._query(
@@ -647,10 +670,14 @@ class InMemorySessionStore(SessionStore):
             return True
         return False
 
-    def reconcile_pending(self, live_approval_ids: Collection[str]) -> tuple[int, int]:
+    def reconcile_pending(self, live_approval_ids: Collection[str], *, host_id: str | None = None) -> tuple[int, int]:
         live = {str(x) for x in live_approval_ids}
         abandoned = unknown = 0
-        for msgs in self._messages.values():
+        for session_id, msgs in self._messages.items():
+            if host_id is not None:
+                session = self.get(session_id)
+                if session is None or session.host_id != host_id:
+                    continue
             for idx, msg in enumerate(msgs):
                 if msg.status != STATUS_PENDING_APPROVAL:
                     continue

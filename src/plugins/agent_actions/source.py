@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from src.interfaces.agent_action import AgentActionError, AgentActionSource
+from src.interfaces.agent_action import AgentActionError, AgentActionOutcomeUnknown, AgentActionSource
 from src.interfaces.host import HostSshTarget
 from src.interfaces.execution import ActionExecutionStore
 from src.interfaces.command import CommandSpec
@@ -201,7 +201,12 @@ class SshAgentActionSource(AgentActionSource):
                 action="agent_action", command=command, host=host,
                 params=supplied, started_at=started_at, error=str(exc),
             )
-            raise AgentActionError("Remote write result is unknown; verify target state before any new attempt") from exc
+            public_target = self.target_summary or self.execution_host_id or "服务端绑定目标"
+            safe_error = str(exc).replace(host, public_target)
+            raise AgentActionOutcomeUnknown(
+                f"写命令结果未知（target={public_target}）：{safe_error}；"
+                "请先核对目标状态，勿自动重试"
+            ) from exc
         except ssh_common.SshError as exc:  # paramiko 缺失 / 连接 / 认证 / 执行失败
             if execution is not None:
                 self._finish_execution(execution.execution_id, "failed", str(exc))
@@ -226,7 +231,9 @@ class SshAgentActionSource(AgentActionSource):
                        f"bytes_read={int(getattr(result, 'bytes_read', len(detail)))}"),
             )
             if execution is not None:
-                self._finish_execution(execution.execution_id, "failed", detail)
+                self._finish_execution(
+                    execution.execution_id, "failed", f"exit_code={code}；{detail or '(无输出)'}"
+                )
             public_target = self.target_summary or self.execution_host_id or "服务端绑定目标"
             raise AgentActionError(
                 f"写命令执行失败（target={public_target}，exit_code={code}）："

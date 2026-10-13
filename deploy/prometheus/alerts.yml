@@ -3,13 +3,13 @@ groups:
     rules:
       - alert: HighCPUUsage
         expr: |
-          max by (job, instance) (100 - avg by (job, instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
+          max by (job, instance) (100 - avg by (job, instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
           or on (job, instance) aiops_demo_cpu_percent > 80
         for: 30s
         labels: {severity: warning}
         annotations:
           summary: "CPU 使用率持续高于 80%"
-          description: "实例 {{ $labels.instance }} CPU 使用率过高。"
+          description: "实例 {{ $labels.instance }} CPU 使用率过高（rate 5 分钟计算窗口，持续 30 秒）。"
 
       - alert: HighMemoryUsage
         expr: |
@@ -23,16 +23,16 @@ groups:
 
       - alert: HighDiskUsage
         expr: |
-          max by (job, instance) ((1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100) > 85
-          or on (job, instance) aiops_demo_disk_percent > 85
+          max by (job, instance) ((1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100) > 80
+          or on (job, instance) aiops_demo_disk_percent > 80
         for: 30s
         labels: {severity: warning}
         annotations:
-          summary: "磁盘使用率持续高于 85%"
+          summary: "磁盘使用率持续高于 80%"
           description: "实例 {{ $labels.instance }} 磁盘使用率过高。"
 
       - alert: NodeExporterDown
-        expr: up{job="node-exporter"} == 0
+        expr: up{job=~"node|node-exporter|aiops-hosts"} == 0
         for: 30s
         labels: {severity: critical}
         annotations:

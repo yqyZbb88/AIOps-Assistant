@@ -29,9 +29,13 @@ from src.utils.freshness import freshness_note
 class AgentActionError(Exception):
     """Agent 写命令失败（未知命令 / 参数非法 / 连接与认证失败 / 远端非零退出码）。
 
-    注意语义与只读诊断相反：**远端非零退出码在这里就是失败**（写动作没做成），
+    注意语义与只读诊断相反：**远端非零退出码在这里就是失败**（仍可能有部分副作用），
     而只读诊断把非零退出码当正常返回（grep 无匹配、systemctl 查 failed 返回 3）。
     """
+
+
+class AgentActionOutcomeUnknown(AgentActionError):
+    """写命令可能已生效，但无法确认结果；调用方必须提示核对，不能自动重试。"""
 
 
 class AgentActionSource(ABC):
@@ -41,6 +45,7 @@ class AgentActionSource(ABC):
     - 成功：返回 {ok: True, host, command, exit_code, output}；
     - 未知命令 / 参数非法（含越权携带连接字段）/ 连接认证失败 / 远端非零退出码：
       一律抛 AgentActionError，调用方（工具层 / 续跑路径）捕获后转可读文本；
+    - 派发后断线、超时或缺少退出状态：抛 AgentActionOutcomeUnknown，不能推断失败；
     - params 只含语义参数，**绝不含** host/port/username/password 等连接字段。
 
     实现方必须保证：每次真实 SSH 尝试都写审计（plugins/common/audit）。

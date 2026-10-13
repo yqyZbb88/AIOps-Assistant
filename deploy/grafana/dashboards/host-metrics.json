@@ -1,0 +1,683 @@
+{
+  "uid": "aiops-host-metrics",
+  "title": "Assistant 主机指标 · 统一口径",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus"
+      },
+      {
+        "name": "job",
+        "type": "query",
+        "datasource": {
+          "uid": "${datasource}"
+        },
+        "query": "label_values(node_cpu_seconds_total, job)",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false
+      },
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": {
+          "uid": "${datasource}"
+        },
+        "query": "label_values(up{job=\"$job\"}, instance)",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CPU 使用率",
+      "description": "计算窗口：5m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 - avg by(instance)(rate(node_cpu_seconds_total{mode=\"idle\",job=\"$job\",instance=\"$instance\"}[5m])) * 100",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "每核 1 分钟负载",
+      "description": "计算窗口：1m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by(instance)(node_load1{job=\"$job\",instance=\"$instance\"}) / count by(instance)(node_cpu_seconds_total{mode=\"idle\",job=\"$job\",instance=\"$instance\"})",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CPU iowait",
+      "description": "计算窗口：5m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by(instance)(rate(node_cpu_seconds_total{mode=\"iowait\",job=\"$job\",instance=\"$instance\"}[5m])) * 100",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "内存使用率",
+      "description": "计算窗口：当前求值时刻。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(1 - node_memory_MemAvailable_bytes{job=\"$job\",instance=\"$instance\"} / node_memory_MemTotal_bytes{job=\"$job\",instance=\"$instance\"}) * 100",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "可用内存",
+      "description": "计算窗口：当前求值时刻。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_memory_MemAvailable_bytes{job=\"$job\",instance=\"$instance\"}",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Swap 使用率",
+      "description": "计算窗口：当前求值时刻。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((1 - node_memory_SwapFree_bytes{job=\"$job\",instance=\"$instance\"} / node_memory_SwapTotal_bytes{job=\"$job\",instance=\"$instance\"}) * 100 and node_memory_SwapTotal_bytes{job=\"$job\",instance=\"$instance\"} > 0) or ((node_memory_SwapTotal_bytes{job=\"$job\",instance=\"$instance\"} == 0) * 0 - 1)",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "text": "不适用（无 Swap）"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "磁盘使用率",
+      "description": "计算窗口：当前求值时刻。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 - (node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\",job=\"$job\",instance=\"$instance\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\",job=\"$job\",instance=\"$instance\"}) * 100",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "磁盘读取速率",
+      "description": "计算窗口：5m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(instance, device)(rate(node_disk_read_bytes_total{job=\"$job\",instance=\"$instance\"}[5m])) / 1048576",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MiBs",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "磁盘写入速率",
+      "description": "计算窗口：5m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(instance, device)(rate(node_disk_written_bytes_total{job=\"$job\",instance=\"$instance\"}[5m])) / 1048576",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MiBs",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "磁盘 IO 利用率",
+      "description": "计算窗口：5m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(instance, device)(rate(node_disk_io_time_seconds_total{job=\"$job\",instance=\"$instance\"}[5m])) * 100",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "网络接收速率",
+      "description": "计算窗口：5m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(instance, device)(rate(node_network_receive_bytes_total{device!=\"lo\",job=\"$job\",instance=\"$instance\"}[5m])) / 1048576",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MiBs",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "网络发送速率",
+      "description": "计算窗口：5m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(instance, device)(rate(node_network_transmit_bytes_total{device!=\"lo\",job=\"$job\",instance=\"$instance\"}[5m])) / 1048576",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MiBs",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "网络接收错误率",
+      "description": "计算窗口：5m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(instance, device)(rate(node_network_receive_errs_total{device!=\"lo\",job=\"$job\",instance=\"$instance\"}[5m]))",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "网络发送错误率",
+      "description": "计算窗口：5m。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 48,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(instance, device)(rate(node_network_transmit_errs_total{device!=\"lo\",job=\"$job\",instance=\"$instance\"}[5m]))",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "运行进程数",
+      "description": "计算窗口：当前求值时刻。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(instance)(node_procs_running{job=\"$job\",instance=\"$instance\"})",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "系统运行时长",
+      "description": "计算窗口：当前求值时刻。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - node_boot_time_seconds{job=\"$job\",instance=\"$instance\"}",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "活动告警数",
+      "description": "计算窗口：当前求值时刻。趋势范围由右上角选择；时间戳为求值时间。Swap=-1 表示不适用，空序列为无数据。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_replace((sum(ALERTS{alertstate=\"firing\",job=\"$job\",instance=\"$instance\"}) or (vector(0) and on() (max(up{job=\"$job\",instance=\"$instance\"}) == 1))), \"state\", \"firing\", \"\", \"\") or label_replace((sum(ALERTS{alertstate=\"pending\",job=\"$job\",instance=\"$instance\"}) or (vector(0) and on() (max(up{job=\"$job\",instance=\"$instance\"}) == 1))), \"state\", \"pending\", \"\", \"\")",
+          "legendFormat": "{{instance}} {{mountpoint}} {{device}} {{state}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}

@@ -367,6 +367,7 @@ class OpsAssistant:
         record = self.approvals.remove(approval_id)
         if record is None:
             return False
+        self._terminal_request(approval_id, "cancelled")
         self._delete_thread(record.get("thread_id"))
         logger.warning("待审批项被作废 id=%s（其命令不会执行）", approval_id)
         return True
@@ -376,6 +377,7 @@ class OpsAssistant:
         """当前待人工决策的写命令调用（新的在前）。无写命令能力时恒为空。"""
         if self.approvals is None:
             return []
+        self._purge_expired()
         return [
             PendingApproval(
                 approval_id=rec["approval_id"],
@@ -478,6 +480,7 @@ class OpsAssistant:
         except ApprovalUnavailableError:
             evicted = self.approvals.add(record)
             if evicted is not None and evicted.get("approval_id") != approval_id:
+                self._terminal_request(evicted.get("approval_id"), "evicted")
                 self._delete_thread(evicted.get("thread_id"))
                 self._reconcile_ledger()
             logger.warning(
@@ -566,8 +569,7 @@ class OpsAssistant:
         # add() 的返回值是**被容量上限淘汰掉的那条**（没淘汰则为 None）。
         # 它再也不可能被续跑了，必须连同其 checkpoint 线程一起清掉——否则 InMemorySaver
         # 会随中断次数无限增长（线程泄漏）。这个返回值就是为调用方清理而设计的。
-        evicted = self.approvals.add(
-            {
+        record = {
                 "approval_id": approval_id,
                 "thread_id": thread_id,
                 "actions": actions,
@@ -579,8 +581,11 @@ class OpsAssistant:
                 "target_summary": self.target_summary,
                 "config_fingerprint": self.config_fingerprint,
             }
-        )
+        if self.ledger is not None and hasattr(self.ledger, "record_request"):
+            self.ledger.record_request(record)
+        evicted = self.approvals.add(record)
         if evicted is not None:
+            self._terminal_request(evicted.get("approval_id"), "evicted")
             self._delete_thread(evicted.get("thread_id"))
             logger.warning(
                 "待审批队列已满，淘汰最旧一条 id=%s（其命令将永不执行）",
@@ -656,8 +661,13 @@ class OpsAssistant:
         if not purged:
             return
         for rec in purged:
+            self._terminal_request(rec.get("approval_id"), "expired")
             self._delete_thread(rec.get("thread_id"))
         self._reconcile_ledger()
+
+    def _terminal_request(self, approval_id, status):
+        if self.ledger is not None and hasattr(self.ledger, "terminal_request"):
+            self.ledger.terminal_request(approval_id, status)
 
     def _reconcile_ledger(self) -> None:
         """在审批过期或容量淘汰后收敛会话，避免留下不可处理的 pending。"""
@@ -665,7 +675,12 @@ class OpsAssistant:
             return
         try:
             live = {r["approval_id"] for r in self.approvals.list()}
-            self.ledger.reconcile_pending(live)
+            method = self.ledger.reconcile_pending
+            # 生产账本共享给多个主机；内部旧注入实现保留兼容调用。
+            if self.host_id and "host_id" in inspect.signature(method).parameters:
+                method(live, host_id=self.host_id)
+            else:
+                method(live)
         except Exception as exc:  # noqa: BLE001 - 收敛失败不该影响本轮对话
             logger.warning("待审批项变化后对账失败（不影响本轮）: %s", exc)
 

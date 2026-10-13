@@ -197,6 +197,15 @@ def test_registered_ssh_test_only_connects_and_invalidates_prior_tickets(tmp_pat
         assert bound.status_code == 200
         assert client.post("/admin/credentials/hosts/node-a/ssh/test", headers=_auth("admin-token")).status_code == 200
         assert calls[-1]["username"] == "u" and calls[-1]["password"] == "page-pass"
+        # 编辑已关联的同一凭据，而非只验证新建/关联；下一次检查必须使用新快照。
+        old_host = manager.runtime.current.container.hosts().get("node-a")
+        service._verified["before-edit"] = ("old", 99999999)
+        edited = update(client, "ssh/new-profile", bound.json()["revision"],
+                        {"username": "updated-user", "method": "password", "password": "rotated-page-pass"})
+        assert edited.status_code == 200 and not service._verified
+        assert client.post("/admin/credentials/hosts/node-a/ssh/test", headers=_auth("admin-token")).status_code == 200
+        assert calls[-1]["username"] == "updated-user" and calls[-1]["password"] == "rotated-page-pass"
+        assert old_host.ssh.username == "u"  # 旧请求快照不可被原地修改
 
 
 

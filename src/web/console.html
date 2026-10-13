@@ -34,6 +34,7 @@
       <header class="topbar">
         <div><p id="view-eyebrow" class="sr-only">OPERATIONS OVERVIEW</p><h1 id="view-title">运行总览</h1></div>
         <div class="topbar-actions">
+          <div id="current-identity" class="current-identity" role="status" aria-live="polite"><strong id="identity-name">未连接</strong><span id="identity-roles">身份尚未验证</span></div>
           <label class="host-picker" for="global-host"><span>当前主机</span><select id="global-host" disabled><option value="">连接后选择</option></select></label>
           <button id="refresh" class="icon-button" type="button" aria-label="刷新当前数据" title="刷新当前数据"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5 M20 12a8 8 0 1 0-2 5 M20 12a8 8 0 0 0-2-5"/></svg></button>
           <button id="open-auth" class="auth-button" type="button"><span id="auth-state">连接</span></button>
@@ -133,7 +134,19 @@
 
         <section id="view-approvals" class="view" data-view-panel="approvals" hidden>
           <div class="section-intro"><div><p>确认目标、动作和参数后再决策。批准后命令只会发往冻结的单一主机。</p></div></div>
+          <section id="approval-progress" class="panel approval-progress" role="status" aria-live="polite" aria-atomic="true" hidden></section>
           <div id="approval-list" class="approval-grid empty-state">连接后加载待审批项</div>
+          <section class="panel approval-history-panel" aria-labelledby="approval-history-title">
+            <div class="panel-head"><h2 id="approval-history-title">审批历史</h2></div>
+            <p class="admin-help">审批通过只代表授权；执行结果单独列示。未知信息不会推测补全。</p>
+            <div class="filter-bar">
+              <label>目标主机<select id="approval-history-host"><option value="">全部授权主机</option></select></label>
+              <label>审批结果<select id="approval-history-status"><option value="">全部结果</option><option value="approve">通过</option><option value="reject">拒绝</option><option value="expired">过期</option><option value="cancelled">撤销</option><option value="evicted">队列淘汰</option><option value="abandoned">已作废（原因未知）</option><option value="unknown">未知</option></select></label>
+              <button id="approval-history-refresh" class="secondary" type="button">刷新历史</button>
+            </div>
+            <div id="approval-history-list" class="panel-body" aria-live="polite">连接后加载审批历史</div>
+            <div class="approval-history-pagination"><button id="approval-history-prev" class="secondary" type="button" disabled>上一页</button><span id="approval-history-page"></span><button id="approval-history-next" class="secondary" type="button" disabled>下一页</button></div>
+          </section>
         </section>
 
         <section id="view-records" class="view" data-view-panel="records" hidden>

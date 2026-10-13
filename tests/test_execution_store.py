@@ -66,6 +66,7 @@ def test_rule_claim_and_execution_roll_back_together(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "create", original_create)
     created = store.claim_rule(**kwargs)
     assert created is not None
+    assert created.alert_key == "alert-1"
     assert store.claim_rule(**kwargs) is None
     assert len(db.query("SELECT * FROM remediation_claims")) == 1
     assert len(db.query("SELECT * FROM action_executions")) == 1

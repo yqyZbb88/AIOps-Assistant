@@ -58,7 +58,8 @@ def test_context_trend_error_degrades_not_raises():
 
     ctx = build_alert_context(make_alert("A"), BoomTrend())
     assert "告警名称：A" in ctx  # 告警详情仍在
-    assert "暂无趋势数据" in ctx  # 趋势降级
+    assert "查询失败" in ctx  # 失败占位与成功查询但无数据区分
+    assert "暂无趋势数据" not in ctx
 
 
 def test_context_includes_optional_annotations():

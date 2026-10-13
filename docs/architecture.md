@@ -1,5 +1,24 @@
 # 架构与实现详解
 
+当前身份由独立受保护的 `/identity` 投影鉴权结果，前端以连接 epoch 丢弃旧请求。
+审批 POST 仍同步执行，GET progress 只读已提交的决策和执行行，不调用 Agent 队列或外部服务，
+因此可以在 SSH/AI 等待期间并发查询。前端依据持久事实推进阶段，原 POST 返回才确认 AI 反馈返回。
+规则原子抢占中的 alert_key 由唯一关键字传入，存储层将它同步写入 action_executions，保持两行事务一致。
+`HostOnboarding.remove` 复用 AdminConfigManager 的锁、revision、候选校验、备份和
+RuntimeManager 应用屏障；在写盘前检查 ACL、规则、未完成执行，再按明确选择修改 hosts/file_sd。
+外部 Prometheus 无写入口，删除不会调用会话/告警/审批/执行 Store 的删除方法。
+
+schema 8 的 `approval_requests` 冻结新申请信息，人工决策与旧 `approval_decisions` 同事务
+更新，执行状态仍来自 `action_executions`。`ApprovalHistory` 对旧决策/作废消息作只读投影，
+API 先按当前角色和主机范围过滤再分页。历史表不承载 checkpoint，不改变重启后未决申请
+不能续跑的约束；删除会话不删新冻结历史，常规 TTL/容量仍有效。
+运行期过期/队列淘汰仅按该 Agent 的 host_id 对账；启动恢复才全局收敛，避免单台主机
+的队列误作废其它主机的待审批项。
+
+指标代码目录仍是唯一 PromQL 来源，`scripts.metric_contract` 从目录生成查询对照表和
+Grafana 仪表盘；测试比较生成表达式并用隔离 promtool 求值。Grafana 独立鉴权，不能将
+Assistant 的主机 ACL 当成 Grafana datasource 访问控制。
+
 本文独立保留整体设计、调用链、状态机与设计依据，供接手和源码维护使用。描述当前实现，
 不将规划视为能力。操作、完整字段分别维护在[部署与升级](deployment.md)、
 [配置指南](configuration.md)和 [API 参考](api.md)。
@@ -200,6 +219,9 @@ flowchart LR
 审批决策回答“谁决定”，action_executions 回答“动作执行到何阶段”，幂等记录回答
 “是否已抢占”。SSH 尝试派发后断线/超时为 unknown，不自动重试；最终状态保存失败
 也可能留下 running，需要核对远端。
+服务端没有返回退出状态时，Paramiko 的 `-1` 同样归为 unknown，不作为普通失败码。
+真实退出码 0 才记录 succeeded；非零记录 failed，但不能据此认定目标没有发生改变。
+Agent 工具对未知结果使用独立异常和文案，避免在送给模型时被改称“执行失败”。
 
 重启时无决策的 pending 收敛为 abandoned，有决策但不能确认结果收敛为 unknown，
 不自动补执行。链式前序动作可能已完成，abandoned 不代表整段会话从未写入。幂等有 TTL，
@@ -213,6 +235,14 @@ flowchart LR
 模板属于可信管理员配置。字符串先 re.fullmatch 再 shlex.quote，整数转换后按上下界收敛；sudo
 通过受控 shell 执行。公共 SSH 执行函数不识别业务白名单，调用方先验证目录、能力及
 审批。诊断只读也依赖管理员提供真正只读模板。
+sudo 用 `sh -c` 启动固定加载器，将已授权脚本原文送入 SSH stdin 并关闭写方向。
+加载器先完整读取并检查读取状态，再清理内部变量、在同一 POSIX sh 中解析脚本；业务命令
+不会抢读尚未解析的模板。直接 `sh -s` 的长模板存在这种 stdin 竞争，不能作为最终实现。
+固定加载器的 eval 仅解析经过目录/参数授权的完整脚本，与原 sh -c 的模板解析边界一致，
+不接受模型自由命令。继续排空 stdout/stderr 并读取退出状态。
+旧 `sudo sh -c <脚本>` 会把模板放进包装进程 argv，使 `pkill -f` 连同 sudo/shell 一起
+匹配并终止，造成目标已改变但执行通道异常。非 sudo 路径保持原执行方式；无匹配等真实
+非零状态不被转换为成功。退出码只能证明进程如何结束，不能证明所有业务后置条件。
 
 超时分别作用于 TCP、banner、认证、通道及输出，不是业务总时限。stdout/stderr 共用
 原始读取字节预算，解码后各自按字符上限截断，并非合计字符上限。一旦尝试派发，

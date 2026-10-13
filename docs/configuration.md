@@ -566,6 +566,20 @@ commands:
 
 审批段只接受 `timeout_seconds` 和 `max_pending`，没有关闭审批的开关。命令 key 不能与聊天指标工具或 SSH 诊断工具重名。
 
+规则动作与 Agent 写命令共用 SSH 内核。`sudo: true` 使用 `sudo sh -c` 执行固定加载器，
+已授权模板经标准输入完整接收，读取成功后才解析执行；模板不出现在 sudo/shell 的命令行
+参数中，避免 `pkill -f` 误杀执行包装。加载器清理内部变量，业务命令的原始 stdin 已为 EOF，
+不会像直接 `sh -s` 那样吞掉长模板的后续内容；读取失败不执行部分脚本。
+模板应使用非交互式 POSIX shell 语法；业务输入通过管道、here-doc、文件或显式重定向提供。
+需要 Bash 语法时显式调用 Bash；需要 TTY、密码交互或长期驻留的命令不在此同步执行契约内。
+仅允许特定 sudo 参数的现场策略需核对固定加载器是否获准，本项目不修改 sudoers 或扩大
+提权授权。`sudo: false` 保留原执行方式。
+
+`pkill -9 -f "load_gen.sh"` 的退出码 0 表示至少成功发送了一次信号，不证明整个业务
+已恢复；退出码 1 表示未匹配进程或没有进程可发送信号，不自动转换为成功。模板也可用
+`'[l]oad_gen.sh'` 避免匹配带有搜索文本的包装命令，但应按实际脚本路径收窄匹配范围，
+不能把 kill 的退出码和业务恢复混为一谈。参考 [procps 手册](https://man7.org/linux/man-pages/man1/pgrep.1.html)。
+
 命令目录只定义命令和执行策略。会话按 `host_id` 使用已登记主机的
 SSH 目标，并要求该命令出现在主机的 `allow.agent_actions`；审批冻结目标摘要、动作快照和
 配置指纹，批准时再次复核，配置漂移会拒绝旧申请。
@@ -771,6 +785,11 @@ Prometheus 容器里的 `localhost:9100` 指向该容器自身，远程 Exporter
 
 ## 主机告警 PromQL 编写约束
 
+全部 17 项指标及各入口的表达式、单位、计算窗口、趋势范围和告警持续时间见
+[查询对照表](metric-queries.md)。即时/趋势 CPU 和其它速率指标统一使用 `rate[5m]`，
+默认 CPU/内存/磁盘 Prometheus 告警阈值为 80/85/80、持续 30 秒。修改 `metrics.yaml`
+阈值不会自动同步静态 Prometheus 规则；外部 Prometheus 由其管理员维护。
+
 活动告警查询按 `job + instance` 严格匹配。webhook 缺少 job 时，仅在 instance
 唯一对应启用主机时才能归属，不据此放宽查询标签要求。所有需要在
 AI 活动告警工具、主机状态和告警计数/趋势中查询的主机告警，都必须保留这两个标签。
@@ -799,7 +818,7 @@ AI 活动告警工具、主机状态和告警计数/趋势中查询的主机告�
 ```promql
 max by (job, instance) (
   100 - avg by (job, instance) (
-    rate(node_cpu_seconds_total{mode="idle"}[2m])
+    rate(node_cpu_seconds_total{mode="idle"}[5m])
   ) * 100
 ) > 80
 or on (job, instance) aiops_demo_cpu_percent > 80

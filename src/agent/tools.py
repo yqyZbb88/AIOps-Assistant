@@ -36,6 +36,7 @@ from pydantic import Field, create_model
 from src.core import capabilities
 from src.interfaces.agent_action import (
     AgentActionError,
+    AgentActionOutcomeUnknown,
     AgentActionSource,
     render_agent_action,
 )
@@ -279,6 +280,13 @@ def _make_write_tool(source: AgentActionSource, spec: CommandSpec):
     def _run(**values) -> str:
         try:
             result = source.run(spec.key, params=values)
+        except AgentActionOutcomeUnknown as exc:
+            logger.warning("Agent 写命令工具 %s 结果未知: %s", spec.key, exc)
+            return (
+                f"写命令执行结果未知：{exc}\n"
+                "不能据此认定成功或失败；先核对目标状态，不得自动重试写命令。\n"
+                + freshness_note(source="SSH 写命令执行")
+            )
         except AgentActionError as exc:
             logger.warning("Agent 写命令工具 %s 调用失败: %s", spec.key, exc)
             return (

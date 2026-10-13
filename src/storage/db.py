@@ -20,10 +20,28 @@ logger = logging.getLogger("aiops_assistant.storage.db")
 # v1：基础六表；v2：会话名称及唯一索引；v3：名称改为可重名标签，移除唯一索引。
 # v4：持久记录决策人，避免依赖会轮转的日志；v5：规则幂等抢占；v6：异常巡检。
 # v7：多主机归属与统一动作执行审计。
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+
+# v8 独立保存冻结申请与生命周期，删除会话/主机登记不删除审批追溯。
+_APPROVAL_REQUESTS_DDL = """
+    CREATE TABLE IF NOT EXISTS approval_requests (
+        approval_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        requester TEXT NOT NULL DEFAULT '',
+        host_id TEXT NOT NULL DEFAULT '',
+        target_summary TEXT NOT NULL DEFAULT '',
+        actions_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        decided_by TEXT NOT NULL DEFAULT '',
+        decided_at TEXT NOT NULL DEFAULT ''
+    )
+"""
 
 # 建表语句（幂等）。顺序即执行顺序。
 _DDL: tuple[str, ...] = (
+    _APPROVAL_REQUESTS_DDL,
+    "CREATE INDEX IF NOT EXISTS idx_approval_requests_host_time ON approval_requests (host_id, created_at)",
     """
     -- `name` 刻意排在**最后**：它由 v2 的 ALTER TABLE 追加，而 ALTER 只能加在末尾。
     -- 这样「全新建库」与「v1 迁移上来」两条路径的**列序也一致**（有测试锁结构指纹）。
@@ -430,6 +448,10 @@ def _migrate(conn: sqlite3.Connection, current: int) -> None:
             "CREATE INDEX IF NOT EXISTS idx_action_executions_approval "
             "ON action_executions (approval_id)"
         )
+
+    if current < 8:
+        conn.execute(_APPROVAL_REQUESTS_DDL)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_approval_requests_host_time ON approval_requests (host_id, created_at)")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 

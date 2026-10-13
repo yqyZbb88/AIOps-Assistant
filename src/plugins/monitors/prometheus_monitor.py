@@ -459,7 +459,10 @@ class PrometheusMonitor(MonitorSource):
         ) + "}"
         result = self._query(expr)
         if not result:
-            return {"state": "no_data", "value": None}
+            return {"state": "no_data", "value": None,
+                    "detail": f'未找到 up{{job="{target.job}",instance="{target.instance}"}}；'
+                              '请在 Prometheus Targets 核对最终 job/instance 标签及 Exporter 端口，'
+                              '例如 9100 与 9182 不能互换；重标记后的 instance 可能不同于抓取地址。'}
         if len(result) != 1:
             return {"state": "ambiguous", "value": None}
         value = self._first_value(result)

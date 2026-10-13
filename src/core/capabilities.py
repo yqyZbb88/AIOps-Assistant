@@ -11,7 +11,7 @@ import logging
 from typing import Callable
 
 from src.interfaces.metric import MetricDefinition
-from src.interfaces.monitor import MonitorError, MonitorSource
+from src.interfaces.monitor import MetricNotApplicable, MonitorError, MonitorSource
 from src.interfaces.host import MonitorTarget
 from src.utils.freshness import epoch_to_iso, freshness_note
 
@@ -129,6 +129,9 @@ def metric_text(
             if target is None
             else monitor.query_metric(definition.metric_id, target=target)
         )
+    except MetricNotApplicable as exc:
+        return _append_freshness(f"{definition.display_name}：不适用（{exc}）",
+                                 source=definition.metric_id, enabled=with_freshness)
     except MonitorError as exc:
         logger.warning("查询 %s 失败: %s", definition.display_name, exc)
         text = f"查询 {definition.display_name}失败：{exc}"

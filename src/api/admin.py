@@ -37,6 +37,43 @@ class AdminHostRequest(BaseModel):
     draft: dict[str, Any]
 
 
+class AdminHostDelete(AdminConfigApply):
+    model_config = {"extra": "forbid"}
+    stop_collection: bool = False
+
+
+class AdminTargetDelete(AdminConfigApply):
+    model_config = {"extra": "forbid"}
+    address: str = Field(..., min_length=1, max_length=256)
+
+
+def _remove_target(request, payload, identity, host_id=None):
+    try:
+        return _onboarding(request).remove(payload.revision, host_id, identity,
+            stop_collection=payload.stop_collection if host_id else True,
+            address=payload.address if not host_id else "")
+    except (AdminConfigConflict, RuntimeBusyError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except AdminConfigError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except AdminConfigUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except OSError:
+        raise HTTPException(status_code=500, detail="删除失败，已尝试恢复原配置，请刷新核对") from None
+
+
+@router.delete("/hosts/{host_id}")
+def delete_host(host_id: str, payload: AdminHostDelete, request: Request,
+                identity: str = Depends(require_admin)):
+    return _remove_target(request, payload, identity, host_id)
+
+
+@router.delete("/targets")
+def delete_managed_target(payload: AdminTargetDelete, request: Request,
+                          identity: str = Depends(require_admin)):
+    return _remove_target(request, payload, identity)
+
+
 def _manager(request: Request):
     manager = getattr(request.app.state, "admin_config", None)
     if manager is None:
@@ -112,10 +149,10 @@ def _onboarding(request: Request):
 
 
 @router.get("/hosts/options", response_model=dict[str, Any])
-def get_host_options(request: Request, _identity: str = Depends(require_admin)):
+def get_host_options(request: Request, discover: bool = True, _identity: str = Depends(require_admin)):
     try:
         # 选项仅含受限 ID/目标元信息，避免 credentials 键被通用密钥脱敏整个遮蔽。
-        return _credential_response(_onboarding(request).options())
+        return _credential_response(_onboarding(request).options(discover=discover))
     except AdminConfigUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

@@ -294,7 +294,6 @@ class RuleEngine:
             try:
                 if atomic_store is not None:
                     execution = atomic_store.claim_rule(
-                        alert_key=alert.alert_key,
                         action=rule.action,
                         alert_status=alert.status,
                         starts_at=alert.startsAt,
@@ -344,7 +343,7 @@ class RuleEngine:
             logger.info("自动处置成功 %s -> %s: %s", alert.alertname, rule.action, result_text)
         except ActionOutcomeUnknown as exc:
             record["status"] = "unknown"
-            record["detail"] = f"Remote action result is unknown: {exc}"
+            record["detail"] = f"动作执行结果未知：{exc}；请核对目标状态，勿自动重试"
             if execution is not None:
                 self._finish_execution(execution.execution_id, "unknown", str(exc))
             logger.error("Rule action outcome unknown %s -> %s: %s", alert.alertname, rule.action, exc)

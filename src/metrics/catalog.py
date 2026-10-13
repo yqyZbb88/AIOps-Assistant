@@ -319,6 +319,15 @@ METRIC_CATALOG: tuple[MetricDefinition, ...] = (
 METRIC_BY_ID = {definition.metric_id: definition for definition in METRIC_CATALOG}
 
 
+def query_semantics(metric_id: str) -> dict:
+    """即时求值、rate 计算窗口与趋势范围是不同概念。"""
+    metric = METRIC_BY_ID[metric_id]
+    window = "5m" if "[5m]" in metric.expr_template else "1m" if metric_id == "cpu.load1" else None
+    return {"unit": metric.unit, "calculation_window": window,
+            "calculation": "rate" if "rate(" in metric.expr_template else "load1" if metric_id == "cpu.load1" else "gauge",
+            "timestamp_semantics": "Prometheus 求值时间；gauge 使用该时刻可用的最新样本，rate 使用此前 5 分钟样本"}
+
+
 def tool_name(definition: MetricDefinition) -> str:
     """Agent 工具名；旧指标保持原有名称，新指标使用点号转下划线。"""
     return definition.legacy_tool_name or definition.metric_id.replace(".", "_")

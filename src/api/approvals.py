@@ -6,12 +6,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from src.api.deps import require_auth
-from src.api.access import can_access
-from src.utils.host_access import may_access_host
+from src.api.access import can_access, visible_host_ids
+from src.utils.host_access import is_admin, may_access_host
 from src.core.agent import OpsAgent
 from src.interfaces.approval import (
     ApprovalError,
@@ -142,6 +142,57 @@ def list_approvals(
             approvers_only=approvers_only,
         )
     ]
+
+
+@router.get("/approvals/history")
+def approval_history(request: Request, user: str = Depends(require_auth),
+                     host_id: str | None = None,
+                     status: Literal["approve", "reject", "expired", "cancelled", "evicted", "abandoned", "unknown"] | None = None,
+                     limit: int = Query(25, ge=1, le=100), offset: int = Query(0, ge=0, le=100000)):
+    """先按当前主机权限与审批模式过滤再分页，管理员不自动获得审批权限。"""
+    approvers, approvers_only = _approval_policy(request)
+    if approvers_only and user not in approvers:
+        return {"storage": "ok", "items": [], "total": 0, "limit": limit, "offset": offset}
+    store = request.app.state.container.approval_history()
+    if store is None:
+        return {"storage": "off", "items": [], "total": 0, "limit": limit, "offset": offset}
+    try:
+        # 读取已有 Agent 的内存队列只为收敛过期状态，不构造模型或 SSH 连接。
+        _agent(request).pending_approvals()
+        hosts = visible_host_ids(request)
+        if is_admin(request.app.state.settings, user):
+            hosts |= store.host_ids()
+        if host_id:
+            if host_id not in hosts:
+                raise HTTPException(status_code=404, detail="主机不存在或不可访问")
+            hosts = {host_id}
+        return {"storage": "ok", **store.page(identity=user, hosts=hosts,
+            approver=approvers_only and user in approvers, status=status, limit=limit, offset=offset)}
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="审批历史暂不可用，请稍后重试") from None
+
+
+@router.get("/approvals/{approval_id}/progress")
+def approval_progress(approval_id: str, request: Request, user: str = Depends(require_auth)):
+    """审批 POST 续跑期间的只读进度；沿用审批角色、申请人及主机权限边界。"""
+    from fastapi.responses import JSONResponse
+    from src.utils.security import redact_sensitive
+    store = request.app.state.container.approval_history()
+    if store is None:
+        raise HTTPException(status_code=503, detail="审批进度存储不可用，不能确认决策或执行结果")
+    try:
+        result = store.progress(approval_id)
+    except Exception:
+        raise HTTPException(status_code=503, detail="审批进度暂不可用，请稍后核对历史记录") from None
+    approvers, approvers_only = _approval_policy(request)
+    if result is None or not can_access(request, result["host_id"]) or not may_access_host(
+        request.app.state.settings, result["requester"], result["host_id"]
+    ) or not may_decide(PendingApproval(approval_id=approval_id, created_at="", user=result["requester"]),
+                       user, approvers=approvers, approvers_only=approvers_only):
+        raise _not_found(approval_id)
+    return JSONResponse(redact_sensitive(result), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 @router.post("/approvals/{approval_id}", response_model=ApprovalResponse)

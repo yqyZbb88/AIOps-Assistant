@@ -23,10 +23,14 @@ const METRICS = [
   ["disk.write_bytes", "磁盘写入", "MiB/s"], ["disk.io_util", "磁盘 I/O 利用率", "%"],
   ["network.rx_bytes", "网络接收", "MiB/s"], ["network.tx_bytes", "网络发送", "MiB/s"],
   ["network.rx_errors", "网络接收错误", "errors/s"], ["network.tx_errors", "网络发送错误", "errors/s"],
-  ["system.process_count", "进程数量", "processes"], ["system.uptime", "运行时间", "s"],
+  ["system.process_count", "运行进程数", "processes"], ["system.uptime", "运行时间", "s"],
   ["alerts.active_count", "活动告警", "alerts"],
 ].map(function (item) { return {id: item[0], label: item[1], unit: item[2]}; });
 const METRIC_MAP = new Map(METRICS.map(function (metric) { return [metric.id, metric]; }));
+function metricWindowLabel(id) {
+  if (["cpu.usage", "cpu.iowait", "disk.read_bytes", "disk.write_bytes", "disk.io_util", "network.rx_bytes", "network.tx_bytes", "network.rx_errors", "network.tx_errors"].includes(id)) return "rate 计算窗口 5 分钟";
+  return id === "cpu.load1" ? "Exporter 1 分钟负载 / CPU 核数" : "当前求值时刻";
+}
 const WIDGETS = [
   {id: "hosts", label: "主机状态"}, {id: "attention", label: "需要关注"},
   {id: "trends", label: "收藏指标趋势"}, {id: "recent", label: "最近运维动态"},
@@ -41,6 +45,9 @@ const DEFAULT_PREFS = Object.freeze({
 // admin 是 GET /admin/config 的完整可编辑草稿；adminDirty 只跟踪本标签页的修改，
 // 真正的冲突仍由服务端 revision 校验。主机向导独立保存，进入前必须处理这份草稿。
 const state = {
+  identity: null, connectionEpoch: 0, sshEditing: false,
+  approvalHistory: null, approvalHistoryOffset: 0, approvalHistoryGeneration: 0,
+  approvalProgress: null,
   prefs: loadPreferences(), view: "overview", hosts: [], hostStatuses: new Map(),
   selectedHostId: "", sessions: [], selectedSessionId: "", approvals: [],
   history: {alerts: [], remediations: [], advice: []}, inspections: [], executions: [],
@@ -160,6 +167,7 @@ async function request(path, options) {
   const opts = options || {};
   const authenticated = opts.authenticated !== false;
   const token = sessionStorage.getItem(TOKEN_KEY);
+  const epoch = state.connectionEpoch;
   if (authenticated && !token) throw new Error("请先连接 Assistant");
   const controller = new AbortController();
   const timer = setTimeout(function () { controller.abort(); }, opts.timeout || 15000);
@@ -174,12 +182,16 @@ async function request(path, options) {
     let data = null;
     try { data = await response.json(); } catch (_) { data = {detail: "响应不是 JSON"}; }
     // 已断开或换身份的响应不能重新填入当前标签页。
-    if (authenticated && token !== sessionStorage.getItem(TOKEN_KEY)) {
+    if (authenticated && (token !== sessionStorage.getItem(TOKEN_KEY) || epoch !== state.connectionEpoch)) {
       const error = new Error("连接已变化，已忽略旧请求结果");
       error.connectionChanged = true;
       throw error;
     }
     if (!response.ok) {
+      if (authenticated && response.status === 401) {
+        if (opts.keepCredentialResult) { state.identity = null; renderIdentity(); updateConnection("error", "Token 无效"); }
+        else clearConnectionData();
+      }
       const error = new Error(String(response.status) + " " + (data.detail || response.statusText));
       error.status = response.status;
       throw error;
@@ -265,7 +277,7 @@ function scheduleRefresh() {
 }
 
 function navigate(view) {
-  if (view !== "admin") clearCredentialInputs();
+  if (view !== "admin") { clearCredentialInputs(); state.sshEditing = false; }
   if (!Object.hasOwn(VIEW_META, view)) view = "overview";
   if (view === "admin" && !state.isAdmin) view = "overview";
   state.view = view;
@@ -295,7 +307,28 @@ function updateConnection(status, label) {
   updateControls();
 }
 
+function renderIdentity() {
+  if (!$("identity-name")) return;
+  const current = state.identity;
+  $("identity-name").textContent = current ? current.identity : "未连接";
+  const labels = {user: "用户", admin: "管理员", approver: "审批人", webhook: "告警入口"};
+  $("identity-roles").textContent = current ? current.roles.map(function (role) { return labels[role] || role; }).join(" · ") : "身份尚未验证";
+}
+
+async function loadIdentity() {
+  const current = await request("/identity");
+  // 同一 Token 的服务端归属也可能变化，必须先丢弃上一身份的数据。
+  if (state.identity && state.identity.identity !== current.identity) clearConnectionData();
+  state.identity = current; renderIdentity();
+  if (!current.roles.includes("admin") && state.isAdmin) {
+    state.isAdmin = false; state.admin = null; state.adminDirty = false;
+    $("admin-nav").classList.add("hidden"); clearAdminView();
+    if (state.view === "admin") navigate("overview");
+  }
+}
+
 function updateControls() {
+  document.querySelectorAll("[data-approval-decision]").forEach(function (button) { button.disabled = state.busy.has("approval"); });
   const hostReady = state.connected && Boolean(state.selectedHostId);
   const sessionReady = hostReady && Boolean(state.selectedSessionId);
   const sending = state.busy.has("chat");
@@ -345,6 +378,9 @@ async function loadHosts() {
   state.hostStatuses.forEach(function (_, id) { if (!visible.has(id)) state.hostStatuses.delete(id); });
   state.sessions = state.sessions.filter(function (item) { return visible.has(item.host_id); });
   state.approvals = state.approvals.filter(function (item) { return visible.has(item.host_id); });
+  if (!state.isAdmin && state.approvalHistory) {
+    state.approvalHistory = null; state.approvalHistoryGeneration++; renderApprovalHistory();
+  }
   ["alerts", "remediations", "advice"].forEach(function (key) {
     state.history[key] = state.history[key].filter(function (item) { return visible.has(item.host_id); });
   });
@@ -382,6 +418,49 @@ async function loadSessions() {
 async function loadApprovals() {
   state.approvals = await request("/approvals");
   renderApprovals();
+  if ($("approval-history-list")) await loadApprovalHistory();
+}
+
+async function loadApprovalHistory() {
+  const generation = ++state.approvalHistoryGeneration;
+  const hostSelect = $("approval-history-host");
+  const host = hostSelect.value, status = $("approval-history-status").value;
+  hostSelect.replaceChildren(new Option("全部授权主机", ""));
+  state.hosts.forEach(function (item) { hostSelect.append(new Option(item.name + " · " + item.host_id, item.host_id)); });
+  hostSelect.value = state.hosts.some(function (item) { return item.host_id === host; }) ? host : "";
+  $("approval-history-list").textContent = "正在查询审批历史…";
+  try {
+    const result = await request("/approvals/history?limit=25&offset=" + state.approvalHistoryOffset
+      + (hostSelect.value ? "&host_id=" + encodeURIComponent(hostSelect.value) : "")
+      + (status ? "&status=" + encodeURIComponent(status) : ""));
+    if (generation !== state.approvalHistoryGeneration) return;
+    state.approvalHistory = result; renderApprovalHistory();
+  } catch (error) {
+    if (error.connectionChanged || generation !== state.approvalHistoryGeneration) return;
+    state.approvalHistory = null;
+    $("approval-history-list").textContent = "历史查询失败：" + error.message;
+    $("approval-history-prev").disabled = true; $("approval-history-next").disabled = true;
+  }
+}
+
+function renderApprovalHistory() {
+  const result = state.approvalHistory, list = $("approval-history-list");
+  if (!list) return;
+  list.replaceChildren();
+  const labels = {approve: "通过", reject: "拒绝", expired: "过期", cancelled: "撤销", evicted: "队列淘汰", abandoned: "已作废（原因未知）", unknown: "未知"};
+  if (!result || !result.items.length) list.append(empty(result && result.storage === "off" ? "持久化存储不可用，无法取得历史" : "没有可见的审批历史"));
+  if (result) result.items.forEach(function (item) {
+    const row = node("article", "approval-history-row");
+    row.append(node("strong", "", "审批结果：" + (labels[item.status] || "未知") + " · " + item.approval_id));
+    row.append(node("p", "", "申请人：" + (item.requester || "未知") + " · 审批人：" + (item.decided_by || "未知") + " · 主机：" + (item.host_id || "未知")));
+    row.append(node("p", "", "操作：" + (item.actions.map(function (a) { return a.name + " " + safeDetail(a.args || {}); }).join("；") || "未知") + (item.target_summary ? " · " + item.target_summary : "")));
+    row.append(node("p", "subtle", "申请时间：" + (item.created_at ? formatTime(item.created_at) : "未知") + " · 审批时间：" + (item.decided_at ? formatTime(item.decided_at) : "未知")));
+    row.append(node("p", "", "执行结果：" + (item.executions.length ? item.executions.map(function (e) { return e.action_name + " · " + e.status; }).join("；") : "无执行记录（结果未知）")));
+    list.append(row);
+  });
+  $("approval-history-page").textContent = result ? "第 " + (Math.floor(result.offset / 25) + 1) + " 页 · " + result.total + " 条" : "";
+  $("approval-history-prev").disabled = !result || result.offset === 0;
+  $("approval-history-next").disabled = !result || result.offset + 25 >= result.total;
 }
 
 async function loadAdminAccess() {
@@ -506,6 +585,7 @@ async function refreshAll(showMessage) {
     return;
   }
   try {
+    await loadIdentity();
     await loadHosts();
     await Promise.all([loadAllHostStatuses(), loadSessions(), loadApprovals(), loadRecords(), loadAdminAccess()]);
     if (token !== sessionStorage.getItem(TOKEN_KEY)) return;
@@ -610,13 +690,14 @@ function renderHostDetail() {
   badges.replaceChildren();
   if (!host) return;
   const exporter = status && status.exporter ? status.exporter.state : "unknown";
+  if (status && status.exporter && status.exporter.detail) badges.append(node("p", "admin-help", status.exporter.detail));
   badges.append(badge("Exporter " + exporterLabel(exporter), exporter), badge(host.ssh_configured ? "SSH 已配置" : "SSH 关闭", host.ssh_configured ? "ok" : "disabled"));
   const metrics = $("host-metrics");
   metrics.replaceChildren();
   ["cpu.usage", "memory.usage", "disk.usage"].forEach(function (id) {
     const meta = METRIC_MAP.get(id);
     const card = node("div", "metric-card");
-    card.append(node("span", "", meta.label), node("strong", "", formatValue(metricValue(status, id), meta.unit)));
+    card.append(node("span", "", meta.label), node("strong", "", formatValue(metricValue(status, id), meta.unit)), node("span", "subtle", metricWindowLabel(id) + (id === "disk.usage" ? " · 最坏挂载点" : "")));
     metrics.append(card);
   });
   const alerts = status && Array.isArray(status.active_alerts) ? status.active_alerts : [];
@@ -857,7 +938,7 @@ function trendCard(metric, summary, large) {
   }
   if (!summary || !summary.points) card.append(node("div", "chart-empty", summary && summary.state === "not_applicable" ? "不适用：该主机没有 Swap" : "趋势：该时间范围内暂无数据"));
   else {
-    card.append(node("p", "range-caption", summary.points + " 个采样 · " + (summary.series ? "真实时间序列" : "区间摘要")), summary.series ? createTrendPlot(summary, metric) : createSummarySvg(summary, metric));
+    card.append(node("p", "range-caption", summary.points + " 个采样 · " + metricWindowLabel(metric.id) + " · " + (summary.series ? "真实时间序列" : "区间摘要")), summary.series ? createTrendPlot(summary, metric) : createSummarySvg(summary, metric));
     const values = node("div", "range-values");
     [["最低", summary.min], ["平均", summary.avg], ["当前", summary.latest], ["最高", summary.max]].forEach(function (item) {
       const stat = node("div", "range-value");
@@ -913,9 +994,9 @@ async function loadSelectedTrend() {
   // 两项独立更新，不因任一请求失败掩盖另一项状态。
   const instant = $("host-current-metric") ? request(base).then(function (data) {
     if (stale()) return;
-    const box = $("host-current-metric"); box.replaceChildren(node("strong", "", "即时查询"));
+    const box = $("host-current-metric"); box.replaceChildren(node("strong", "", "即时查询 · " + metricWindowLabel(metric.id)));
     if (!data.samples || !data.samples.length) box.append(node("p", "", data.state === "not_applicable" ? "不适用：该主机没有 Swap" : "无数据"));
-    (data.samples || []).forEach(function (sample) { box.append(node("p", "", seriesLabel(sample.labels || {}) + " · " + formatValue(sample.value, metric.unit))); });
+    (data.samples || []).forEach(function (sample) { box.append(node("p", "", seriesLabel(sample.labels || {}) + " · " + formatValue(sample.value, metric.unit) + " · 求值时间 " + (sample.timestamp ? formatTime(new Date(sample.timestamp * 1000)) : "未知"))); });
   }).catch(function (error) { if (!stale() && !error.connectionChanged) $("host-current-metric").replaceChildren(empty("即时查询失败：" + error.message)); }) : Promise.resolve();
   try {
     const data = await request(base + "/trend?minutes=" + minutes + "&step=" + trendStep(minutes));
@@ -1230,6 +1311,7 @@ function renderApprovals() {
     const reject = node("button", "secondary danger-outline", "拒绝");
     const approve = node("button", "", "批准并执行");
     reject.type = approve.type = "button";
+    [reject, approve].forEach(function (button) { button.setAttribute("data-approval-decision", "true"); button.disabled = state.busy.has("approval"); });
     reject.addEventListener("click", function () { confirmApproval(item, "reject"); });
     approve.addEventListener("click", function () { confirmApproval(item, "approve"); });
     actions.append(reject, approve);
@@ -1250,29 +1332,95 @@ function openConfirm(config) {
 }
 
 function confirmApproval(item, decision) {
+  if (state.busy.has("approval")) return;
   openConfirm({
     title: decision === "approve" ? "批准并执行" : "拒绝操作",
     message: "主机 " + (item.host_id || "未知") + " · " + (item.actions || []).map(function (action) { return action.name; }).join("、"),
     submitLabel: decision === "approve" ? "确认批准" : "确认拒绝",
     danger: decision === "reject", reason: true,
-    action: function () { return decideApproval(item.approval_id, decision, $("confirm-reason").value); },
+    action: function () {
+      const reason = $("confirm-reason").value;
+      $("confirm-dialog").close();
+      // 页面继续显示可核实的阶段进度，确认对话框不等待 SSH 和 AI 续跑。
+      void decideApproval(item.approval_id, decision, reason);
+    },
   });
+}
+
+function renderApprovalProgress() {
+  const panel = $("approval-progress");
+  if (!panel) return;
+  const p = state.approvalProgress;
+  panel.hidden = !p; panel.replaceChildren();
+  if (!p) return;
+  panel.setAttribute("aria-busy", String(!p.finished && !p.error));
+  panel.append(node("h3", "", "审批处理进度 · " + (p.hostId ? p.hostId + " · " : "") + p.id));
+  const decisions = {approve: "审批已通过", reject: "审批已拒绝", pending: "等待服务端确认审批", expired: "审批已过期", cancelled: "审批已撤销", evicted: "审批已被队列淘汰", abandoned: "审批已作废（原因未知）"};
+  panel.append(node("p", "", decisions[p.status] || "正在提交审批，等待服务端确认…"));
+  const labels = {pending: "等待执行", running: "执行中", succeeded: "执行成功", failed: "执行失败", unknown: "执行结果未知", rejected: "未执行（已拒绝）", skipped: "未执行（已跳过）"};
+  (p.executions || []).forEach(function (e) { panel.append(node("p", "", "动作 " + e.action_name + "：" + (labels[e.status] || "执行结果未知"))); });
+  if (!p.executions.length) panel.append(node("p", "subtle", p.status === "reject" ? "动作未获批准，不会由本次审批执行" : p.finished ? "无可核实的执行记录，执行结果未知" : "尚无执行记录，请等待服务端更新"));
+  if (p.error) panel.append(node("p", "inline-feedback error", p.error));
+  else if (p.finished) panel.append(node("p", "", p.nextApprovalId ? "AI 反馈已返回；后续动作仍需新的审批" : "AI 反馈已返回"));
+  else panel.append(node("p", "subtle", (p.status === "approve" || p.status === "reject" ? "正在等待 AI 后续反馈" : "审批请求处理中") + " · 已等待 " + Math.floor((Date.now() - p.startedAt) / 1000) + " 秒"));
+  if (p.progressError) panel.append(node("p", "subtle", p.progressError));
+  if (p.reply) { const reply = node("div", "action-box"); reply.append(node("strong", "", "AI 反馈"), node("p", "", p.reply)); panel.append(reply); }
 }
 
 async function decideApproval(id, decision, reason) {
   if (state.busy.has("approval")) return;
+  const epoch = state.connectionEpoch;
+  const progress = {id: id, status: "submitting", executions: [], startedAt: Date.now(), finished: false};
+  state.approvalProgress = progress; renderApprovalProgress();
+  if ($("approval-progress") && $("approval-progress").scrollIntoView) $("approval-progress").scrollIntoView({block: "center"});
   setBusy("approval", true);
+  const current = function () { return state.connectionEpoch === epoch && state.approvalProgress === progress; };
+  let tracking = true, timer = null, sequence = 0;
+  async function readProgress() {
+    const seq = ++sequence;
+    try {
+      const data = await request("/approvals/" + encodeURIComponent(id) + "/progress", {timeout: 5000});
+      if (!current() || seq !== sequence) return;
+      progress.status = data.status; progress.executions = data.executions || []; progress.progressError = "";
+      progress.hostId = data.host_id;
+      if (["approve", "reject"].includes(data.status) && state.approvals.some(function (item) { return item.approval_id === id; })) {
+        state.approvals = state.approvals.filter(function (item) { return item.approval_id !== id; });
+        renderApprovals();
+      }
+    } catch (error) {
+      if (!current() || seq !== sequence || error.connectionChanged) return;
+      progress.progressError = "暂不能核实最新进度；请等待当前请求，不要重复审批。";
+    }
+    if (current()) renderApprovalProgress();
+  }
+  async function poll() {
+    await readProgress();
+    if (tracking && current()) timer = setTimeout(poll, 1000);
+  }
+  function stopTracking() { tracking = false; if (timer !== null) clearTimeout(timer); }
   try {
-    const result = await request("/approvals/" + encodeURIComponent(id), {method: "POST", body: {action: decision, reason: reason}});
-    $("confirm-dialog").close();
-    showNotice((decision === "approve" ? "已批准：" : "已拒绝：") + result.reply, "success");
-    await Promise.all([loadApprovals(), loadSessions(), loadRecords()]);
-    renderOverview();
+    const submission = request("/approvals/" + encodeURIComponent(id), {method: "POST", body: {action: decision, reason: reason}, timeout: 120000});
+    void poll();
+    const result = await submission;
+    stopTracking();
+    if (!current()) return;
+    progress.status = result.decision; progress.finished = true; progress.reply = result.reply; progress.nextApprovalId = result.next_approval_id;
+    await readProgress();
+    if (!current()) return;
+    renderApprovalProgress();
+    const failed = progress.executions.some(function (e) { return ["failed", "unknown"].includes(e.status); });
+    showNotice(failed ? "审批已处理；动作失败或结果未知，请查看执行进度" : "审批已处理，AI 反馈已返回；执行结果见下方", failed ? "error" : "success");
+    try { await Promise.all([loadApprovals(), loadSessions(), loadRecords()]); if (current()) renderOverview(); }
+    catch (error) { if (current() && !error.connectionChanged) { progress.progressError = "结果已返回，但列表刷新失败：" + error.message; renderApprovalProgress(); } }
   } catch (error) {
-    $("confirm-dialog").close();
-    showNotice(error.status === 404 ? "审批已处理或已过期，列表已刷新" : error.message, "error");
-    await loadApprovals();
-  } finally { setBusy("approval", false); }
+    stopTracking();
+    if (!current() || error.connectionChanged) return;
+    progress.error = "本次请求未取得完整反馈：" + error.message + "。请核对审批与执行记录，不要重复提交。";
+    await readProgress();
+    if (!current()) return;
+    renderApprovalProgress(); showNotice(progress.error, "error");
+    try { await loadApprovals(); } catch (_) { /* 保留进度和原始错误，不用刷新失败覆盖执行事实。 */ }
+  } finally { stopTracking(); setBusy("approval", false); }
 }
 
 function buildRecords() {
@@ -1822,7 +1970,25 @@ function renderHostOptions() {
   if (options.warning) $("admin-monitor-mode").textContent += " " + options.warning;
   const list = $("admin-monitor-existing"); list.replaceChildren();
   options.hosts.forEach(function (host) {
-    list.append(node("div", "admin-card", host.name + " · " + host.host_id + " · " + host.job + "/" + host.instance));
+    const row = node("div", "admin-card", host.name + " · " + host.host_id + " · " + host.job + "/" + host.instance);
+    row.append(credentialButton("删除主机登记", function () {
+      confirmCredential("删除主机登记", "仅删除 Assistant 中的“" + host.name + "”登记，Prometheus 继续采集，历史记录保留。有用户授权、规则或未完成任务时会拒绝删除。", function () { return removeHostOrTarget(host.host_id, false); });
+    }));
+    if (options.mode === "managed" && host.job === "aiops-hosts" && (options.managed_targets || []).includes(host.instance)) {
+      row.append(credentialButton("删除登记并停止托管采集", function () {
+        confirmCredential("删除登记并停止托管采集", "删除“" + host.name + "”登记，并从项目 file_sd 文件移除此目标；30 秒内停止采集，不删除 Prometheus 旧样本或 Assistant 历史。", function () { return removeHostOrTarget(host.host_id, true); });
+      }));
+    }
+    list.append(row);
+  });
+  (options.managed_targets || []).filter(function (address) {
+    return !options.hosts.some(function (host) { return host.job === "aiops-hosts" && host.instance === address; });
+  }).forEach(function (address) {
+    const row = node("div", "admin-card", "未登记的托管采集目标 · " + address);
+    row.append(credentialButton("停止托管采集", function () {
+      confirmCredential("停止托管采集", "从项目 file_sd 文件移除“" + address + "”，30 秒内停止采集；保留旧样本及历史记录。", function () { return removeHostOrTarget(null, true, address); });
+    }));
+    list.append(row);
   });
   const target = $("admin-host-target"); target.replaceChildren();
   options.targets.forEach(function (item, index) {
@@ -1839,6 +2005,24 @@ function renderHostOptions() {
     checks.append(adminLabel(key, input, "admin-check"));
   });
   updateHostTargetFields();
+}
+
+async function removeHostOrTarget(hostId, stopCollection, address) {
+  if (state.adminDirty || state.busy.has("admin")) return showAdminFeedback("请先保存或放弃草稿，再执行删除", "error");
+  const revision = state.hostOptions && state.hostOptions.revision;
+  if (!revision) return;
+  setBusy("admin", true);
+  try {
+    const result = await request(hostId ? "/admin/hosts/" + encodeURIComponent(hostId) : "/admin/targets", {
+      method: "DELETE", body: hostId ? {revision: revision, stop_collection: stopCollection} : {revision: revision, address: address}, timeout: 30000,
+    });
+    state.hostOptions = null; state.hostVerification = "";
+    state.admin = await request("/admin/config");
+    await loadHosts(); renderAdmin(); await loadHostOptions();
+    showAdminFeedback(result.message, "success");
+  } catch (error) {
+    if (!error.connectionChanged) showAdminFeedback("删除未完成：" + error.message + "。请刷新核对配置后再操作。", "error");
+  } finally { setBusy("admin", false); }
 }
 
 function updateHostTargetFields() {
@@ -1870,7 +2054,13 @@ async function loadHostOptions() {
     state.hostOptions = options;
     renderHostOptions();
   } catch (error) {
+    if (error.connectionChanged) return;
     $("admin-monitor-mode").textContent = error.message;
+    if (error.status === 503) {
+      try {
+        state.hostOptions = await request("/admin/hosts/options?discover=false"); renderHostOptions();
+      } catch (fallback) { if (!fallback.connectionChanged) $("admin-monitor-mode").textContent = fallback.message; }
+    }
   } finally { state.busy.delete("host-options"); }
 }
 
@@ -1931,7 +2121,7 @@ function activateAdminSection(section, moveFocus) {
     showAdminFeedback("进入此分区前，请先保存或放弃当前管理草稿。", "error");
     return;
   }
-  if (state.adminSection !== section) { showAdminFeedback("", ""); clearCredentialInputs(); }
+  if (state.adminSection !== section) { showAdminFeedback("", ""); clearCredentialInputs(); state.sshEditing = false; }
   state.adminSection = ["general", "rules", "commands", "hosts", "access", "monitor", "ssh", "tokens", "model"].includes(section) ? section : "general";
   document.querySelectorAll("[data-admin-section]").forEach(function (tab) {
     const active = tab.dataset.adminSection === state.adminSection;
@@ -2051,6 +2241,10 @@ function toggleSelectedFavorite() {
 function clearConnectionData() {
   // 身份变化时丢弃旧运维数据、草稿和确认回调；展示偏好与正在执行的请求各自保留。
   state.hosts = []; state.hostStatuses.clear(); state.sessions = []; state.approvals = [];
+  state.identity = null; state.connectionEpoch++; state.sshEditing = false;
+  state.approvalProgress = null; renderApprovalProgress();
+  state.approvalHistory = null; state.approvalHistoryOffset = 0; state.approvalHistoryGeneration++;
+  renderIdentity(); renderApprovalHistory();
   state.history = {alerts: [], remediations: [], advice: []};
   state.inspections = []; state.executions = [];
   state.overviewUpdatedAt = null; state.overviewError = "";
@@ -2071,6 +2265,11 @@ function clearConnectionData() {
 }
 
 function bindEvents() {
+  ["approval-history-host", "approval-history-status", "approval-history-refresh"].forEach(function (id) {
+    $(id).addEventListener(id.endsWith("refresh") ? "click" : "change", function () { state.approvalHistoryOffset = 0; loadApprovalHistory(); });
+  });
+  $("approval-history-prev").addEventListener("click", function () { state.approvalHistoryOffset = Math.max(0, state.approvalHistoryOffset - 25); loadApprovalHistory(); });
+  $("approval-history-next").addEventListener("click", function () { state.approvalHistoryOffset += 25; loadApprovalHistory(); });
   if (typeof ResizeObserver === "function") {
     // 共用观察器跟踪顶栏换行、侧栏变化和通知换行。
     const observer = new ResizeObserver(updateNoticeLayout);
@@ -2215,6 +2414,8 @@ function renderCredentialLoadState(text, failed) {
 }
 async function loadAdminCredentials() {
   if (!state.isAdmin || state.busy.has("admin") || state.busy.has("credentials")) return;
+  // 编辑器使用加载时的 revision；自动刷新不能替换其 DOM 或更新提交基线。
+  if (state.sshEditing && state.adminSection === "ssh") return;
   if (state.adminCredentials && state.admin && state.adminCredentials.revision === state.admin.revision) return;
   state.busy.add("credentials");
   renderCredentialLoadState("正在加载凭据与模型配置…", false);
@@ -2240,13 +2441,13 @@ async function changeCredential(path, method, data) {
     // 一次性明文不存入 state，不被后续刷新复制。
     const once = result.token_once; delete result.token_once;
     let refreshError = null;
-    try { state.admin = await request("/admin/config"); }
+    try { state.admin = await request("/admin/config", {keepCredentialResult: Boolean(once)}); }
     catch (error) { if (error.connectionChanged) return; refreshError = error; }
     // 轮换当前登录 Token 后，GET 已失效；仍须显示刚生成的一次性明文。
     if (!state.isAdmin) return;
     if (state.admin) state.admin.revision = result.revision;
     state.adminDirty = false;
-    renderAdmin(); renderCredentials();
+    state.sshEditing = false; renderAdmin(); renderCredentials();
     if (once && state.adminSection === "tokens") {
       const output = $("admin-token-once"); output.value = once;
       showAdminFeedback(refreshError ? "Token 已生成，请立即复制并重新连接；当前连接已失效或刷新失败" : "Token 已生成，请立即复制；离开页面即清除", "success");
@@ -2255,7 +2456,7 @@ async function changeCredential(path, method, data) {
     if (error.connectionChanged) return;
     showAdminFeedback("操作未完成：" + error.message + "。请重新加载凭据状态后核对结果，勿自动重试写操作。", "error");
     state.adminCredentials = null;
-  } finally { setBusy("admin", false); }
+  } finally { Object.keys(data).forEach(function (key) { if (["password", "private_key", "known_hosts", "api_key"].includes(key)) delete data[key]; }); setBusy("admin", false); }
 }
 function renderCredentials() {
   const data = state.adminCredentials; if (!data || !state.isAdmin) return;
@@ -2267,7 +2468,9 @@ function renderCredentials() {
     feedback.setAttribute("aria-live", "polite"); feedback.setAttribute("role", "status");
     $("admin-" + section).setAttribute("aria-busy", "false");
     $("admin-" + section).append(feedback);
-    $("admin-" + section).append(credentialButton("重新加载凭据状态", function () { state.adminCredentials = null; loadAdminCredentials(); }));
+    $("admin-" + section).append(credentialButton("重新加载凭据状态", function () {
+      clearCredentialInputs(); state.sshEditing = false; state.adminCredentials = null; loadAdminCredentials();
+    }));
   });
   const identity = credentialInput("text"); identity.maxLength = 128;
   tokenBox.append(node("p", "admin-help", "按身份名生成 Token。角色在安全与开关中授权；部署管理员和 Webhook 凭据只读保留。"), adminLabel("身份名", identity), credentialButton("生成用户 Token", function () { changeCredential("tokens", "POST", {identity: identity.value}); }));
@@ -2283,12 +2486,20 @@ function renderCredentials() {
     tokenBox.append(row);
   });
   const id = credentialInput("text"), username = credentialInput("text"), method = node("select"), password = credentialInput("password", "", true), key = credentialInput("file", "", true), known = node("textarea");
+  id.id = "ssh-credential-id"; username.id = "ssh-username"; method.id = "ssh-method";
+  password.id = "ssh-password"; key.id = "ssh-private-key"; known.id = "ssh-known-hosts";
+  const editorStatus = node("p", "ssh-editor-status", "新建 SSH 凭据"); editorStatus.setAttribute("aria-live", "polite");
+  sshBox.append(editorStatus);
+  [id, username, method, password, key, known].forEach(function (control) { control.addEventListener("input", function () { state.sshEditing = true; }); });
   id.maxLength = 63; username.maxLength = 128; known.rows = 5; known.maxLength = 131072; known.setAttribute("data-credential-sensitive", "true");
   ["password", "private_key"].forEach(function (value) { const option = node("option", "", value === "password" ? "密码" : "上传私钥（无口令）"); option.value = value; method.append(option); }); method.value = "password";
   const passwordLabel = adminLabel("密码（更新时留空保留）", password), keyLabel = adminLabel("上传私钥（更新时不上传则保留）", key);
   keyLabel.hidden = true; method.addEventListener("change", function () { password.value = ""; key.value = ""; passwordLabel.hidden = method.value !== "password"; keyLabel.hidden = method.value !== "private_key"; });
   sshBox.append(node("p", "admin-help", "密码或私钥用于登录；known_hosts 用于验证服务器身份，两种认证方式都需要。新建时请粘贴已核验的 known_hosts，更新时可留空保留。连接测试只验证认证，不授予诊断或写权限。部署凭据只读。"), adminLabel("凭据 ID", id), adminLabel("用户名", username), adminLabel("认证方式", method), passwordLabel, keyLabel, adminLabel("可信 known_hosts（新建必填，更新留空保留）", known));
-  sshBox.append(credentialButton("保存 SSH 凭据", async function () {
+  sshBox.append(credentialButton("取消编辑 / 新建", function () {
+    clearCredentialInputs(); state.sshEditing = false; id.readOnly = false; id.value = ""; username.value = "";
+    method.value = "password"; passwordLabel.hidden = false; keyLabel.hidden = true; editorStatus.textContent = "新建 SSH 凭据";
+  }), credentialButton("保存 SSH 凭据", async function () {
     const update = {username: username.value.trim(), method: method.value}, profile = id.value.trim();
     const existing = data.ssh.find(function (item) { return item.managed && item.id === profile; });
     if (!profile) { showFieldError(id, "请输入 SSH 凭据 ID"); return; }
@@ -2317,7 +2528,12 @@ function renderCredentials() {
     const row = node("div", "admin-card credential-card"); row.append(node("strong", "", item.id + " · " + item.username + " · " + item.method + (item.managed ? "" : " · 部署只读")));
     if (item.managed) {
       const actions = node("div", "credential-actions");
-      actions.append(credentialButton("编辑", function () { clearCredentialInputs(); id.value = item.id; username.value = item.username; method.value = item.method; passwordLabel.hidden = method.value !== "password"; keyLabel.hidden = method.value !== "private_key"; }), credentialButton("删除", function () { confirmCredential("删除 SSH 凭据", "将立即删除凭据“" + item.id + "”。关联约束由服务端检查。", function () { return changeCredential("ssh/" + encodeURIComponent(item.id), "DELETE", {}); }); }));
+      actions.append(credentialButton("编辑", function () {
+        clearCredentialInputs(); state.sshEditing = true; id.readOnly = true; id.value = item.id; username.value = item.username; method.value = item.method;
+        editorStatus.textContent = "正在编辑：" + item.id + " · 密码/私钥和 known_hosts 留空保留原值；填写或上传则替换";
+        passwordLabel.hidden = method.value !== "password"; keyLabel.hidden = method.value !== "private_key";
+        username.focus(); if (editorStatus.scrollIntoView) editorStatus.scrollIntoView({block: "center"});
+      }), credentialButton("删除", function () { confirmCredential("删除 SSH 凭据", "将立即删除凭据“" + item.id + "”。关联约束由服务端检查。", function () { return changeCredential("ssh/" + encodeURIComponent(item.id), "DELETE", {}); }); }));
       row.append(actions);
     }
     sshBox.append(row);

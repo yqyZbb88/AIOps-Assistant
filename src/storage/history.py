@@ -263,6 +263,14 @@ class SqliteHistoryStore(HistoryStore):
                     "DELETE FROM action_executions WHERE created_at < ?", (cutoff,)
                 ).rowcount
                 removed += conn.execute(
+                    "DELETE FROM approval_requests WHERE status != 'pending' AND created_at < ?", (cutoff,)
+                ).rowcount
+                removed += conn.execute(
+                    "DELETE FROM approval_requests WHERE status != 'pending' AND rowid NOT IN "
+                    "(SELECT rowid FROM approval_requests ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                    (self.max_rows,),
+                ).rowcount
+                removed += conn.execute(
                     "DELETE FROM action_executions WHERE rowid NOT IN "
                     "(SELECT rowid FROM action_executions "
                     "ORDER BY created_at DESC, rowid DESC LIMIT ?)",

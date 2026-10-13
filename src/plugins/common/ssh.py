@@ -1,7 +1,6 @@
 """共享 SSH 执行内核：主机密钥拒绝优先、惰性导入、流式有界读取。"""
 from __future__ import annotations
 
-import shlex
 import time
 from dataclasses import dataclass
 from typing import Iterator
@@ -10,12 +9,17 @@ from src.plugins.common.endpoint import SshEndpoint
 from src.utils.security import redact_text, register_secrets
 
 
+# 只把固定加载器放入 argv。先完整接收脚本并检查读取状态，再在原 POSIX sh 中解析。
+# 执行前清除内部变量；业务命令读 stdin 时已是 EOF，不会吞掉尚未解析的后续脚本。
+_SUDO_LAUNCHER = """sudo sh -c '_aiops_script=$(cat) || exit; eval "unset _aiops_script; $_aiops_script"'"""
+
+
 class SshError(Exception):
     """SSH 连接、认证或执行失败。"""
 
 
 class SshOutcomeUnknown(SshError):
-    """命令可能已到达远端，不能因连接异常自动重试。"""
+    """命令可能已到达远端，连接异常或缺少退出状态均不能自动重试。"""
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,12 @@ def _read_channel(channel, *, output_limit: int, timeout: float) -> SshCommandRe
             time.sleep(0.01)
 
     code = int(channel.recv_exit_status())
+    if code == -1:
+        # Paramiko 用 -1 表示服务端未提供退出状态，不是远端命令返回了失败码。
+        raise SshOutcomeUnknown(
+            "SSH 通道已结束，但服务端未返回退出状态（exit_code=-1）；"
+            "命令可能已生效"
+        )
     stdout = redact_text(out.decode(errors="replace").strip())
     stderr = redact_text(err.decode(errors="replace").strip())
     if len(stdout) > output_limit:
@@ -103,7 +113,8 @@ def exec_command(
     """执行调用方已授权并构建的命令；本函数不校验业务白名单。
 
     使用主机密钥拒绝策略，按阶段超时并有界保留两流输出。尝试派发后传输失败
-    抛 SshOutcomeUnknown，不能据此认定未执行；其它 SSH 失败抛 SshError。
+    或缺少退出状态时抛 SshOutcomeUnknown，不能据此认定未执行；其它 SSH 失败抛 SshError。
+    sudo 先完整读取 stdin 脚本再解析执行，非 sudo 保留原命令执行方式。
     """
     try:
         import paramiko
@@ -111,7 +122,9 @@ def exec_command(
         raise SshError("缺少可选依赖 paramiko，请先安装：pip install paramiko") from exc
 
     register_secrets(endpoint.password)
-    full_cmd = f"sudo sh -c {shlex.quote(command)}" if sudo else command
+    # 直接 sudo sh -c <模板> 会被 pkill -f 误匹配；sh -s 则可能与业务命令抢读 stdin。
+    # 固定加载器只解析调用方已经授权并构建好的脚本，不插入模型自由文本。
+    full_cmd = _SUDO_LAUNCHER if sudo else command
     try:
         client = _new_client(paramiko, endpoint)
     except Exception as exc:
@@ -132,7 +145,12 @@ def exec_command(
             look_for_keys=endpoint.key_filename is None,
         )
         dispatch_attempted = True
-        _, stdout, _ = client.exec_command(full_cmd, timeout=endpoint.connect_timeout)
+        stdin, stdout, _ = client.exec_command(full_cmd, timeout=endpoint.connect_timeout)
+        if sudo:
+            stdin.write((command + "\n").encode("utf-8"))
+            stdin.flush()
+            # 只关闭写方向，让 sh 收到 EOF；继续读取输出和真实退出状态。
+            stdin.channel.shutdown_write()
         return _read_channel(
             stdout.channel,
             output_limit=max(int(output_limit), 1),

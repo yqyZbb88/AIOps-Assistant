@@ -18,6 +18,7 @@ from src.api import approvals as approvals_api
 from src.api import chat as chat_api
 from src.api import health as health_api
 from src.api import hosts as hosts_api
+from src.api import identity as identity_api
 from src.api import inspections as inspections_api
 from src.api import sessions as sessions_api
 from src.api import status as status_api
@@ -174,6 +175,7 @@ def create_app(
     app.include_router(sessions_api.router, dependencies=[Depends(require_auth)])
     app.include_router(inspections_api.router, dependencies=[Depends(require_auth)])
     app.include_router(hosts_api.router, dependencies=[Depends(require_auth)])
+    app.include_router(identity_api.router, dependencies=[Depends(require_auth)])
     return app
 
 

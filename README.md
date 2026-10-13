@@ -1,5 +1,9 @@
 # AIOps-Assistant
 
+控制台支持服务端核验的当前身份展示、管理员删除主机登记/停止托管采集、SSH 凭据编辑和
+人工审批历史。审批与执行结果分别展示，外部 Prometheus 不由项目修改。17 项指标的查询、
+单位和时间口径见[查询对照表](docs/metric-queries.md)，操作与权限见[控制台说明](docs/console.md)。
+
 AIOps-Assistant 是面向少量 Linux 主机的轻量运维助手，把 Prometheus 指标、Alertmanager
 告警、受控 SSH 诊断、人工审批和 SQLite 历史记录组织在同一控制台。
 当前版本 **0.6.2**，采用单进程、单 worker，使用 SQLite。

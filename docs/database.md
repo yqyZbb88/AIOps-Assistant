@@ -9,7 +9,7 @@
 | 数据库 | `data/aiops_assistant.db` |
 | 引擎 | Python 标准库 `sqlite3` |
 | 伴生文件 | `aiops_assistant.db-wal`、`aiops_assistant.db-shm` |
-| schema 版本 | v7，保存在 `PRAGMA user_version` |
+| schema 版本 | v8，保存在 `PRAGMA user_version` |
 | 总开关 | `storage.enabled` |
 | 默认备份方式 | 停服务后复制，或使用 SQLite `.backup` |
 
@@ -391,6 +391,18 @@ v7 在 v6 基础上为会话、告警、处置、建议、审批、幂等和巡�
 
 如果数据库来自更新版本程序，不要用旧版本程序写入。
 
+v8 新增 `approval_requests` 及 `(host_id, created_at)` 索引。该表冻结 `approval_id`、
+`session_id`、`requester`、`host_id`、`target_summary`、脱敏 `actions_json`、`created_at`，
+并保存 `status`、`decided_by`、`decided_at`。新申请先落盘后入内存队列；人工决策与
+`approval_decisions` 在同一 SQLite 事务写入。状态为 pending、approve、reject、expired、
+cancelled、evicted、abandoned；重启失去 checkpoint 的未决项标为 abandoned，原因不猜测。
+系统作废没有人工审批人/审批时间，保持空值。执行状态仍以 `action_executions` 为准。
+
+删除主机登记或会话不删除此表。历史 TTL/容量沿用 `history_ttl_hours` 与 `max_history_rows`，
+保护 pending 行；旧决策和已作废消息通过只读投影复用，不按 instance 猜测归属。
+已有会话/决策的旧清理策略保持原样，因此旧数据缺失的申请人、时间等返回空值，页面显示未知。
+迁移不重建旧 checkpoint，也不会自动执行旧申请。
+
 ## 常用查询
 
 ### 查看表
@@ -468,7 +480,7 @@ SSH 执行与数据库事务分开。命令结果为 `unknown` 时，应核对�
 
 HTTP 会话读写要求有效 Token、所有者身份匹配且仍有会话主机访问权；管理员也不能代读私有会话。
 撤销主机权限或 Token 不删除历史。user 为空的旧会话默认不可访问，不自动推断归属。
-常规初始化和升级不自动认领或删除匿名会话，SQLite schema 保持 7。
+常规初始化和升级不自动认领或删除匿名会话；当前 SQLite schema 为 8。
 
 HTTP /chat 在持久化关闭或无法验证会话时返回 503，禁止回退到没有授权主机范围的回答。
 内部可信旧入口的无持久化降级仍保留，不能通过 HTTP 触发。普通已完成回答的历史写入失败

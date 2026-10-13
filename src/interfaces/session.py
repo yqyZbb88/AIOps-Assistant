@@ -339,11 +339,12 @@ class SessionStore(ABC):
         """
 
     @abstractmethod
-    def reconcile_pending(self, live_approval_ids: Collection[str]) -> tuple[int, int]:
+    def reconcile_pending(self, live_approval_ids: Collection[str], *, host_id: str | None = None) -> tuple[int, int]:
         """收敛不在 live_approval_ids 中的 pending，返回 (作废轮数, 结果未知轮数)。
 
         无持久决策标为 abandoned，有决策保守标为 unknown，不自动补执行。每轮含两条
-        消息，计数按轮次。重启传空集合；运行期用于 TTL/容量淘汰后对账。
+        消息，计数按轮次。重启传空集合并省略 host_id；运行期按主机 TTL/容量淘汰后
+        对账须指定 host_id，不能用单台主机的队列作废其它主机的申请。
         """
 
     @abstractmethod
@@ -404,7 +405,7 @@ class ApprovalLedger(Protocol):
     ) -> None:
         ...
 
-    def reconcile_pending(self, live_approval_ids: Collection[str]) -> tuple[int, int]:
+    def reconcile_pending(self, live_approval_ids: Collection[str], *, host_id: str | None = None) -> tuple[int, int]:
         ...
 
 

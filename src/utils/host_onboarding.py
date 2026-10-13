@@ -1,6 +1,6 @@
 """管理员新增监控主机：目标发现、脱敏预览、SSH 认证测试与写盘。
 
-只负责新增，不提供删除/停用。managed 模式可能同时写 hosts.yaml 和
+登记和删除均复用管理配置事务。managed 模式可能同时写 hosts.yaml 和
 Prometheus file_sd 目标文件；单文件原子替换加异常回滚并非断电原子事务。
 登记主机不安装或启动远程 Exporter，Prometheus 后续发现目标也不代表 up=1。
 """
@@ -96,14 +96,14 @@ class HostOnboarding:
             })
         return targets
 
-    def options(self) -> dict[str, Any]:
+    def options(self, *, discover: bool = True) -> dict[str, Any]:
         """返回登记选项及发现目标，不包含原始凭据或完整 Prometheus 响应。"""
         manager = self.manager
         docs = manager._load_docs()
         mode = self._mode()
         try:
-            targets = self._targets()
-            warning = ""
+            targets = self._targets() if discover else []
+            warning = "" if discover else "未查询 Prometheus；仍可管理登记和已有托管目标，新增外部目标需恢复发现服务"
         except AdminConfigUnavailable:
             if mode == "external":
                 raise
@@ -124,7 +124,116 @@ class HostOnboarding:
                 if docs["diagnostics"].get("enabled", True) and value.get("enabled", True)
             ),
             "warning": warning,
+            "managed_targets": self._managed_targets() if mode == "managed" else [],
         }
+
+    def _managed_targets(self) -> list[str]:
+        """仅把指定 file_sd 文件中的默认标签目标认作本项目可删除目标。"""
+        import yaml
+        path = self.manager.target_path
+        try:
+            groups = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else []
+            if not isinstance(groups, list) or any(
+                not isinstance(g, dict) or not isinstance(g.get("targets"), list)
+                or not isinstance(g.get("labels", {}), dict) for g in groups
+            ):
+                raise ValueError
+            return sorted({str(address) for g in groups for address in g["targets"]
+                           if g.get("labels", {}).get("job", _MANAGED_JOB) == _MANAGED_JOB
+                           and g.get("labels", {}).get("instance", address) == address})
+        except (OSError, ValueError, TypeError, yaml.YAMLError):
+            raise AdminConfigUnavailable("自管目标文件无效，未修改采集配置") from None
+
+    def remove(self, revision: str, host_id: str | None, actor: str, *,
+               stop_collection: bool = False, address: str = "") -> dict[str, Any]:
+        """删除登记或指定托管目标；保留历史，引用/运行冲突整批拒绝。"""
+        import shutil
+        import yaml
+        from dataclasses import replace
+        from src.utils.host_access import parse_host_access
+        manager = self.manager
+        with manager._lock:
+            if revision != manager.revision():
+                raise AdminConfigConflict("配置已变化，请刷新后重试")
+            docs = manager._load_docs()
+            host = manager.host_registry(docs).get(host_id) if host_id else None
+            if host_id and host is None:
+                raise AdminConfigError("主机未登记")
+            if host:
+                settings = manager.runtime.current.settings
+                if any(host_id in ids for ids in parse_host_access(settings.auth.host_access).values()):
+                    raise AdminConfigConflict("主机仍有用户主机授权，请先撤销并保存")
+                if any(r.get("host_id") == host_id or r.get("target_instance") == host.monitor.instance
+                       or (host.ssh and (r.get("params") or {}).get("host") == host.ssh.host)
+                       for r in docs["rules"].get("rules", [])):
+                    raise AdminConfigConflict("主机仍被规则引用，请先删除或修改关联规则并保存")
+                db = manager.runtime.current.container._database()
+                if db is not None and db.query(
+                    "SELECT 1 FROM action_executions WHERE host_id = ? "
+                    "AND status IN ('pending', 'running', 'unknown') LIMIT 1", (host_id,)
+                ):
+                    raise AdminConfigConflict("主机存在运行中或结果未知的任务，请先核对执行记录")
+                if stop_collection:
+                    if host.monitor.job != _MANAGED_JOB:
+                        raise AdminConfigError("此目标由外部管理，只能删除 Assistant 登记")
+                    address = host.monitor.instance
+                docs["hosts"]["hosts"] = [h for h in docs["hosts"]["hosts"] if h["id"] != host_id]
+            elif not stop_collection:
+                raise AdminConfigError("请选择删除登记或停止托管采集")
+            target_path, target_text = None, None
+            if stop_collection:
+                if self._mode() != "managed" or address not in self._managed_targets():
+                    raise AdminConfigError("只能停止本项目 file_sd 文件中托管的目标")
+                if any(h.monitor.job == _MANAGED_JOB and h.monitor.instance == address
+                       for h in manager.host_registry(docs).all()):
+                    raise AdminConfigConflict("目标仍被登记主机引用，请通过该主机的删除入口操作")
+                target_path = manager.target_path
+                groups = yaml.safe_load(target_path.read_text(encoding="utf-8"))
+                retained = []
+                for group in groups:
+                    labels = group.get("labels", {})
+                    if labels.get("job", _MANAGED_JOB) == _MANAGED_JOB and labels.get("instance", address) == address:
+                        group["targets"] = [v for v in group["targets"] if v != address]
+                    if group["targets"]:
+                        retained.append(group)
+                target_text = yaml.safe_dump(retained, allow_unicode=True, sort_keys=False)
+            manager._validate(docs)
+            candidate = manager._candidate(docs)
+            if revision != manager.revision():
+                raise AdminConfigConflict("校验期间配置已变化，请刷新后重试")
+            # 与 SSH、审批、巡检及规则执行共用运行屏障；不触碰历史存储。
+            manager.runtime.begin_apply()
+            changed = {manager.paths["hosts"]: manager._dump(docs["hosts"])} if host else {}
+            if target_path:
+                changed[target_path] = target_text
+            old = {}
+            backup_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + secrets.token_hex(4)
+            try:
+                backup = manager.backup_root / backup_id
+                backup.mkdir(parents=True, exist_ok=False)
+                for index, path in enumerate(changed):
+                    old[path] = path.read_text(encoding="utf-8")
+                    shutil.copy2(path, backup / (str(index) + "-" + path.name))
+                for path, content in changed.items():
+                    manager._atomic_write(path, content)
+                new_revision = manager.revision()
+            except Exception:
+                try:
+                    for path, content in old.items():
+                        manager._atomic_write(path, content)
+                finally:
+                    manager.runtime.cancel_apply()
+                raise
+            manager.runtime.commit(replace(candidate, revision=new_revision))
+            manager.active_revision = new_revision
+            self._verified.clear()
+            from src.utils.logger import write_audit
+            write_audit({"action": "host_remove" if host else "target_remove", "actor": actor,
+                         "host_id": host_id, "stop_collection": stop_collection,
+                         "revision": new_revision, "backup_id": backup_id})
+            return {"revision": new_revision, "backup_id": backup_id,
+                    "message": "已删除登记；历史记录保留" + ("，托管采集将在 30 秒内停止" if stop_collection else "，Prometheus 继续采集")
+                    if host else "托管采集将在 30 秒内停止；Prometheus 已有样本按原保留策略保留"}
 
     def _prepare(self, draft: Mapping[str, Any], docs: Mapping[str, Any]) -> tuple[dict[str, Any], bool, str]:
         manager = self.manager

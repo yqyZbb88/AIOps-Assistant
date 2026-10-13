@@ -28,6 +28,10 @@ h1,h2,h3,p{margin-top:0}h1{margin-bottom:0;font-size:1.5rem;letter-spacing:-.025
 .sidebar-foot{margin-top:auto;display:grid;grid-template-columns:1.7rem 1fr;align-items:center;gap:.35rem;padding:.6rem}.connection-dot{width:.55rem;height:.55rem;border-radius:50%;background:var(--muted)}.connection-dot.online{background:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}.connection-dot.error{background:var(--red)}
 .sidebar-collapsed .brand-copy,.sidebar-collapsed .nav-label,.sidebar-collapsed .nav-count{display:none}.sidebar-collapsed .brand,.sidebar-collapsed .nav-item{grid-template-columns:1fr}.sidebar-collapsed .sidebar-foot{grid-template-columns:1fr;justify-items:center}
 .app-main{min-width:0}.topbar{position:sticky;top:0;z-index:8;min-height:4.5rem;padding:.75rem clamp(1rem,3vw,2.5rem);display:flex;justify-content:space-between;align-items:center;gap:1rem;border-bottom:1px solid var(--line);background:var(--bg)}
+.current-identity{display:grid;gap:.2rem;max-width:18rem;overflow-wrap:anywhere;align-self:center}.current-identity strong{font-size:1rem}.current-identity span{color:var(--muted);font-size:var(--text-label)}
+.approval-history-panel{margin-top:2rem}.approval-history-pagination{display:flex;align-items:center;justify-content:flex-end;gap:1rem;padding:1rem;flex-wrap:wrap}.approval-history-row{padding:1rem 0;border-bottom:1px solid var(--line)}.approval-history-row p{overflow-wrap:anywhere;margin:.35rem 0}.ssh-editor-status{font-weight:600;overflow-wrap:anywhere}
+.approval-progress{padding:var(--space-4);margin-bottom:var(--space-4);overflow-wrap:anywhere}.approval-progress p{margin:.6rem 0}.approval-progress .action-box{margin-top:1rem}
+@media(max-width:780px){.topbar .current-identity{grid-column:1/-1;justify-self:end;text-align:right;max-width:100%}}
 .panel-kicker{margin:0 0 var(--space-1);color:var(--muted);font-size:var(--text-label)}.topbar-actions{display:flex;align-items:end;gap:.55rem}.host-picker{display:flex;flex-direction:column;gap:.2rem;color:var(--muted);font-size:var(--text-label)}.host-picker select{min-width:12rem;padding:.52rem .65rem}.auth-button{min-width:5.6rem}
 .notice-anchor{margin:1rem clamp(1rem,3vw,2.5rem) 0}.notice{position:fixed;top:var(--notice-top,6.7rem);left:calc(var(--sidebar) + clamp(1rem,3vw,2.5rem));right:clamp(1rem,3vw,2.5rem);z-index:100;max-height:calc(100dvh - var(--notice-top,6.7rem) - 1rem);overflow:auto;margin:0;padding:.65rem .8rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;border:1px solid var(--line-strong);border-radius:9px;background:var(--panel);box-shadow:var(--shadow)}.notice #notice-text{min-width:0;overflow-wrap:anywhere}.notice #notice-close{flex:none}.notice.error{border-color:var(--red);color:var(--red)}.notice.success{border-color:var(--accent)}
 main{padding:1.25rem clamp(1rem,3vw,2.5rem) 3rem}.view{min-width:0}
@@ -128,6 +132,7 @@ button.icon-button { flex: 0 0 auto; width: 2.35rem; }
 .widget-pref-actions button { display: inline-grid; place-items: center; width: 2rem; min-height: 2rem; padding: 0; }
 .check-item, .admin-check { min-height: 44px; }
 @media (max-width: 780px) {
+  .topbar { position: sticky; top: 0; }
   button.icon-button { width: 44px; }
   .widget-pref-actions button { width: 44px; min-height: 44px; }
   .admin-form button, .admin-actions button, .admin-card-actions button,

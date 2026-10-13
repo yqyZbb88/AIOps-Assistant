@@ -113,7 +113,7 @@ def build_alert_context(
                 )
         except Exception as exc:  # 尽力而为：单项失败不影响整体
             logger.debug("告警趋势取数失败 metric=%s instance=%s: %s", definition.metric_id, instance, exc)
-            metric = {}
+            metric = {"state": "query_error"}
         lines.append(_trend_line(title, metric, trend_minutes=trend_minutes, unit=definition.unit))
 
     return "\n".join(lines)
@@ -127,8 +127,25 @@ def _trend_line(
     unit: str,
 ) -> str:
     """把单指标趋势汇总拼成一行文本。"""
+    if summary and summary.get("state") == "not_applicable":
+        return f"- {title}近 {trend_minutes} 分钟趋势：不适用（未启用 Swap）"
+    if summary and summary.get("state") == "query_error":
+        return f"- {title}近 {trend_minutes} 分钟趋势：查询失败"
     if not summary or not summary.get("points"):
         return f"- {title}近 {trend_minutes} 分钟趋势：{_UNAVAILABLE}"
+    if summary.get("series"):
+        # 设备摘要独立计算，不能把多个挂载点/网卡的最后一条值当作整台主机。
+        details = []
+        for series in summary["series"]:
+            labels = ",".join(f"{k}={v}" for k, v in sorted((series.get("labels") or {}).items())) or "value"
+            values = [p[1] for p in series.get("values", []) if p[1] is not None]
+            if not values:
+                state = "不适用" if series.get("no_swap") else "无数据"
+                details.append(f"{labels}：{state}")
+            else:
+                details.append(f"{labels}：当前 {_fmt_value(values[-1], unit)} "
+                               f"（最低 {_fmt_value(min(values), unit)} / 最高 {_fmt_value(max(values), unit)}）")
+        return f"- {title}近 {trend_minutes} 分钟趋势：" + "；".join(details)
     return (
         f"- {title}近 {trend_minutes} 分钟趋势：当前 {_fmt_value(summary['latest'], unit)} "
         f"（最低 {_fmt_value(summary['min'], unit)} / 最高 {_fmt_value(summary['max'], unit)}，"
