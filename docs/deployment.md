@@ -1,8 +1,47 @@
 # 部署与升级
 
-0.6.2 仅提供容器运行方式。宿主机需要 Docker Engine / Docker Desktop 与
-Compose 2.24+；Docker Desktop 使用 Linux 容器。无需宿主机 Python、Conda 或项目依赖。
-Assistant 保持单进程、单 worker、SQLite schema 7。
+项目通过 Docker 运行。第一次安装从 [快速入门](quickstart.md) 开始。
+本页说明要上传什么、怎么配置 SSH、如何处理 Grafana 登录问题，以及日常升级和备份。
+运行环境需要 Docker 和 Compose 2.24+；Windows/macOS 使用 Linux 容器。
+
+<details>
+<summary>维护者需要知道的运行限制</summary>
+
+当前版本 0.6.2 使用单进程、单 worker，SQLite 数据库版本为 schema 7。
+不支持多实例共享配置目录。宿主机不需要安装项目 Python/Node 依赖。
+
+</details>
+
+## 首次部署上传哪些文件
+
+以下清单适用于在服务器构建并使用当前 compose.yaml 启动全栈，保持同一根目录：
+
+```text
+Assistant/
+├── compose.yaml
+├── Dockerfile
+├── .dockerignore
+├── requirements-runtime.txt
+├── requirements-lock.txt
+├── src/
+├── scripts/
+└── deploy/
+    ├── alertmanager/
+    ├── grafana/
+    ├── prometheus/
+    └── templates/
+```
+
+src 包含前端静态文件，deploy 包含初始化模板和被 Compose 直接挂载的组件配置，
+三个目录均完整携带。建议同时保留 .env.example、README.md、docs/；
+构建测试目标还需 requirements.txt 和 tests/。
+首次新部署不上传开发机 .runtime、.env、__pycache__、*.pyc、.pytest_cache 或虚拟环境。
+Git 和 Docker 有忽略规则，手动压缩/复制不会自动遵守这些规则。
+
+已有部署升级时保留服务器自己的运行目录和数据卷；迁移到另一台服务器并保留历史时，
+须另外搬迁同批运行目录与三个卷的受控备份。镜像、运行目录和数据卷是三类不同对象。
+后续 Docker 命令都在包含 compose.yaml 的目录执行；使用自定义项目或运行目录时，
+所有查看密码、重建、备份命令保持相同 -p、--env-file 和 AIOPS_RUNTIME_DIR。
 
 ## 首次启动
 
@@ -29,6 +68,7 @@ Grafana 页面改密后以其数据库为准。重复初始化保留有效 Token
 管理员在“系统管理”配置 SSH、用户 Token 和通用模型。SSH 只在该页面录入，支持多份凭据；
 已登记主机选择凭据后，用户按照主机访问授权使用它。密码和私钥认证都需要经核验的
 known_hosts，每条主机公钥占一行；认证测试不执行命令，也不会自动授予诊断或写权限。
+具体获取步骤见 [获取并核验 SSH known_hosts](#获取并核验-ssh-known_hosts)。
 
 模型支持 OpenAI 兼容的 Chat Completions 接口，完整 Agent 要求标准工具调用。
 保存只校验参数，管理员点击“测试已保存的模型连接”才发出请求。
@@ -74,6 +114,239 @@ ssh -N -L 8000:127.0.0.1:8000 ops@server.example
 ```
 
 按实际发布端口调整目标；长期访问使用带 TLS 的反向代理并保留鉴权。
+
+## 获取并核验 SSH known_hosts
+
+**你要准备的是：一条能证明目标服务器身份的公钥记录。**
+这条记录叫 known_hosts。密码和登录私钥证明“你是谁”，known_hosts 用来确认“连的是哪台服务器”。
+使用密码登录时也需要它。
+
+下面按 SSH 端口 22 举例。把所有 192.0.2.20 换成自己的目标服务器 IP。
+如果登记主机时用域名，下面也用同一个域名。9100 是监控端口，不是 SSH 端口。
+
+### 第一步：到目标服务器确认指纹
+
+**在哪里操作：** 目标服务器的本地终端、云平台网页终端，或以前已经确认安全的管理员连接。
+
+```bash
+sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
+```
+
+**会看到什么：** 一行结果，其中有 `SHA256:...`。把这一段完整记录下来，后面要比较。
+指纹是公钥的简短校验值，不是要粘贴到页面的最终内容。
+命令只读取 .pub 公钥，不要读取同名但没有 .pub 后缀的私钥。
+
+如果这个文件不存在，先请服务器管理员确认正在使用的主机公钥类型，再取对应指纹。
+不要为了完成教程重新生成服务器密钥。
+
+### 第二步：在自己的电脑获取公钥记录
+
+**在哪里操作：** 个人电脑或部署机，只要能访问目标 SSH。无需输入 SSH 密码。
+先找一个新的空工作目录，在里面运行下面两条命令。
+
+Linux/macOS Bash：
+
+```bash
+ssh-keyscan -T 5 -p 22 -t ed25519 192.0.2.20 > known_hosts.candidate
+ssh-keygen -lf known_hosts.candidate -E sha256
+```
+
+Windows PowerShell：
+
+```powershell
+ssh-keyscan -T 5 -p 22 -t ed25519 192.0.2.20 | Set-Content -Encoding ascii .\known_hosts.candidate
+ssh-keygen -lf .\known_hosts.candidate -E sha256
+```
+
+**会看到什么：** 当前目录出现 known_hosts.candidate，第二条命令也会打印 SHA256 指纹。
+把它与第一步的指纹逐字比较，公钥类型也要相同。
+
+**只有一致才继续。** ssh-keyscan 只取回网络上提供的公钥，本身不判断它是否可信。
+没有输出、连接超时或指纹不一致时，检查地址、SSH 端口和服务器是否换过密钥，
+不要直接把结果录入页面。无法通过可信途径确认指纹时，先请目标管理员协助。
+
+缺少 ssh-keyscan/ssh-keygen 时，安装 OpenSSH 客户端。
+Windows 安装方法见 [Microsoft 说明](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)，
+个人电脑只需客户端；Linux 使用发行版的 OpenSSH 客户端包。
+
+### 第三步：复制文件内容，填到页面
+
+Linux/macOS 查看文件：
+
+```bash
+cat known_hosts.candidate
+```
+
+Windows PowerShell 查看文件：
+
+```powershell
+Get-Content -Raw .\known_hosts.candidate
+```
+
+复制完整的公钥行。每行包含三部分：服务器地址、密钥类型、公钥内容，用空格分隔。
+**页面要的是文件内容，不是文件名，也不是 SHA256 指纹。**
+
+1. 用管理员 Token 连接，打开“系统管理 → SSH 凭据”。
+2. 凭据 ID 可填 linux-test-ssh；用户名填这台 Linux 服务器的登录账号。
+3. 选密码认证并填写该账号密码，或选私钥认证并上传用户登录私钥。
+4. 把刚才复制的公钥行粘贴到“可信 known_hosts”，点“保存 SSH 凭据”。
+
+用户的 .pub 公钥、服务器私钥、终端提示文字都不能填到 known_hosts。
+当前不支持带口令的登录私钥；不确定选哪个文件时，先用允许的密码方式登录。
+
+### 第四步：关联主机，再测试连接
+
+- **正在添加新主机：** 在“监控主机”向导里选择刚保存的凭据，填写实际 SSH 端口，点“测试 SSH”。
+- **主机已经添加：** 在“SSH 凭据”页下方找到它，选凭据并点“更新关联”，再点“测试已保存的 SSH 连接”。
+
+**看到什么算成功：** 页面提示主机密钥和认证通过。保存成功只说明格式可以接受，
+连接测试通过才说明这组信息能登录；此时还没有执行任何远程命令。
+下一步按 [只读诊断教程](guide.md#第一次执行只读诊断) 授权查询。
+
+<details>
+<summary>SSH 不是 22 端口，例如 2222，怎么填写？</summary>
+
+扫描时把 -p 22 改成 -p 2222。例如 Bash：
+
+```bash
+ssh-keyscan -T 5 -p 2222 -t ed25519 192.0.2.20 > known_hosts-2222.candidate
+ssh-keygen -lf known_hosts-2222.candidate -E sha256
+```
+
+记录中的地址应为 `[192.0.2.20]:2222`，核验后复制这个文件的内容。
+主机向导的“SSH 端口”也填 2222。Exporter 仍用其实际监控端口，例如 9100。
+已有主机的关联按钮不提供改端口功能，处理办法见 [关联 SSH](guide.md#准备并关联-ssh-凭据)。
+
+</details>
+
+<details>
+<summary>自己已经有可信的 known_hosts 文件，怎么提取？</summary>
+
+Linux/macOS：
+
+```bash
+ssh-keygen -F 192.0.2.20 -f ~/.ssh/known_hosts
+ssh-keygen -F '[192.0.2.20]:2222' -f ~/.ssh/known_hosts
+```
+
+PowerShell：
+
+```powershell
+ssh-keygen -F 192.0.2.20 -f "$env:USERPROFILE\.ssh\known_hosts"
+ssh-keygen -F '[192.0.2.20]:2222' -f "$env:USERPROFILE\.ssh\known_hosts"
+```
+
+选符合实际端口的那条命令。输出中 # 开头的是注释，复制完整公钥行；
+哈希形式的主机记录可以原样保留。共用一个凭据连接多台服务器时，每台已核验记录各放一行。
+服务器重装或换密钥后重新核验，不能靠忽略检查来解决不匹配。
+
+</details>
+
+<details>
+<summary>也可以直接在可信的服务器终端生成公钥记录</summary>
+
+在第一步使用的可信终端上执行，地址换成 Assistant 实际连接的地址：
+
+```bash
+awk -v host='192.0.2.20' '{print host, $1, $2}' /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+通过可信渠道把输出的完整一行带回，填到页面即可。
+端口非 22 时，把 host 值改成 `[192.0.2.20]:2222`。
+
+</details>
+
+<details>
+<summary>没有登录私钥，又需要使用私钥认证，怎么准备？</summary>
+
+在个人电脑新建一个工作目录，确认以下文件名还没有用过，再生成专用测试密钥：
+
+```bash
+ssh-keygen -t ed25519 -f ./aiops_test_ed25519
+```
+
+如果提示覆盖旧文件，选择不覆盖。当前项目不支持私钥口令，所以这次专用测试密钥的
+两次口令输入都留空回车。得到两个文件：
+
+| 文件 | 放到哪里 |
+|---|---|
+| aiops_test_ed25519 | 用户登录私钥，在 Assistant 页面上传，不能公开 |
+| aiops_test_ed25519.pub | 用户公钥，添加到远端账号的 authorized_keys，不能当作 known_hosts |
+
+在目标服务器可信终端里，使用实际登录账号操作，不要误写到 root 的家目录：
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+```
+
+用编辑器打开该账号的 ~/.ssh/authorized_keys，保留原有内容，另起一行粘贴刚生成的用户公钥。
+保存后执行 `chmod 600 ~/.ssh/authorized_keys`。远端不需要客户端私钥。
+确认 SSH 服务允许该账号公钥登录，再在个人电脑测试：
+
+```bash
+ssh -i ./aiops_test_ed25519 -p 22 ops@192.0.2.20
+```
+
+换成真实账号、地址和端口，首次连接核对服务器指纹。成功后 exit 退出。
+之后上传私钥到 Assistant，并填写相同用户名和可信 known_hosts。
+无口令私钥应限制读取权限，只给测试账号所需权限；结束后按需撤回远端用户公钥授权。
+
+</details>
+
+命令参数含义见 OpenSSH 官方 [ssh-keyscan](https://man.openbsd.org/ssh-keyscan) 与
+[ssh-keygen](https://man.openbsd.org/ssh-keygen) 手册。
+
+## Grafana 登录失败与旧数据卷
+
+先分清三种登录信息：Assistant 用 Token，Linux 用 SSH 账号，Grafana 用自己的用户名和密码。
+新 Grafana 用户名是 admin。下面的命令显示的是项目保存的初始密码。
+如果你在 Grafana 改过密码，或 Docker 还在使用以前的数据卷，这个初始密码可能已经不能登录。
+Grafana 只在首次初始化时采用 admin_password，见 [官方配置说明](https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/#admin_password)。
+
+先在对应部署项目中执行只读检查：
+
+```bash
+docker compose ps --all
+docker compose logs --tail 60 grafana
+docker compose run --rm --no-deps init show-grafana-password
+```
+
+确认浏览器连到正确部署及发布端口；新部署用 admin 和命令输出原值，不添加引号。
+日志若提示登录次数限制，停止重试，等待限制时间后再测试。不要公开最后一条命令的密码输出。
+
+Linux Bash 查看实际数据库卷和创建时间：
+
+```bash
+grafana_container=$(docker compose ps -q grafana)
+docker inspect "$grafana_container" --format '{{range .Mounts}}{{if eq .Destination "/var/lib/grafana"}}{{.Name}}{{end}}{{end}}'
+```
+
+将下面占位卷名替换为上一条输出，不带尖括号执行：
+
+```bash
+docker volume inspect <实际卷名> --format '{{.CreatedAt}}'
+```
+
+卷早于本次部署说明可能复用了旧数据。普通 down 保留卷；重新生成 .runtime 或删除
+应用镜像不会重置 Grafana 数据库。没有确认旧密码时，可在维护窗口用
+[官方 CLI](https://grafana.com/docs/grafana/latest/administration/cli/#reset-admin-password)
+将默认管理员 ID 1 的密码重置为当前容器挂载的初始密码；先保留 Grafana 卷备份：
+
+```bash
+docker compose exec -T grafana sh -c '
+test -s /run/grafana-secrets/admin_password &&
+grafana cli --homepath /usr/share/grafana --config /etc/grafana/grafana.ini \
+  --configOverrides cfg:default.paths.data=/var/lib/grafana \
+  admin reset-admin-password --password-from-stdin \
+  < /run/grafana-secrets/admin_password
+'
+```
+
+这会修改数据库中的管理员密码，保留仪表盘、数据源和数据卷；只在确认需恢复账号时执行。
+看到 Admin password changed successfully 后再登录。管理员已改名或 ID 非 1 时，
+根据 CLI 返回的实际管理员列表选择 --user-id，不反复重置错误账号。
+登录成功后如再次改密，使用新密码并另行妥善保存；初始化文件不会自动同步。
 
 ## 配置与数据位置
 
@@ -176,11 +449,65 @@ foreach ($backupVolume in $backupVolumes) {
 这只是停机归档方式，不是在线 Prometheus 快照。生成后校验归档可读、文件列表及摘要，
 转存加密备份介质；归档包含明文凭据。
 
+### Linux Bash 停机整栈备份示例
+
+下面同样针对默认项目名 aiops-assistant、运行目录 .runtime 和镜像 aiops-assistant:local。
+自定义部署先按实际挂载替换三个变量和卷名，不从文件夹名称猜测卷名。
+在部署机项目根目录的新 Bash 终端整块执行，set -e 会在出错时停止；它会停止业务栈，
+应安排维护窗口。备份目录建在项目旁，不能建到 .runtime 内导致归档自身：
+
+```bash
+set -e
+runtime_source=$(realpath .runtime)
+backup_root="$(dirname "$PWD")/aiops-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+backup_image=aiops-assistant:local
+test -d "$runtime_source"
+docker image inspect "$backup_image" > /dev/null
+mkdir -m 700 "$backup_root"
+docker compose down
+docker run --rm --network none --entrypoint python --workdir /source \
+  --mount "type=bind,src=$runtime_source,dst=/source,readonly" \
+  --mount "type=bind,src=$backup_root,dst=/backup" \
+  "$backup_image" -m tarfile -c /backup/runtime.tar .
+for backup_volume in aiops-assistant_prometheus-data aiops-assistant_alertmanager-data aiops-assistant_grafana-data
+do
+  docker volume inspect "$backup_volume" > /dev/null
+  docker run --rm --network none --entrypoint python --workdir /source \
+    --mount "type=volume,src=$backup_volume,dst=/source,readonly" \
+    --mount "type=bind,src=$backup_root,dst=/backup" \
+    "$backup_image" -m tarfile -c "/backup/$backup_volume.tar" .
+done
+cp -a deploy "$backup_root/deploy"
+cp compose.yaml "$backup_root/compose.yaml"
+if [ -f .env ]
+then
+  cp .env "$backup_root/.env"
+fi
+docker compose config --images > "$backup_root/images.txt"
+(
+  cd "$backup_root"
+  sha256sum *.tar > SHA256SUMS
+  sha256sum --check SHA256SUMS
+)
+printf '备份位置：%s\n' "$backup_root"
+```
+
+预期有 runtime.tar、三个卷归档、校验清单和部署组件配置。另行保存当前已验证源码/
+Git 提交与镜像包或可重新取得的镜像摘要；images.txt 只是标签列表，不等于完整镜像备份。
+归档内容含凭据，应转存受控备份介质。备份结束且无需升级时，在原项目目录
+执行 `docker compose up -d --wait --wait-timeout 180` 恢复服务，并重新核对业务。
+校验和通过仅证明归档未发生改变，能否恢复仍需按下节在测试环境验证。
+
+### 恢复归档
+
 恢复只使用自己验证过的归档，在停机、确认目标为空且保留当前副本后，通过同一镜像
 将对应目录或卷挂载到 `/restore`，执行 `python -m tarfile -e /backup/对应归档.tar /restore`。
 恢复到新卷时显式核对 Compose 实际挂载；不要覆盖仍在运行的卷。Python 解包不负责
 恢复部署所需的全部 POSIX 属主/权限，需按原部署核对，尤其 Grafana 等非 root 服务。
 随后验证 SQLite 完整性、凭据引用、监控数据与业务接口，见[数据库恢复](database.md#恢复)。
+首次演练应在独立测试栈进行，按 [重启、备份与日志](testing.md#8-重启备份与日志)
+事先记录会话 ID、配置和告警，再恢复同批数据逐一比较。不要用生产数据副本启动带真实
+写授权的第二套服务，以免自动处置重复作用于实际主机。
 
 ## 日志与监控
 
@@ -287,3 +614,72 @@ WantedBy=multi-user.target
 登记；外部模式先在外部 Prometheus 配置 scrape target，等待发现后再选目标登记。
 核对 /targets 的 up、标签 job/instance 和 17 项即时/趋势状态，再关联 SSH 并单独授权。
 登记不会自动安装远程 Exporter，也不扩大 Compose 容器权限。
+
+### 独立 Linux 测试主机安装 Exporter
+
+本例适用于使用 systemd 的 Linux 测试主机；操作在**被监控主机终端**执行，
+不是在 Assistant 容器里执行。已有受管理 Exporter 时先核对其版本、服务与监听端口，
+不要覆盖另一套安装。安装工具需 curl、tar、sha256sum；Ubuntu/Debian 可通过
+`sudo apt-get install ca-certificates curl tar coreutils` 安装。
+
+以固定的 node_exporter 1.12.1 为例，在新的下载目录执行；amd64 对应 x86_64，
+ARM64 主机改用 arm64，其它架构从 [官方发布页](https://github.com/prometheus/node_exporter/releases/tag/v1.12.1)
+选择匹配包。不要从来历不明的镜像站直接取二进制运行。
+
+```bash
+uname -m
+mkdir -p ~/aiops-exporter-download
+cd ~/aiops-exporter-download
+exporter_version=1.12.1
+exporter_arch=amd64
+exporter_archive="node_exporter-${exporter_version}.linux-${exporter_arch}.tar.gz"
+curl -fLO "https://github.com/prometheus/node_exporter/releases/download/v${exporter_version}/${exporter_archive}"
+curl -fLO "https://github.com/prometheus/node_exporter/releases/download/v${exporter_version}/sha256sums.txt"
+grep " ${exporter_archive}$" sha256sums.txt > selected-checksum.txt
+sha256sum --check selected-checksum.txt
+```
+
+必须看到该文件校验 OK，任一下载/筛选/校验失败均停止后续安装。
+校验清单与二进制来自同一官方发布，校验主要发现下载损坏；来源信任仍依赖官方渠道。
+没有设置全局 set -e 的终端应逐条检查结果，不在前一步失败后继续复制命令。
+
+```bash
+tar -xzf "$exporter_archive"
+sudo install -m 0755 "node_exporter-${exporter_version}.linux-${exporter_arch}/node_exporter" /usr/local/bin/node_exporter
+id node_exporter
+```
+
+如果最后一条提示用户不存在，才创建专用服务账户：
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin node_exporter
+```
+
+检查 `/usr/sbin/nologin` 在该发行版存在；存在的 node_exporter 账户不重复创建。
+用编辑器创建 `/etc/systemd/system/node_exporter.service`，粘贴上一节完整 ini 服务定义。
+例如 `sudo nano /etc/systemd/system/node_exporter.service`，nano 使用 Ctrl+O、回车保存，
+Ctrl+X 退出。确认 User/Group 对应该账户，ExecStart 对应安装路径后执行：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now node_exporter
+sudo systemctl status node_exporter --no-pager
+curl -fsS http://127.0.0.1:9100/metrics -o /tmp/aiops-node-metrics.txt
+grep '^node_memory_MemTotal_bytes ' /tmp/aiops-node-metrics.txt
+```
+
+预期服务为 active (running)，指标文件包含 node_memory_MemTotal_bytes 等 node_* 样本。
+这只证明目标本机采集正常；防火墙与云安全组应只允许 Prometheus 所在受信网络访问 9100。
+在隔离内网教程中使用 HTTP；跨不可信网络需另行配置 TLS/认证，不能将明文 Exporter
+端口直接暴露给公网。组件原理与安装示例见 [Prometheus 官方指南](https://prometheus.io/docs/guides/node-exporter/)。
+
+下一步在**部署机项目根目录**，从 Prometheus 所在网络位置检查目标。将示例地址替换为
+被监控主机实际可达 IP；助手容器仅用于同一 Compose 网络的初筛，最终以 Prometheus Targets 为准：
+
+```bash
+docker compose exec -T assistant python -c "import requests; r=requests.get('http://192.0.2.20:9100/metrics', timeout=5); r.raise_for_status(); print('Exporter HTTP', r.status_code)"
+```
+
+预期 HTTP 200；连接拒绝检查服务和监听，超时检查路由、防火墙、安全组。
+不要把目标主机本地的 127.0.0.1 或个人电脑地址填成容器可达目标。
+接着按 [登记实际主机](guide.md#登记实际主机) 完成页面登记并检查采样。

@@ -4,6 +4,17 @@
 每个场景给出操作与预期结果；测试报告按实际执行填写，不把部署成功等同于业务验收通过。
 部署准备见 [部署与升级](deployment.md)，页面操作见 [控制台说明](console.md)。
 
+第一次测试可以按下面顺序做，不用先看完所有脚本和字段：
+
+1. 按第 3 节建立一套单独的测试环境。它使用自己的目录、端口和数据，不复用日常部署。
+2. 按第 4 节运行自动检查，再按第 5 节用浏览器实际操作。
+3. 按第 6 节触发一次告警，确认能收到，再恢复测试状态。
+4. 要用 AI、SSH 或审批时，再做第 7 节。没有准备这些能力就记录为“未执行”。
+5. 最后做第 8 节的重启和备份恢复，按第 9 节记录结果。
+
+第 2 节的离线测试检查程序逻辑，模型和 SSH 使用模拟对象，不会实际登录你的服务器。
+真实连接是否可用，要通过后面的现场操作确认。
+
 ## 1. 选择测试范围
 
 | 范围 | 使用环境 | 验证内容 |
@@ -223,6 +234,171 @@ docker compose -p aiops-local-test --env-file .env.example run --rm --no-deps --
 `/inspections/recent` 只归档异常，正常轮次没有异常记录也可能是正确结果。验证异常巡检时，
 在测试栈临时调整指标阈值使已采集值达到异常等级，显式应用后等待一轮；核对时间、主机和
 指标快照，再恢复原阈值并应用。合成告警本身不等同于异常巡检。
+
+### 发送绑定测试主机的单条告警
+
+本场景只验证 Alertmanager → Assistant → 归档/规则/AI 路径，不制造 CPU 负载，
+也不经过 Prometheus 告警表达式。默认先保持自动处置关闭；仅在
+[规则日志标记演练](guide.md#第一次配置告警规则自动处置) 中明确配置了测试动作时打开对应开关。
+
+前提：已按第 3 节建立独立栈，终端的 AIOPS_RUNTIME_DIR、端口等环境变量保持原值；
+已登记自己的 Linux 测试主机，并确认实际 job、instance。
+在**部署机项目根目录**用编辑器创建 `.runtime/acceptance_alert.py`，粘贴以下内容，
+将 job/instance 替换为该主机真实标签。示例地址是文档保留地址，不对应真实目标。
+
+```python
+from datetime import datetime, timedelta, timezone
+import uuid
+import requests
+
+now = datetime.now(timezone.utc)
+run_id = uuid.uuid4().hex[:12]
+payload = [{
+    "labels": {
+        "alertname": "AIOpsAcceptance",
+        "job": "aiops-hosts",
+        "instance": "192.0.2.20:9100",
+        "severity": "warning",
+        "test_run": run_id,
+    },
+    "annotations": {"summary": "Isolated acceptance alert"},
+    "startsAt": now.isoformat(),
+    "endsAt": (now + timedelta(minutes=2)).isoformat(),
+}]
+response = requests.post("http://alertmanager:9093/api/v2/alerts", json=payload, timeout=10)
+response.raise_for_status()
+print("Alertmanager accepted", response.status_code, "test_run=", run_id)
+```
+
+Bash 执行（脚本在 init 的一次性 Python 容器运行，不要求部署机安装 requests）：
+
+```bash
+docker compose -p aiops-local-test --env-file .env.example run --rm -T --no-deps --entrypoint python init - < .runtime/acceptance_alert.py
+```
+
+Windows PowerShell 使用相同文件内容，改用管道：
+
+```powershell
+Get-Content -Raw -LiteralPath .runtime/acceptance_alert.py | docker compose -p aiops-local-test --env-file .env.example run --rm -T --no-deps --entrypoint python init -
+```
+
+执行结束应返回 0 并打印 2xx。接收成功只证明 Alertmanager 接受，继续等待通知周期，
+在对应测试栈控制台选择该主机、进入“运维记录”看 AIOpsAcceptance 告警归档及 test_run。
+约两分钟到期后再等通知周期检查 resolved；不持续重发同一告警来保持 firing。
+每次执行生成新 test_run，适合演练关闭自动执行与启用测试动作的差异。
+Alertmanager 会按告警名/实例分组，重复操作可能要等待 group_interval 才投递。
+未匹配规则且启用了 LLM 时可能调用模型；有规则但关闭自动执行不会转交 AI。
+只验收内置 local-node 时，将 job 改为 node-exporter、instance 改为 node-exporter:9100。
+归属错误先检查标签，不直接扩大规则授权。
+
+### 独立 Linux 测试主机的真实资源负载
+
+这三个脚本用于在**独立 Linux 测试主机**上主动触发告警。默认直接制造高负载，
+不需要先调低 Prometheus 的告警阈值。它们都是独立的 Bash 文件，只复制需要的那个也能运行。
+
+| 文件 | 直接运行的效果 |
+|---|---|
+| [load_gen.sh](../scripts/load_gen.sh) | 全部可用 CPU 核心满载，保持 5 分钟 |
+| [load_mem.sh](../scripts/load_mem.sh) | 根据当前剩余内存分配数据，把内存使用率升到约 90%，运行 5 分钟 |
+| [load_disk.sh](../scripts/load_disk.sh) | 在 `/var/tmp` 所在磁盘创建临时文件，把该磁盘使用率升到约 90%，运行 5 分钟 |
+
+**第一步：确认监控已连通。** 在 Assistant 控制台选择测试主机，确认能看到 CPU、内存
+和磁盘的实时数据。脚本要在这台被监控的测试主机上执行；在 Assistant 容器里运行，
+通常不会得到目标主机的高负载告警。Exporter 的 job/instance 应与主机配置一致。
+
+**第二步：复制并运行脚本。** 从项目的 `scripts/` 目录复制三个 `load_*.sh` 文件到
+测试主机，例如放到 `~/aiops-load-test/`，在该目录打开终端。需要 Linux、Bash 4+ 和
+常见的 GNU 系统工具，不需要安装 Python、stress-ng 或其他压测程序。直接用 `bash`
+运行，不必先 `chmod +x`，一般也不需要 sudo。若目标目录不可写，换成同一磁盘上的可写目录。
+
+在复制脚本后的目录运行；一次执行一项，结束后再测试下一项：
+
+```bash
+# CPU：全核满载 5 分钟。
+bash load_gen.sh
+
+# 内存：升到约 90%，运行 5 分钟。
+bash load_mem.sh
+
+# 磁盘：/var/tmp 所在磁盘升到约 90%，运行 5 分钟。
+bash load_disk.sh
+```
+
+脚本会打印设置和实际使用率。按 `Ctrl+C` 可以提前结束；到时会自动停止。
+CPU 只清理自己启动的负载进程，内存随进程退出释放，磁盘只删除本次创建的临时文件。
+脚本不会修改告警规则或自动处置设置；如果启用了自动处置，告警仍会按现有配置执行。
+
+**第三步：观察告警和恢复。** 当前项目规则为 CPU >80%、内存/磁盘 >85%，
+连续超限 30 秒。CPU 使用最近 2 分钟的平均速率，还需要等待抓取、规则评估和通知，
+所以启动后不会立刻收到告警，默认 5 分钟用于留出观察时间。
+
+1. 在 Prometheus 的 Alerts 页面找到 `HighCPUUsage`、`HighMemoryUsage` 或 `HighDiskUsage`。
+2. 确认状态从 `pending` 变为 `firing`，并在 Alertmanager 中看到同一测试主机的告警。
+3. 在 Assistant 的“运维记录”查看告警归档；记录告警名、主机和触发时间。
+4. 脚本结束后等待使用率回落，确认告警恢复为 `resolved`。CPU 的两分钟统计窗口需要时间衰减。
+
+如果脚本显示高使用率而没有告警，先核对 Prometheus 的实际指标、规则和实例标签，
+再检查 Alertmanager 投递及 Assistant 日志。**脚本退出成功，只说明负载测试完成，
+不能代替整条告警链路的验收。**
+
+**调整时间和强度：** 第一个参数统一是分钟数；填 `0` 表示一直运行，直到 `Ctrl+C`。
+CPU 的第二个参数是负载进程数；内存、磁盘的第二个参数是目标使用率。
+磁盘的第三个参数是放置临时文件的目录，该目录必须已存在。
+
+```bash
+bash load_gen.sh 8          # 全核满载 8 分钟。
+bash load_gen.sh 6 4        # 4 个进程，运行 6 分钟。
+bash load_gen.sh 0          # 全核持续运行，Ctrl+C 结束。
+bash load_mem.sh 8 90       # 目标内存使用率 90%，运行 8 分钟。
+bash load_disk.sh 8 90 /data # /data 所在磁盘升到约 90%，运行 8 分钟。
+```
+
+多核主机上只开 1 个 CPU 进程，可能无法达到整机 80% 的告警阈值；默认会使用 `nproc`
+报告的全部可用核心。虚拟机无法跑满时，可把进程数设为核心数的两倍，最多 256 个。
+内存和磁盘目标支持 1～95%，默认 90%；根据当前余量计算占用量，不再默认只增加几十 MiB。
+内存会考虑容器的 cgroup 限额，显示的是当前运行环境的有效内存使用率；为验证宿主机
+告警，应直接在宿主机运行。
+
+磁盘脚本优先用 `fallocate` 快速占用空间，系统不支持时改用 `dd` 实际写入。
+压缩、去重或特殊文件系统可能让实际占用低于预期，以打印的使用率和 Prometheus 指标为准。
+`/tmp`、`/var/tmp` 或 `/data` 可能位于不同磁盘；可用 `df -h /var/tmp` 确认。
+默认规则排除 `tmpfs` 和 `overlay`，脚本的目标使用率模式也会拒绝这两类文件系统，
+此时换成真实 Linux 磁盘上的目录。
+
+只想看计划、不产生负载时，加 `--dry-run`：
+
+```bash
+bash load_gen.sh --dry-run
+bash load_mem.sh --dry-run
+bash load_disk.sh 5 90 /var/tmp --dry-run
+```
+
+检查脚本本身时，也可以指定很小的负载和秒数。`--duration` 的单位是**秒**，
+不能和前面的分钟数参数同时填写；`--mib` 表示额外分配多少 MiB，会替代目标使用率模式。
+这些小负载用于验证运行和清理，通常不会触发告警。
+
+```bash
+bash load_gen.sh --workers 1 --percent 10 --duration 3
+bash load_mem.sh --mib 8 --duration 3
+bash load_disk.sh --directory /var/tmp --mib 8 --duration 3
+```
+
+为保持测试机可操作，内存至少留出总量的 2% 或 32 MiB，磁盘至少留出总量的 1% 或 8 MiB，
+取两者中较大值；内存分配还预留临时开销。余量不足会明确停止，低内存小机器可能无法达到
+90%。使用 `--help` 查看完整参数。
+
+强制 `kill -9`、断电或主机崩溃无法执行退出清理。CPU 子进程会检查父进程并自行停止，
+内存由系统回收；磁盘文件可能遗留。磁盘脚本启动时会打印
+`aiops-safe-stress-XXXXXXXX.tmp` 的完整路径，核对后只删除该文件即可。
+
+想单独检查 Bash 参数和安全余量逻辑，可在 Linux 项目目录执行下面的测试。
+默认只用合成读数，不产生真实 CPU、内存或磁盘负载：
+
+```bash
+bash tests/safe_stress.test.sh
+```
+
+测试的 --smoke 选项会产生极小负载，只用于受限测试容器，不纳入默认离线回归的真实负载。
 
 ## 7. AI、SSH 与人工审批（按需执行）
 

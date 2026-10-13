@@ -41,6 +41,7 @@ docker compose up -d --build --wait --wait-timeout 180
 | 接手项目 | [项目交接清单](docs/handover.md) |
 | 初次使用 | [快速入门](docs/quickstart.md) |
 | 按任务定位文档 | [文档导航](docs/README.md) |
+| 从监控接入复现到 SSH、审批和告警 | [端到端操作路线](docs/guide.md#从搭建到使用按这个顺序) |
 | 日常运维 | [使用指南](docs/guide.md) |
 | 理解源码 | [架构与实现详解](docs/architecture.md) |
 | 贡献与验证 | [贡献约定](CONTRIBUTING.md) |

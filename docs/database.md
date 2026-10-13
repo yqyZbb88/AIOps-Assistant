@@ -283,13 +283,33 @@ sqlite3 data/aiops_assistant.db "SELECT COUNT(*) FROM sessions;"
 实际使用路径。生产镜像没有要求安装 sqlite3 CLI，可用内置 Python 完成快照：
 
 ```bash
-docker compose exec -T assistant python -c "import sqlite3; s=sqlite3.connect('/app/data/aiops_assistant.db'); d=sqlite3.connect('/app/data/pre-upgrade.db'); s.backup(d); d.close(); s.close()"
+docker compose exec -T assistant python -c "import sqlite3; from pathlib import Path; s=sqlite3.connect('file:/app/data/aiops_assistant.db?mode=ro', uri=True); p=Path('/app/data/pre-upgrade.db'); p.touch(exist_ok=False); d=sqlite3.connect(str(p)); s.backup(d); d.close(); s.close()"
 docker compose cp assistant:/app/data/pre-upgrade.db ./pre-upgrade.db
 ```
 
 示例针对默认新库，先确认源文件存在；SQLite connect 会创建不存在的文件，不能用它
 猜测源路径。目标名称必须未使用，避免覆盖上次备份。根目录的临时备份需立即转移到
 受控备份位置，不提交仓库；完整运行目录及监控卷备份见[升级与回滚](deployment.md#升级与回滚)。
+上面的只读源连接会在源文件不存在时失败，目标已存在也会拒绝覆盖。
+重复演练时，为本次备份换一个新名称，并同步修改后续检查和复制命令。
+
+### 第一次验证 SQLite 快照
+
+先确认在线备份命令退出成功，再从部署机项目根目录执行以下检查，示例仍针对
+运行目录中本次生成的 assistant-data/pre-upgrade.db，不是正在使用的业务数据库：
+
+```bash
+docker compose run --rm --no-deps --entrypoint python init -c "import sqlite3; c=sqlite3.connect('file:/runtime/assistant-data/pre-upgrade.db?mode=ro', uri=True); result=c.execute('PRAGMA integrity_check').fetchall(); c.close(); print(result); assert result == [('ok',)]"
+```
+
+预期输出 `[('ok',)]` 且退出码为 0。不存在的文件不会被创建；其它结果或异常均须停止恢复。
+init 只用来提供相同运行目录挂载，此处覆盖入口为 Python，不执行初始化。
+自定义项目、运行目录或隔离测试栈时，为所有命令加相同的 -p/--env-file 并保留对应环境输入。
+完整性通过只证明 SQLite 结构可读，不能证明配置、凭据和三个监控卷已经备份。
+恢复前还应记录并复查一条已知会话、告警的 ID 和时间，步骤见 [恢复](#恢复)。
+
+### 停机文件副本
+
 下列 SQL 查询示例使用宿主机自行安装的 sqlite3 CLI；其中 `data/` 表示应用工作目录，
 在宿主机使用前需替换为实际数据库路径。
 
