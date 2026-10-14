@@ -60,13 +60,18 @@ jobs:
           docker compose --env-file .env.example run --rm --no-deps -T -v "$PWD/tests:/app/tests:ro" -v "$PWD/.pytest_tmp_migration_project:/migration-project" --entrypoint python init -m tests.compose_migration_smoke
           docker compose --env-file .env.example up -d --wait --wait-timeout 180
       - name: Validate all metric expressions with real Prometheus engine
+        shell: bash
         run: |
           docker compose --env-file .env.example exec -T assistant python - /app/data/metrics-promtool.yml < tests/prometheus_acceptance.py
-          docker compose --env-file .env.example exec -T prometheus promtool test rules /dev/stdin < .pytest_tmp_compose/assistant-data/metrics-promtool.yml
+          # Read protected runtime files inside the container; bash propagates pipeline failures.
+          docker compose --env-file .env.example exec -T assistant cat /app/data/metrics-promtool.yml |
+            docker compose --env-file .env.example exec -T prometheus promtool test rules /dev/stdin
       - name: Validate host alert labels with real Prometheus engine
+        shell: bash
         run: |
           docker compose --env-file .env.example exec -T assistant python - /app/data/alerts-promtool.yml < tests/prometheus_alert_acceptance.py
-          docker compose --env-file .env.example exec -T prometheus promtool test rules /dev/stdin < .pytest_tmp_compose/assistant-data/alerts-promtool.yml
+          docker compose --env-file .env.example exec -T assistant cat /app/data/alerts-promtool.yml |
+            docker compose --env-file .env.example exec -T prometheus promtool test rules /dev/stdin
       - name: Check two-user session isolation and host access
         run: docker compose --env-file .env.example exec -T assistant python - < tests/compose_access_smoke.py
       - name: Check fresh deployment and real webhook delivery
